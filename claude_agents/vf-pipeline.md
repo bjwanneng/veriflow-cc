@@ -94,38 +94,28 @@ print(f'NEXT_STAGE: {n}' if n else 'ALL_COMPLETE')
 
 #### LLM 类 stage（architect, microarch, timing, coder, skill_d, debugger）
 
-使用 Agent 工具调用子 agent：
+使用 Agent 工具调用对应的子 agent。**调用时传入 project_dir。**
 
-```
-你是 VeriFlow {stage_name} Agent。
+| Stage | Agent 名 | 说明 |
+|-------|---------|------|
+| architect | `vf-architect` | 分析需求，生成 spec.json |
+| microarch | `vf-microarch` | 设计微架构，生成 micro_arch.md |
+| timing | `vf-timing` | 生成时序模型和 testbench |
+| coder | `vf-coder` | 生成 RTL Verilog 代码 |
+| skill_d | `vf-skill-d` | 代码质量预检 |
+| debugger | `vf-debugger` | 分析错误并修复 RTL |
 
-项目目录: {project_dir}
-
-你的任务：读取必要的输入文件，执行 {stage_name} 阶段的任务，生成输出文件。
-
-完成后告诉我：
-- 成功还是失败
-- 生成了哪些文件
-- 有什么错误或警告
-```
-
-子 agent 应该读取对应的 prompt 文件来获取详细指令。prompt 文件位于：
-`{ Veriflow-agent-simple 目录 }/prompts/{stage_name}.md`
+调用方式：使用 Agent 工具，选择对应的子 agent，prompt 中说明项目目录。
 
 #### EDA 类 stage（lint, sim, synth）
 
-直接用 bash 执行：
+使用 Agent 工具调用对应的子 agent：
 
-```bash
-# lint: iverilog 语法检查
-cd {project_dir} && iverilog -Wall -tnull workspace/rtl/*.v
-
-# sim: 编译 + 仿真
-cd {project_dir} && mkdir -p workspace/sim && iverilog -o workspace/sim/tb.vvp workspace/rtl/*.v workspace/tb/tb_*.v && vvp workspace/sim/tb.vvp
-
-# synth: yosys 综合
-cd {project_dir} && yosys -p "read_verilog workspace/rtl/*.v; synth -top {top_module}; stat"
-```
+| Stage | Agent 名 | 说明 |
+|-------|---------|------|
+| lint | `vf-lint` | iverilog 语法检查 |
+| sim | `vf-sim` | 编译 + 仿真 |
+| synth | `vf-synth` | yosys 综合 |
 
 ### 4. 保存结果
 
