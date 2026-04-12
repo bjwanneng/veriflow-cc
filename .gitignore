@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.veriflow/
+stage_result_*.json
+*.vvp
+*.vcd
