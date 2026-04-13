@@ -1,12 +1,11 @@
 ---
 name: vf-pipeline
 description: Use this skill to start or resume the VeriFlow RTL hardware design pipeline (architect to synth). Trigger this when the user asks to "run the RTL flow", "design hardware", or "start the pipeline". Pass the project directory path as the argument.
-disable-model-invocation: true
 ---
 
 # RTL Pipeline Orchestrator
 
-You orchestrate the RTL pipeline sequentially through 8 stages. For each stage you must invoke the sub-agent, then use Bash to verify the output files.
+This skill IS the plan — execute each stage immediately using Read/Write/Bash tools. Do NOT plan before executing.
 
 Project directory path: `$ARGUMENTS`
 
@@ -14,61 +13,397 @@ If `$ARGUMENTS` is empty, ask the user for it.
 
 ---
 
-## Step 0: Initialization (Mandatory)
+## Step 0: Initialization
 
-Execute immediately without emitting text plans:
+Execute immediately:
 
 ```bash
 PROJECT_DIR="$ARGUMENTS"
 ls -la "$PROJECT_DIR/requirement.md" || { echo "ERROR: requirement.md not found"; exit 1; }
 cd "$PROJECT_DIR" && mkdir -p workspace/docs workspace/rtl workspace/tb workspace/sim workspace/synth .veriflow
+
+# Discover Python
+PYTHON_EXE=$(which python3 2>/dev/null || which python 2>/dev/null || true)
+if [ -z "$PYTHON_EXE" ]; then
+    PYTHON_EXE=$(ls /c/Python*/python.exe /c/Users/*/AppData/Local/Programs/Python/*/python.exe 2>/dev/null | head -1)
+fi
+echo "[ENV] Python: ${PYTHON_EXE:-NOT FOUND}"
+
+# Discover EDA tools (search common locations)
+EDA_PATH=""
+for dir in /c/oss-cad-suite/bin /c/oss-cad-suite/lib "/c/Program Files/iverilog/bin" "/c/Program Files (x86)/iverilog/bin"; do
+    [ -d "$dir" ] && EDA_PATH="$dir:$EDA_PATH"
+done
+if [ -n "$EDA_PATH" ]; then
+    export PATH="$EDA_PATH:$PATH"
+    echo "[ENV] EDA tools added to PATH"
+fi
+which yosys iverilog vvp 2>/dev/null || echo "[WARN] Some EDA tools not found"
+
+# Check existing state
+if [ -f "$PROJECT_DIR/.veriflow/pipeline_state.json" ]; then
+    echo "[STATUS] Existing state — resume from next incomplete stage:"
+    cat "$PROJECT_DIR/.veriflow/pipeline_state.json"
+else
+    echo "[STATUS] New project, starting from Stage 1."
+fi
+```
+
+If resuming, check `stages_completed` in pipeline_state.json and skip those stages.
+
+**IMPORTANT**: Use `$PYTHON_EXE` instead of `python` for all `state.py` calls throughout the pipeline. Use `export PATH="$EDA_PATH:$PATH"` prefix for all iverilog/vvp/yosys commands.
+
+---
+
+## State Update Command
+
+After each stage hook passes:
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "STAGE_NAME"
+```
+
+Replace `STAGE_NAME` with: architect, microarch, timing, coder, skill_d, lint, sim, synth.
+
+---
+
+## Design Rules (Apply to ALL stages)
+
+- All modules use **asynchronous reset, active-low, with synchronous release** (`posedge clk or negedge rst_n`)
+  - The reset input `rst_n` must pass through a **2-stage synchronizer** before use:
+  ```verilog
+  // Reset synchronizer (in top module or each clock domain)
+  reg rst_n_meta, rst_n_sync;
+  always @(posedge clk or negedge rst_n) begin
+      if (!rst_n) begin
+          rst_n_meta <= 1'b0;
+          rst_n_sync <= 1'b0;
+      end else begin
+          rst_n_meta <= 1'b1;
+          rst_n_sync <= rst_n_meta;
+      end
+  end
+  // Use rst_n_sync (not raw rst_n) as reset for all internal logic
+  ```
+  - External `rst_n` pin connects to the synchronizer only. All internal modules use the synchronized reset.
+- Port naming: `_n` suffix for active-low, `_i`/`_o` for direction
+- Parameterized design: use `parameter` for widths and depths
+- Clock domains must be explicitly declared
+- **Verilog-2005 only** — NO SystemVerilog (`logic`, `always_ff`, `assert property`, `|->`, `##`)
+
+---
+
+## Stage 1: architect (inline)
+
+**Goal**: Read requirement.md, generate spec.json.
+
+### 1a. Read inputs
+
+Use **Read** tool:
+- `$PROJECT_DIR/requirement.md`
+- Any `$PROJECT_DIR/context/*.md` files (use Bash `ls` to check first)
+
+### 1b. Clarify requirements (if needed)
+
+After reading the requirements, check for ambiguities or missing details. If any of the following are unclear, ask the user **one question at a time** using AskUserQuestion:
+
+- Module functionality or behavior
+- Interface protocol details (handshake, bus width, etc.)
+- Clock frequency or timing constraints
+- Reset strategy
+- Data processing specifics (bit width, encoding, etc.)
+- FSM states or transitions
+- Target platform or resource constraints
+
+If all requirements are clear, proceed directly to 1c. Do NOT ask unnecessary questions.
+
+### 1c. Write spec.json
+
+Use **Write** tool to write `$PROJECT_DIR/workspace/docs/spec.json`.
+
+Must follow this exact structure:
+
+```json
+{
+  "design_name": "design_name",
+  "description": "Brief description",
+  "target_frequency_mhz": 200,
+  "data_width": 32,
+  "byte_order": "MSB_FIRST",
+  "target_kpis": {
+    "frequency_mhz": 200,
+    "max_cells": 5000,
+    "power_mw": 100
+  },
+  "pipeline_stages": 2,
+  "critical_path_budget": 50,
+  "resource_strategy": "distributed_ram",
+  "modules": [
+    {
+      "module_name": "module_name",
+      "description": "What this module does",
+      "module_type": "top|processing|control|memory|interface",
+      "hierarchy_level": 0,
+      "parent": null,
+      "submodules": [],
+      "clock_domains": [
+        {
+          "name": "clk_domain_name",
+          "clock_port": "clk",
+          "reset_port": "rst_n",
+          "frequency_mhz": 200,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {
+          "name": "port_name",
+          "direction": "input|output",
+          "width": 1,
+          "protocol": "clock|reset|data|valid|ready|flag",
+          "description": "Port description"
+        }
+      ],
+      "fsm_spec": null,
+      "parameters": [
+        {
+          "name": "PARAM_NAME",
+          "default_value": 16,
+          "description": "Parameter description"
+        }
+      ]
+    }
+  ],
+  "module_connectivity": [
+    {
+      "source": "module1.port1",
+      "destination": "module2.port1",
+      "bus_width": 32,
+      "connection_type": "direct"
+    }
+  ],
+  "data_flow_sequences": [
+    {
+      "name": "main_flow",
+      "steps": ["input -> processing -> output"],
+      "latency_cycles": 2
+    }
+  ]
+}
+```
+
+Constraints:
+- One module MUST have `"module_type": "top"`
+- Every module must have complete port definitions
+- `target_kpis` is REQUIRED
+- `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1)
+- `resource_strategy` must be `"distributed_ram"` or `"block_ram"`
+- Do NOT generate any Verilog files
+
+### 1c-math. Validate spec (math checks)
+
+After writing spec.json, verify these calculations:
+
+1. **Counter width check**: For any module with counters or dividers, verify the declared width can hold the max value. Formula: `min_width = ceil(log2(max_count))`. If `max_count` is an exact power of 2, add 1 bit.
+
+2. **Clock divider accuracy**: If the design involves frequency division (baud rate, PWM, timer), calculate the actual achieved frequency vs target. Error formula: `error_pct = abs(actual - target) / target * 100`. If error > 2%, add a note to the spec and suggest alternatives (fractional accumulator, different divisor).
+
+3. **Latency sanity**: Verify `latency_cycles` in `data_flow_sequences` is consistent with pipeline_stages and module connectivity.
+
+If any check fails, fix spec.json immediately.
+
+### 1d. Hook
+
+```bash
+test -f "$PROJECT_DIR/workspace/docs/spec.json" && grep -q "module_name" "$PROJECT_DIR/workspace/docs/spec.json" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+```
+
+If FAIL → fix and rewrite spec.json immediately.
+
+### 1e. Save state
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "architect"
 ```
 
 ---
 
-## Execution Loop
+## Stage 2: microarch (inline)
 
-For each stage, execute these 4 strict steps:
-1. **Agent Call**: Invoke sub-agent for the stage.
-2. **Hook**: Use Bash to verify expected output files.
-3. **State Save (If Hook Passes)**: Run state update script.
-4. **Fix (If Hook Fails)**: Call `vf-debugger` to fix, then rerun stage.
+**Goal**: Read spec.json + requirement.md, generate micro_arch.md.
 
-**State Update Command (Step 3)**:
+### 2a. Read inputs
+
+Use **Read** tool:
+- `$PROJECT_DIR/workspace/docs/spec.json`
+- `$PROJECT_DIR/requirement.md`
+
+### 2b. Write micro_arch.md
+
+Use **Write** tool to write `$PROJECT_DIR/workspace/docs/micro_arch.md`.
+
+Must contain these sections:
+
+- **Module partitioning**: top module and submodule list with responsibilities
+- **Datapath**: key data flow descriptions
+- **Control logic**: FSM state diagram (if any) or control signal descriptions
+- **Interface protocol**: inter-module handshake/communication protocols
+- **Key design decisions**: rationale for partitioning, trade-off explanations
+
+Guidelines:
+- Each submodule should have a single responsibility
+- Clearly define inter-module interfaces (signal name, width, protocol)
+- If FSMs exist, list all states and transition conditions
+- Annotate critical paths and timing constraints
+
+### 2c. Hook
+
 ```bash
-python "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "STAGE_NAME"
+test -f "$PROJECT_DIR/workspace/docs/micro_arch.md" && wc -l "$PROJECT_DIR/workspace/docs/micro_arch.md" | awk '$1 >= 10 {print "[HOOK] PASS"; exit 0} {print "[HOOK] FAIL"; exit 1}'
 ```
-*(Replace 'STAGE_NAME' with architect, microarch, etc.)*
-`state.py` is co-located with SKILL.md in the skill directory. When installed globally it lives at `~/.claude/skills/vf-pipeline/state.py`.
+
+If FAIL → fix and rewrite immediately.
+
+### 2d. Save state
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "microarch"
+```
 
 ---
 
-## Stage 1: architect
-**1 (Agent)**: `subagent_type`: `vf-architect`, `prompt`: `Execute architect stage for $ARGUMENTS. Read requirement.md, generate workspace/docs/spec.json.`
-**2 (Hook)**:
-```bash
-test -f "$ARGUMENTS/workspace/docs/spec.json" && grep -q "module_name" "$ARGUMENTS/workspace/docs/spec.json" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+## Stage 3: timing (inline)
+
+**Goal**: Read spec.json + micro_arch.md, generate timing_model.yaml + testbench.
+
+### 3a. Read inputs
+
+Use **Read** tool:
+- `$PROJECT_DIR/workspace/docs/spec.json`
+- `$PROJECT_DIR/workspace/docs/micro_arch.md`
+
+### 3b. Write timing_model.yaml
+
+Use **Write** tool to write `$PROJECT_DIR/workspace/docs/timing_model.yaml`.
+
+Format:
+
+```yaml
+design: <design_name>
+scenarios:
+  - name: <scenario_name>
+    description: "<what this scenario tests>"
+    assertions:
+      - "<signal_A> |-> ##[min:max] <signal_B>"
+      - "<condition> |-> ##<n> <expected>"
+    stimulus:
+      - {cycle: 0, <port>: <value>, <port>: <value>}
+      - {cycle: 1, <port>: <value>}
 ```
 
-## Stage 2: microarch
-**1 (Agent)**: `subagent_type`: `vf-microarch`, `prompt`: `Execute microarch stage for $ARGUMENTS. Read spec.json & requirement.md, generate workspace/docs/micro_arch.md.`
-**2 (Hook)**:
+Requirements:
+- At least 3 scenarios: reset behavior + basic operation + at least one edge case
+- Cover every functional requirement in the spec
+- Stimulus must be self-consistent with assertions
+- Use hex values for data buses (e.g., `0xDEADBEEF`)
+
+### 3c. Write testbench
+
+Use **Write** tool to write `$PROJECT_DIR/workspace/tb/tb_<design_name>.v`.
+
+Get `<design_name>` from spec.json `design_name` field.
+
+**iverilog Compatibility Rules (CRITICAL)**:
+- NO `assert property`, `|->`, `|=>`, `##` delay operator (SVA)
+- NO `logic` type (use `reg`/`wire`)
+- NO `always_ff`/`always_comb` (use `always`)
+- YES `$display`, `$monitor`, `$finish`, `$dumpfile`
+
+Testbench must:
+- Use `$dumpfile`/`$dumpvars` for waveform capture
+- Track a `fail_count` integer
+- Print `ALL TESTS PASSED` or `FAILED: N assertion(s) failed`
+- Call `$finish` after all test cases complete
+- Convert all YAML assertions to standard Verilog `$display` checks
+
+**Serial/Baud-rate Designs**: Calculate exact clock cycles:
+```
+wait_cycles = divisor_value * oversampling_factor * frame_bits
+```
+NEVER use a fixed small constant for timing-sensitive operations.
+
+Minimum: `max(3, number of functional requirements)` scenarios. Every data-write scenario must read back with a `fail_count` check.
+
+### 3d. Hook
+
 ```bash
-test -f "$ARGUMENTS/workspace/docs/micro_arch.md" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+test -f "$PROJECT_DIR/workspace/docs/timing_model.yaml" && ls "$PROJECT_DIR/workspace/tb/"tb_*.v >/dev/null 2>&1 && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
 ```
 
-## Stage 3: timing
-**1 (Agent)**: `subagent_type`: `vf-timing`, `prompt`: `Execute timing stage for $ARGUMENTS. Read spec.json & micro_arch.md, generate workspace/docs/timing_model.yaml and workspace/tb/tb_*.v.`
-**2 (Hook)**:
+If FAIL → fix and rewrite immediately.
+
+### 3e. Save state
+
 ```bash
-test -f "$ARGUMENTS/workspace/docs/timing_model.yaml" && ls "$ARGUMENTS/workspace/tb/"tb_*.v >/dev/null 2>&1 && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "timing"
 ```
 
-## Stage 4: coder
-**1 (Agent)**: `subagent_type`: `vf-coder`, `prompt`: `Execute coder stage for $ARGUMENTS. Read specs and generate workspace/rtl/*.v.`
-**2 (Hook)**:
+---
+
+## Stage 4: coder (sub-agent per module)
+
+**Goal**: Read spec.json, loop through each module, call vf-coder agent once per module to generate workspace/rtl/*.v.
+
+### 4a. Read spec and extract module list
+
+Use **Read** tool to read `$PROJECT_DIR/workspace/docs/spec.json`.
+
+Extract the list of modules from the `"modules"` array. For each module, note:
+- `module_name`
+- `module_type` (top, processing, control, memory, interface)
+
+### 4b. Resolve coding_style path
+
 ```bash
-v_files=$(ls "$ARGUMENTS/workspace/rtl/"*.v 2>/dev/null)
+echo "$HOME/.claude/skills/vf-pipeline/coding_style.md"
+```
+
+Save the output as `CODING_STYLE_PATH`.
+
+### 4c. Call vf-coder agent for each module (non-top first, top last)
+
+**IMPORTANT**: Generate sub-modules first, top module last. This ensures the top module knows all sub-module ports.
+
+For each module in the list (skip top module initially, process it last):
+
+Call Agent with:
+- `subagent_type`: `vf-coder`
+- `prompt`: `CODING_STYLE={CODING_STYLE_PATH} SPEC={PROJECT_DIR}/workspace/docs/spec.json MODULE_NAME={module_name} OUTPUT_DIR={PROJECT_DIR}/workspace/rtl. Read CODING_STYLE then Read SPEC then Write {PROJECT_DIR}/workspace/rtl/{module_name}.v. Follow coding_style.md strictly.`
+
+Replace all `{...}` placeholders with actual values. Do NOT use shell variables in the prompt — use resolved absolute paths.
+
+After all sub-modules are done, call Agent for the top module (same prompt format).
+
+**Run all agent calls sequentially** — do NOT parallelize, as each call is independent but the top module should be last.
+
+### 4c-retry. If agent returns 0 tool uses
+
+After each agent call, check the result. If the agent completed with **0 tool uses**:
+
+1. **Retry once** — call the same agent again with the exact same prompt
+2. If retry also returns 0 tool uses → fall back to 4c-fallback
+
+### 4c-fallback. If retry also fails (0 tool uses)
+
+If a module's agent still fails after retry, generate that module inline:
+1. Read `${CLAUDE_SKILL_DIR}/coding_style.md`
+2. Read `$PROJECT_DIR/workspace/docs/spec.json`
+3. Use **Write** to create the failed module's .v file
+
+### 4b. Hook
+
+```bash
+v_files=$(ls "$PROJECT_DIR/workspace/rtl/"*.v 2>/dev/null)
 if [ -n "$v_files" ]; then
     for f in $v_files; do grep -q "endmodule" "$f" 2>/dev/null || echo "[HOOK] MISSING endmodule in $(basename $f)"; done
     echo "[HOOK] PASS"
@@ -77,42 +412,288 @@ else
 fi
 ```
 
-## Stage 5: skill_d
-**1 (Agent)**: `subagent_type`: `vf-skill-d`, `prompt`: `Execute skill_d stage for $ARGUMENTS. Verify workspace/rtl/*.v code quality, generate workspace/docs/static_report.json.`
-**2 (Hook)**:
-```bash
-test -f "$ARGUMENTS/workspace/docs/static_report.json" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
-```
+### 4c. Save state
 
-## Stage 6: lint
-**1 (Agent)**: `subagent_type`: `vf-lint`, `prompt`: `Execute lint stage for $ARGUMENTS. Check workspace/rtl/*.v syntax using iverilog.`
-**2 (Hook)**:
 ```bash
-cd "$ARGUMENTS" && iverilog -Wall -tnull workspace/rtl/*.v 2>&1 && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
-```
-
-## Stage 7: sim
-**1 (Agent)**: `subagent_type`: `vf-sim`, `prompt`: `Execute sim stage for $ARGUMENTS. Compile and test workspace/rtl/*.v with workspace/tb/tb_*.v.`
-**2 (Hook)**:
-```bash
-test -f "$ARGUMENTS/workspace/sim/tb.vvp" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
-```
-
-## Stage 8: synth
-**1 (Agent)**: `subagent_type`: `vf-synth`, `prompt`: `Execute synth stage for $ARGUMENTS. Synthesize using yosys, generate workspace/docs/synth_report.txt.`
-**2 (Hook)**:
-```bash
-test -f "$ARGUMENTS/workspace/docs/synth_report.txt" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "coder"
 ```
 
 ---
 
-## Error Recovery (Hook Failures)
-1. **1st Fail**: Call `Agent` -> `vf-debugger` to fix, retry stage.
-2. **2nd Fail**: Rollback to earlier stage and rerun sequentially (e.g. syntax->coder, logic->microarch).
-3. **3rd Fail**: STOP and notify user.
+## Stage 5: skill_d (inline)
+
+**Goal**: Read RTL files, perform quality checks, write static_report.json.
+
+### 5a. Read inputs
+
+Use **Read** tool to read every file in `$PROJECT_DIR/workspace/rtl/*.v` and `$PROJECT_DIR/workspace/docs/spec.json`.
+
+### 5b. Perform checks
+
+Check for (do NOT run EDA tools):
+
+**A. Static Checks**:
+1. `initial` blocks in RTL files
+2. Empty or near-empty files
+3. Missing `endmodule`
+4. Obvious syntax issues
+
+**B. Deep Code Review**:
+1. Latch inference: missing `case`/`if` branches in combinational logic
+2. Combinational loops: feedback paths in combinational logic
+3. Uninitialized registers: registers used before assignment in reset path
+4. Non-synthesizable constructs: `$display`, `#delay` (non-TB), `initial` (non-TB)
+5. Clock domain crossing: multi-clock-domain signals without synchronizers
+
+**C. Logic Depth Estimate**:
+- Each gate/operator = 1 level
+- Multiplier trees = ~log2(width) levels
+- Adder carries = ~log2(width)/2 levels
+- Compare against `critical_path_budget` from spec.json
+
+**D. Resource Estimate**:
+- Each flip-flop = 1 cell
+- Each 2-input logic gate = 0.5 cells
+- Each mux = 1 cell per bit
+- Each adder = 1 cell per bit
+- Compare against `max_cells` from spec.json `target_kpis`
+
+### 5c. Write static_report.json
+
+Use **Write** tool to write `$PROJECT_DIR/workspace/docs/static_report.json`.
+
+Format:
+```json
+{
+  "design": "<design_name>",
+  "analyzed_files": ["<file1.v>", "<file2.v>"],
+  "logic_depth_estimate": {
+    "max_levels": 0,
+    "budget": 0,
+    "status": "OK|OVER_BUDGET|UNKNOWN",
+    "worst_path": "<description>"
+  },
+  "cdc_risks": [],
+  "latch_risks": [],
+  "cell_estimate": 0,
+  "recommendation": "<single most important suggestion>"
+}
+```
+
+Quality score (0-1). Pass threshold: 0.5. Auto-fail if any error-level issues exist. Severity per issue: error / warning / info.
+
+### 5d. Hook
+
+```bash
+test -f "$PROJECT_DIR/workspace/docs/static_report.json" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+```
+
+If FAIL → rewrite immediately.
+
+### 5e. Save state
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "skill_d"
+```
+
+---
+
+## Stage 6: lint (inline)
+
+**Goal**: Run iverilog syntax check on RTL files.
+
+### 6a. Confirm files
+
+```bash
+ls -la "$PROJECT_DIR/workspace/rtl/"*.v
+```
+
+### 6b. Run lint
+
+```bash
+cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && iverilog -Wall -tnull workspace/rtl/*.v 2>&1
+```
+
+### 6c. Analyze results
+
+Categorize errors from iverilog output:
+- **syntax error**: missing semicolons, typos
+- **port mismatch**: port connection errors
+- **undeclared**: undeclared signals
+- **other**: unclassified errors
+
+If errors found → go to Error Recovery below.
+
+### 6d. Hook
+
+```bash
+cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && iverilog -Wall -tnull workspace/rtl/*.v 2>&1; echo "EXIT_CODE: $?"
+```
+
+If exit code != 0 → fix errors, re-run.
+
+### 6e. Save state
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint"
+```
+
+---
+
+## Stage 7: sim (inline)
+
+**Goal**: Compile and simulate RTL + testbench.
+
+### 7a. Confirm inputs
+
+```bash
+ls -la "$PROJECT_DIR/workspace/rtl/"*.v "$PROJECT_DIR/workspace/tb/"tb_*.v
+```
+
+### 7b. Compile
+
+```bash
+cd "$PROJECT_DIR" && mkdir -p workspace/sim && export PATH="$EDA_PATH:$PATH" && iverilog -o workspace/sim/tb.vvp workspace/rtl/*.v workspace/tb/tb_*.v 2>&1
+```
+
+### 7c. Run simulation (only if compilation succeeded)
+
+```bash
+cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && vvp workspace/sim/tb.vvp 2>&1
+```
+
+### 7d. Analyze output
+
+Pass/Fail criteria:
+- Output contains `PASS`/`pass`/`All tests passed` → pass
+- Output contains `FAIL`/`fail`/`Error` → fail
+- Simulation exits abnormally → fail
+
+If sim fails → go to Error Recovery below. Still complete self-check.
+
+### 7e. Hook
+
+```bash
+test -f "$PROJECT_DIR/workspace/sim/tb.vvp" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+```
+
+### 7f. Save state
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "sim"
+```
+
+---
+
+## Stage 8: synth (inline)
+
+**Goal**: Run yosys synthesis.
+
+### 8a. Read spec for top module name
+
+Use **Read** tool to read `$PROJECT_DIR/workspace/docs/spec.json`. Extract `design_name`.
+
+### 8b. Confirm RTL files
+
+```bash
+ls -la "$PROJECT_DIR/workspace/rtl/"*.v
+```
+
+### 8c. Run synthesis
+
+```bash
+cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && yosys -p "read_verilog workspace/rtl/*.v; synth -top {top_module}; stat" 2>&1 | tee workspace/docs/synth_report.txt
+```
+
+Replace `{top_module}` with `design_name` from spec.json.
+
+### 8d. Analyze report
+
+Extract from yosys output:
+- Whether synthesis succeeded
+- Number of cells
+- Maximum frequency (if available)
+- Area estimate
+- Warnings (list top 3)
+
+### 8e. Hook
+
+```bash
+test -f "$PROJECT_DIR/workspace/docs/synth_report.txt" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+```
+
+### 8f. Save state
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "synth"
+```
+
+---
+
+## Error Recovery
+
+When any stage fails (lint errors, sim failure, synth failure):
+
+### Step 1: Diagnose
+- Read the error output from the failed stage
+- Read the relevant RTL files from `workspace/rtl/`
+
+### Step 2: Classify
+- **syntax** (lint): typos, missing declarations, port mismatches
+- **logic** (sim): incorrect functionality, timing issues, FSM errors
+- **timing** (synth): non-synthesizable constructs, timing violations
+
+### Step 3: Fix
+
+Common error patterns:
+
+| Error Pattern | Cause | Fix |
+|--------------|-------|-----|
+| `cannot be driven by continuous assignment` | `reg` used with `assign` | Change to `wire` or use `always` |
+| `Unable to bind wire/reg/memory` | Forward reference or typo | Move declaration or fix typo |
+| `Variable declaration in unnamed block` | Variable in `always` without named block | Move to module level |
+| `Width mismatch` | Assignment between different widths | Add explicit width cast |
+| `is not declared` | Typo or missing declaration | Fix typo or add declaration |
+| `Multiple drivers` | Two assignments to same signal | Remove duplicate |
+| `Latch inferred` | Incomplete case/if without default | Add default case or else branch |
+
+Fix rules:
+- Only modify files that have issues
+- Preserve original coding style and design intent
+- Do NOT change module interfaces (ports)
+- Do NOT touch any file in `workspace/tb/` (testbench is read-only)
+- Do NOT add new functionality or remove existing functionality
+- Make minimal changes
+- Fix one error at a time
+
+After fixing, re-run the failed stage's Bash command to verify.
+
+### Step 4: Sync upstream documents
+
+If the fix changes architectural behavior (FSM states, timing parameters, sampling points, signal definitions), update the affected upstream documents:
+- **Logic fix** → update `workspace/docs/micro_arch.md` to match the actual RTL behavior
+- **Timing fix** → update `workspace/docs/timing_model.yaml` if scenarios/assertions are affected
+- Always update `micro_arch.md` if FSM states, datapath, or control logic changed
+
+### Retry Policy
+
+1. **1st fail**: Fix RTL, retry the stage
+2. **2nd fail**: Rollback to earlier stage and re-run sequentially
+3. **3rd fail**: STOP and notify user
+
+Rollback targets by error type:
+
+| Error Type | Rollback To | Re-run Path |
+|-----------|-------------|-------------|
+| syntax | coder | coder → skill_d → lint → sim → synth |
+| logic | microarch | microarch → timing → coder → skill_d → lint → sim → synth |
+| timing | timing | timing → coder → skill_d → lint → sim → synth |
+
+---
 
 ## Strict Constraints
-1. NO chat without tool invocation.
-2. NO skipping stages (Must go 1->8 sequentially).
-3. NO trusting agent text output without Bash verification.
+
+1. Stages must be executed sequentially. Skip stages already completed in pipeline_state.json.
+2. Every stage MUST use tools (Read/Write/Bash). No text-only responses.
+3. NO trusting output without Bash hook verification.
+4. Do NOT modify any file in `workspace/tb/` — testbench is strictly read-only.
