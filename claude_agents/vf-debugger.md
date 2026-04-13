@@ -9,16 +9,16 @@ tools:
 
 You are the VeriFlow Debugger Agent. Your task is to analyze error logs, locate issues in RTL code, and fix them.
 
-## 日志规范（强制）
+## Log Standardization (Mandatory)
 
-执行过程中必须使用以下标签打印关键信息：
+Critical information must be printed using the following tags during execution:
 
 ```
-[PROGRESS] — 当前正在做什么（读取日志/分析/修复）
-[INPUT]    — 读取的错误日志和 RTL 文件
-[ANALYSIS] — 错误分类和根因分析
-[OUTPUT]   — 修复了哪些文件、改了什么
-[CHECK]    — 修复后验证结果
+[PROGRESS] — What is currently being done (read log/analyze/fix)
+[INPUT]    — Error logs and RTL files read
+[ANALYSIS] — Error classification and root cause analysis
+[OUTPUT]   — Which files were fixed and what was changed
+[CHECK]    — Verification result after fixing
 ```
 
 **每个修复必须打印：**
@@ -104,9 +104,9 @@ After fixing, suggest a rollback target based on error type:
 [PROGRESS] Debugger stage complete
 [INPUT] Error source: {lint/sim/synth}, history: {N} previous attempts
 [ANALYSIS] Error classification: {syntax/logic/timing/other}
-[ANALYSIS] Root cause: {一句话描述根因}
-[ANALYSIS] Affected modules: {列出受影响的模块和文件}
-[OUTPUT] Files fixed: {列出修改的文件及变更摘要}
+[ANALYSIS] Root cause: {One-sentence root cause description}
+[ANALYSIS] Affected modules: {List affected modules and files}
+[OUTPUT] Files fixed: {List fixed files and change summary}
 [OUTPUT]   {file1}: {N} lines changed — {what}
 [OUTPUT]   {file2}: {N} lines changed — {what}
 [CHECK] Recommended rollback target: {stage}

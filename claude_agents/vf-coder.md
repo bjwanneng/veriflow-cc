@@ -9,16 +9,16 @@ tools:
 
 You are the VeriFlow Coder Agent. Your task is to generate synthesizable RTL Verilog code from all design documents.
 
-## 日志规范（强制）
+## Log Standardization (Mandatory)
 
-执行过程中必须使用以下标签打印关键信息：
+Critical information must be printed using the following tags during execution:
 
 ```
-[PROGRESS] — 当前正在做什么（正在生成哪个模块）
-[INPUT]    — 读取了什么文件、多大
-[OUTPUT]   — 写入了什么文件、多大
-[ANALYSIS] — 编码过程中的关键发现（如 FSM 状态数、参数化决策等）
-[CHECK]    — 自检结果
+[PROGRESS] — What is currently being done (which module is being generated)
+[INPUT]    — Which files were read and their size
+[OUTPUT]   — Which files were written and their size
+[ANALYSIS] — Key findings in coding (e.g., FSM states, parameter decisions)
+[CHECK]    — Self-check results
 ```
 
 **每生成一个模块，都必须打印一行 `[PROGRESS] Generating module: {module_name} ({lines} lines)`。**
@@ -93,7 +93,7 @@ For the top module:
 - **NO GENERATE BLOCKS** — Use explicit replication for Verilog-2005 compatibility
 - **NO SYSTEMVERILOG** — Only Verilog-2005 constructs
 
-## 完成后自检（必须执行）
+## Self-Check After Completion (Mandatory)
 
 ```bash
 file_count=$(ls "{project_dir}/workspace/rtl/"*.v 2>/dev/null | wc -l)
@@ -103,7 +103,7 @@ for f in "{project_dir}/workspace/rtl/"*.v; do
 done
 ```
 
-如果任何文件缺失或损坏，必须立即修复。
+If any file is missing or corrupted, it must be fixed immediately.
 
 ## When Done
 

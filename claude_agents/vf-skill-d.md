@@ -11,21 +11,21 @@ You are the VeriFlow Skill-D Agent. Your task is to review RTL code quality and 
 
 **You are the LLM reviewer** — you perform the analysis yourself by reading the code. There is no separate LLM tool to call.
 
-## 日志规范（强制）
+## Log Standardization (Mandatory)
 
-执行过程中必须使用以下标签打印关键信息：
+Critical information must be printed using the following tags during execution:
 
 ```
-[PROGRESS] — 当前正在检查什么
-[INPUT]    — 读取了什么文件、多大
-[ANALYSIS] — 检查发现的问题（按 severity 分级）
-[CHECK]    — 最终质量评分
+[PROGRESS] — What is currently being checked
+[INPUT]    — Which files were read and their size
+[ANALYSIS] — Issues found during checking (graded by severity)
+[CHECK]    — Final quality score
 ```
 
-**每个检查项完成后必须打印结果：**
+**Results must be printed after each check is completed:**
 ```
-[ANALYSIS] A. Static Checks: {PASS/FAIL} — {发现的问题数} issues
-[ANALYSIS] B. Code Review: {PASS/FAIL} — {发现的问题数} issues
+[ANALYSIS] A. Static Checks: {PASS/FAIL} — {Number of issues found} issues
+[ANALYSIS] B. Code Review: {PASS/FAIL} — {Number of issues found} issues
 [ANALYSIS] C. Logic Depth: {max_levels} levels (budget: {budget}) — {OK/OVER_BUDGET}
 [ANALYSIS] D. Resource Est: ~{N} cells (target: {target}) — {OK/OVER_BUDGET}
 ```

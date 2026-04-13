@@ -2,7 +2,7 @@
 
 ## Project: VeriFlow-CC
 
-Claude Code 驱动的 RTL 设计流水线。Claude Code 主会话是 driver，子 agent 执行各 stage。
+Claude Code-driven RTL design pipeline. The main Claude Code session is the driver; sub-agents execute each stage.
 
 ## Mandatory: Plan Before Code
 
@@ -37,10 +37,13 @@ All non-trivial changes must follow this cycle:
 
 ## Architecture Notes
 
-- `state.py` — 状态机 + JSON 持久化。STAGE_ORDER 和 STAGE_PREREQUISITES 定义严格顺序。
-- `agents/_base.py` — 基类。`check_prerequisites()` 在执行前检查输入文件，`run()` 自动调用。
-- `claude_agents/vf-pipeline.md` — Claude Code agent 定义，安装到 `~/.claude/agents/`。
-- LLM agent 结果中必须包含 `summary` 字段，用于会话恢复。
+- `state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER` and `STAGE_PREREQUISITES` enforce strict execution order.
+- `.claude/skills/pipeline/SKILL.md` — Pipeline orchestration skill (project source), installed to `~/.claude/skills/pipeline/SKILL.md`. Invoked via `/pipeline <project_dir>`.
+- `claude_agents/vf-*.md` — 9 sub-agent definitions (project source), installed to `~/.claude/agents/`.
+- `install.py` — Installs 1 skill + 9 agents to `~/.claude/`.
+- Pipeline flow: Main Claude (skill) → Agent(vf-architect) → Bash Hook verification → next stage.
+- 1-layer nesting: Main Claude calls sub-agents directly, no intermediate pipeline agent.
+- LLM agent results must include a `summary` field for session recovery.
 
 ## File Hygiene
 

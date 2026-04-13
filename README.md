@@ -1,134 +1,144 @@
 # VeriFlow-CC
 
-**Claude Code 驱动的 RTL 设计流水线** — 零 Python 依赖，Claude Code 主会话就是 driver。
+**Claude Code-driven RTL design pipeline** — zero Python dependencies, Claude Code main session is the driver.
 
-## 它是什么
+## What It Is
 
-VeriFlow-CC 把 Claude Code 当作流水线的大脑：Claude Code 主会话控制 stage 跳转、调用子 agent 执行任务、处理错误和回滚。每个 pipeline stage 由一个安装到 `~/.claude/agents/` 的 agent 定义文件驱动。
+VeriFlow-CC treats Claude Code as the pipeline brain: the main Claude Code session controls stage transitions, calls sub-agents to execute tasks, and handles errors and rollbacks.
 
-与完整版 VeriFlow-Agent 的区别：
-- 不需要 LangGraph / LangChain / Streamlit
-- 不需要 `pip install` 任何包
-- Claude Code 本身就是交互层和决策层
-- 状态持久化到 JSON，`/clear` 后可恢复
+Differences from the full VeriFlow-Agent:
+- No LangGraph / LangChain / Streamlit
+- No `pip install` required
+- Claude Code itself is the interaction and decision layer
+- State persisted to JSON, recoverable after `/clear`
 
-## 架构
+## Architecture
 
 ```
-用户 ←→ Claude Code 主会话（vf-pipeline agent）
-             │
-             ├─ 读 pipeline_state.json 恢复上下文
-             ├─ validate_before_run() 严格校验顺序
-             ├─ Agent 工具调用子 agent（LLM stage）
-             ├─ Bash 执行 EDA 命令（lint/sim/synth）
-             ├─ 看结果 → 成功继续 / 失败调 debugger → 回滚重跑
-             └─ 每步保存状态（含 stage_summaries 摘要）
+User types /pipeline <project_dir>
+     ↓
+Main Claude (skill prompt injected)
+     │
+     ├→ Agent(vf-architect)  → Bash Hook verify spec.json
+     ├→ Agent(vf-microarch)  → Bash Hook verify micro_arch.md
+     ├→ Agent(vf-timing)     → Bash Hook verify timing_model.yaml + tb_*.v
+     ├→ Agent(vf-coder)      → Bash Hook verify rtl/*.v
+     ├→ Agent(vf-skill-d)    → Bash Hook verify static_report.json
+     ├→ Agent(vf-lint)       → Bash Hook verify iverilog pass
+     ├→ Agent(vf-sim)        → Bash Hook verify simulation pass
+     └→ Agent(vf-synth)      → Bash Hook verify synth_report.txt
+          │
+          └→ Hook fail → Agent(vf-debugger) fix → retry
 ```
 
-## 快速开始
+**1-layer nesting**: Main Claude calls sub-agents directly, no intermediate pipeline agent.
 
-### 1. 安装
+## Quick Start
+
+### 1. Install
 
 ```bash
 python install.py
 ```
 
-将 `vf-pipeline.md` 安装到 `~/.claude/agents/`。
+Installs to `~/.claude/`:
+- `skills/pipeline/SKILL.md` — Pipeline orchestration skill
+- `agents/vf-*.md` — 9 sub-agent definitions
 
-### 2. 准备项目目录
+### 2. Prepare Project Directory
 
 ```
 my_alu/
-└── requirement.md    # 写设计需求
+└── requirement.md    # Write design requirements
 ```
 
-### 3. 在 Claude Code 中运行
-
-输入 `/vf-pipeline`，然后告诉 agent 项目目录路径。
-
-## 流水线阶段
-
-严格按顺序执行，不可跳过：
+### 3. Run in Claude Code
 
 ```
-architect → microarch → timing → coder → skill_d → lint → sim → synth
-    1           2          3        4         5        6     7      8
+/pipeline /path/to/my_alu
 ```
 
-| Stage | 类型 | 输入 | 输出 |
-|-------|------|------|------|
+## Pipeline Stages
+
+Strict sequential execution, no skipping:
+
+```
+architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
+     1           2          3         4         5        6     7      8
+```
+
+| Stage | Type | Input | Output |
+|-------|------|-------|--------|
 | architect | LLM | requirement.md | spec.json |
 | microarch | LLM | spec.json | micro_arch.md |
 | timing | LLM | spec.json, micro_arch.md | timing_model.yaml, testbench |
 | coder | LLM | spec + timing + microarch | rtl/*.v |
-| skill_d | LLM | rtl/*.v | 质量评分 |
-| lint | EDA | rtl/*.v | 语法检查 |
-| sim | EDA | rtl/*.v, tb/*.v | 仿真结果 |
-| synth | EDA | rtl/*.v | 综合报告 |
+| skill_d | LLM | rtl/*.v | Quality score |
+| lint | EDA | rtl/*.v | Syntax check |
+| sim | EDA | rtl/*.v, tb/*.v | Simulation results |
+| synth | EDA | rtl/*.v | Synthesis report |
 
-## 错误恢复
+## Error Recovery
 
 ```
-stage 失败
-  ├─ 第1次 → debugger 修复 → 回滚到目标 stage → 严格按顺序重跑
-  ├─ 第2次 → debugger → 回滚到更早 stage → 重跑
-  └─ 第3次 → 暂停，告知用户
+stage fails
+  |-- 1st failure -> debugger fixes -> retry stage
+  |-- 2nd failure -> debugger -> rollback to earlier stage -> re-run
+  +-- 3rd failure -> pause, notify user
 ```
 
-回滚规则：syntax 错误回 coder，logic 错误回 microarch，timing 错误回 timing。
+Rollback rules: syntax errors → coder, logic errors → microarch, timing errors → timing.
 
-## 会话恢复
+## Session Recovery
 
-`/clear` 或新会话后，vf-pipeline agent 会自动从 `pipeline_state.json` 恢复：
-- `stages_completed` — 已完成的 stage 列表
-- `stage_summaries` — 每个阶段的一句话摘要
-- `next_stage()` — 下一步该执行的 stage
+After `/clear` or a new session, `/pipeline <project_dir>` automatically restores from `pipeline_state.json`:
+- `stages_completed` — list of completed stages
+- `stage_summaries` — one-line summary per stage
+- `next_stage()` — the next stage to execute
 
-## 文件结构
+## File Structure
 
 ```
 veriflow-cc/
-├── state.py                # 状态管理（JSON 持久化 + 顺序校验）
-├── install.py              # 安装/卸载 agent
-├── prompts/                # prompt 模板
-│   ├── architect.md
-│   ├── microarch.md
-│   ├── timing.md
-│   ├── coder.md
-│   ├── skill_d.md
-│   └── debugger.md
-├── agents/                 # Python agent 脚本（本地调试用）
-│   ├── _base.py            # 基类：check_prerequisites, render_prompt, call_claude
-│   ├── architect.py
-│   ├── microarch.py
-│   ├── timing.py
-│   ├── coder.py
-│   ├── skill_d.py
-│   ├── lint.py             # 纯 EDA
-│   ├── sim.py              # 纯 EDA
-│   ├── synth.py            # 纯 EDA
-│   └── debugger.py
-├── claude_agents/
-│   └── vf-pipeline.md      # Claude Code 主控 agent 定义
+├── .claude/
+│   └── skills/
+│       └── pipeline/
+│           └── SKILL.md        # Pipeline orchestration skill (/pipeline)
+├── state.py                    # State management (JSON persistence + order validation)
+├── install.py                  # Install agents + skill to ~/.claude/
+├── claude_agents/              # Sub-agent definitions
+│   ├── vf-architect.md
+│   ├── vf-microarch.md
+│   ├── vf-timing.md
+│   ├── vf-coder.md
+│   ├── vf-skill-d.md
+│   ├── vf-lint.md
+│   ├── vf-sim.md
+│   ├── vf-synth.md
+│   └── vf-debugger.md
 ├── tests/
-│   ├── test_state.py       # 14 tests: 顺序、摘要、回滚、持久化
-│   └── test_base_agent.py  # 7 tests: 前置检查
+│   └── test_state.py           # Tests: ordering, summaries, rollback, persistence
 └── my_project/
-    └── requirement.md      # 示例项目
+    └── requirement.md          # Sample project
 ```
 
-## 依赖
+## Dependencies
 
-- Python 3.10+（仅用于 state.py 和 agent 脚本）
-- Claude Code（已登录）
-- `iverilog` / `vvp`（可选，无则跳过 sim）
-- `yosys`（可选，无则跳过 synth）
+- Python 3.10+ (for state.py only)
+- Claude Code (logged in)
+- `iverilog` / `vvp` (optional, skip sim if unavailable)
+- `yosys` (optional, skip synth if unavailable)
 
-**无需 pip install 任何包。**
+**No pip install required.**
 
-## 测试
+## Tests
 
 ```bash
 python tests/test_state.py
-python tests/test_base_agent.py
+```
+
+## Uninstall
+
+```bash
+python install.py --uninstall
 ```
