@@ -36,10 +36,10 @@ For each stage, execute these 4 strict steps:
 
 **State Update Command (Step 3)**:
 ```bash
-VFLOW_ROOT="$(dirname "$(dirname "$(dirname '${CLAUDE_SKILL_DIR}')")")" && python -c "import sys; sys.path.insert(0, '$VFLOW_ROOT'); from state import PipelineState; s = PipelineState.load('$PROJECT_DIR'); s.mark_complete('STAGE_NAME', {'summary':'Hook passed'}); s.save(); print('[STATE] SAVED')"
+python "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "STAGE_NAME"
 ```
 *(Replace 'STAGE_NAME' with architect, microarch, etc.)*
-`${CLAUDE_SKILL_DIR}` points to `.claude/skills/vf-pipeline/`, so `dirname` 3 times = project root where `state.py` lives.
+`state.py` is co-located with SKILL.md in the skill directory. When installed globally it lives at `~/.claude/skills/vf-pipeline/state.py`.
 
 ---
 

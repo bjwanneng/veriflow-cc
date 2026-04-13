@@ -17,9 +17,9 @@ PROJECT_DIR = Path(__file__).parent
 CLAUDE_DIR = Path.home() / ".claude"
 
 # --- Skill ---
-SKILL_SRC = PROJECT_DIR / ".claude" / "skills" / "pipeline" / "SKILL.md"
-SKILL_DST_DIR = CLAUDE_DIR / "skills" / "pipeline"
-SKILL_DST = SKILL_DST_DIR / "SKILL.md"
+SKILL_SRC_DIR = PROJECT_DIR / ".claude" / "skills" / "vf-pipeline"
+SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
+SKILL_FILES = ["SKILL.md", "state.py"]
 
 # --- Sub-agents ---
 AGENTS_DST_DIR = CLAUDE_DIR / "agents"
@@ -43,11 +43,13 @@ def main():
         removed = 0
 
         # Remove skill
-        if SKILL_DST.exists():
-            SKILL_DST.unlink()
-            print(f"  Removed skill: pipeline/SKILL.md")
-            removed += 1
-            # Remove empty parent dirs
+        for name in SKILL_FILES:
+            dst = SKILL_DST_DIR / name
+            if dst.exists():
+                dst.unlink()
+                print(f"  Removed skill: vf-pipeline/{name}")
+                removed += 1
+        if SKILL_DST_DIR.exists():
             try:
                 SKILL_DST_DIR.rmdir()
                 (CLAUDE_DIR / "skills").rmdir()
@@ -71,13 +73,18 @@ def main():
     # --- Install ---
     print(f"Installing to {CLAUDE_DIR}/\n")
 
-    # 1. Install skill
-    if SKILL_SRC.exists():
-        SKILL_DST_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(SKILL_SRC, SKILL_DST)
-        print(f"  [skill]  pipeline/SKILL.md  →  {SKILL_DST}")
-    else:
-        print(f"  [skip]   pipeline/SKILL.md not found at {SKILL_SRC}")
+    # 1. Install skill (SKILL.md + state.py)
+    SKILL_DST_DIR.mkdir(parents=True, exist_ok=True)
+    skill_installed = 0
+    for name in SKILL_FILES:
+        src = SKILL_SRC_DIR / name
+        dst = SKILL_DST_DIR / name
+        if src.exists():
+            shutil.copy2(src, dst)
+            print(f"  [skill]  vf-pipeline/{name}  →  {dst}")
+            skill_installed += 1
+        else:
+            print(f"  [skip]   vf-pipeline/{name} not found at {src}")
 
     # 2. Install sub-agents
     AGENTS_DST_DIR.mkdir(parents=True, exist_ok=True)
@@ -95,7 +102,7 @@ def main():
         installed += 1
 
     print(f"\n{'='*50}")
-    print(f"  Installed: 1 skill + {installed} agents")
+    print(f"  Installed: {skill_installed} skill files + {installed} agents")
     if missing:
         print(f"  Skipped: {missing} agents (source files missing)")
     print(f"{'='*50}")
