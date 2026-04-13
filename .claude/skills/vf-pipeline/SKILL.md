@@ -51,6 +51,23 @@ fi
 
 If resuming, check `stages_completed` in pipeline_state.json and skip those stages.
 
+### 0b. Create pipeline task list (status bar progress)
+
+Use **TaskCreate** to create one task per pipeline stage. Call all 8 in sequence:
+
+```
+TaskCreate: subject="Stage 1: Architect — generate spec.json", activeForm="Generating spec.json"
+TaskCreate: subject="Stage 2: Microarch — generate micro_arch.md", activeForm="Generating microarchitecture"
+TaskCreate: subject="Stage 3: Timing — generate timing model + testbench", activeForm="Generating timing model"
+TaskCreate: subject="Stage 4: Coder — generate RTL via sub-agent", activeForm="Generating RTL modules"
+TaskCreate: subject="Stage 5: Skill_D — static analysis", activeForm="Running static analysis"
+TaskCreate: subject="Stage 6: Lint — iverilog syntax check", activeForm="Running lint"
+TaskCreate: subject="Stage 7: Sim — compile and simulate", activeForm="Running simulation"
+TaskCreate: subject="Stage 8: Synth — yosys synthesis", activeForm="Running synthesis"
+```
+
+If resuming from a previous run, only create tasks for stages NOT in `stages_completed`. Mark already-completed stages' tasks as **completed** using TaskUpdate.
+
 **IMPORTANT**: Use `$PYTHON_EXE` instead of `python` for all `state.py` calls throughout the pipeline. Use `export PATH="$EDA_PATH:$PATH"` prefix for all iverilog/vvp/yosys commands.
 
 ---
@@ -96,6 +113,8 @@ Replace `STAGE_NAME` with: architect, microarch, timing, coder, skill_d, lint, s
 ## Stage 1: architect (inline)
 
 **Goal**: Read requirement.md, generate spec.json.
+
+Mark Stage 1 task as **in_progress** using TaskUpdate.
 
 ### 1a. Read inputs
 
@@ -226,11 +245,15 @@ If FAIL → fix and rewrite spec.json immediately.
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "architect"
 ```
 
+Mark Stage 1 task as **completed** using TaskUpdate.
+
 ---
 
 ## Stage 2: microarch (inline)
 
 **Goal**: Read spec.json + requirement.md, generate micro_arch.md.
+
+Mark Stage 2 task as **in_progress** using TaskUpdate.
 
 ### 2a. Read inputs
 
@@ -270,11 +293,15 @@ If FAIL → fix and rewrite immediately.
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "microarch"
 ```
 
+Mark Stage 2 task as **completed** using TaskUpdate.
+
 ---
 
 ## Stage 3: timing (inline)
 
 **Goal**: Read spec.json + micro_arch.md, generate timing_model.yaml + testbench.
+
+Mark Stage 3 task as **in_progress** using TaskUpdate.
 
 ### 3a. Read inputs
 
@@ -348,11 +375,15 @@ If FAIL → fix and rewrite immediately.
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "timing"
 ```
 
+Mark Stage 3 task as **completed** using TaskUpdate.
+
 ---
 
 ## Stage 4: coder (sub-agent per module)
 
 **Goal**: Read spec.json, loop through each module, call vf-coder agent once per module to generate workspace/rtl/*.v.
+
+Mark Stage 4 task as **in_progress** using TaskUpdate.
 
 ### 4a. Read spec and extract module list
 
@@ -418,11 +449,15 @@ fi
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "coder"
 ```
 
+Mark Stage 4 task as **completed** using TaskUpdate.
+
 ---
 
 ## Stage 5: skill_d (inline)
 
 **Goal**: Read RTL files, perform quality checks, write static_report.json.
+
+Mark Stage 5 task as **in_progress** using TaskUpdate.
 
 ### 5a. Read inputs
 
@@ -496,11 +531,15 @@ If FAIL → rewrite immediately.
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "skill_d"
 ```
 
+Mark Stage 5 task as **completed** using TaskUpdate.
+
 ---
 
 ## Stage 6: lint (inline)
 
 **Goal**: Run iverilog syntax check on RTL files.
+
+Mark Stage 6 task as **in_progress** using TaskUpdate.
 
 ### 6a. Confirm files
 
@@ -538,11 +577,15 @@ If exit code != 0 → fix errors, re-run.
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint"
 ```
 
+Mark Stage 6 task as **completed** using TaskUpdate.
+
 ---
 
 ## Stage 7: sim (inline)
 
 **Goal**: Compile and simulate RTL + testbench.
+
+Mark Stage 7 task as **in_progress** using TaskUpdate.
 
 ### 7a. Confirm inputs
 
@@ -583,11 +626,15 @@ test -f "$PROJECT_DIR/workspace/sim/tb.vvp" && echo "[HOOK] PASS" || echo "[HOOK
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "sim"
 ```
 
+Mark Stage 7 task as **completed** using TaskUpdate.
+
 ---
 
 ## Stage 8: synth (inline)
 
 **Goal**: Run yosys synthesis.
+
+Mark Stage 8 task as **in_progress** using TaskUpdate.
 
 ### 8a. Read spec for top module name
 
@@ -627,6 +674,8 @@ test -f "$PROJECT_DIR/workspace/docs/synth_report.txt" && echo "[HOOK] PASS" || 
 ```bash
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "synth"
 ```
+
+Mark Stage 8 task as **completed** using TaskUpdate.
 
 ---
 
