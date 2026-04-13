@@ -20,7 +20,7 @@ Execute immediately:
 ```bash
 PROJECT_DIR="$ARGUMENTS"
 ls -la "$PROJECT_DIR/requirement.md" || { echo "ERROR: requirement.md not found"; exit 1; }
-cd "$PROJECT_DIR" && mkdir -p workspace/docs workspace/rtl workspace/tb workspace/sim workspace/synth .veriflow
+cd "$PROJECT_DIR" && mkdir -p workspace/docs workspace/rtl workspace/tb workspace/sim workspace/synth .veriflow logs
 
 # Discover Python
 PYTHON_EXE=$(which python3 2>/dev/null || which python 2>/dev/null || true)
@@ -29,16 +29,34 @@ if [ -z "$PYTHON_EXE" ]; then
 fi
 echo "[ENV] Python: ${PYTHON_EXE:-NOT FOUND}"
 
-# Discover EDA tools (search common locations)
-EDA_PATH=""
-for dir in /c/oss-cad-suite/bin /c/oss-cad-suite/lib "/c/Program Files/iverilog/bin" "/c/Program Files (x86)/iverilog/bin"; do
-    [ -d "$dir" ] && EDA_PATH="$dir:$EDA_PATH"
+# Discover EDA tools — must include bin + lib + lib/ivl (iverilog needs ivlpp.exe and ivl.exe)
+EDA_BIN=""
+EDA_LIB=""
+for base in /c/oss-cad-suite "/c/Program Files/iverilog" "/c/Program Files (x86)/iverilog"; do
+    if [ -d "$base/bin" ]; then
+        EDA_BIN="$base/bin"
+        [ -d "$base/lib" ] && EDA_LIB="$base/lib"
+        [ -d "$base/lib/ivl" ] && EDA_LIB="$base/lib:$base/lib/ivl"
+        break
+    fi
 done
-if [ -n "$EDA_PATH" ]; then
-    export PATH="$EDA_PATH:$PATH"
-    echo "[ENV] EDA tools added to PATH"
-fi
+
+# Save env to file so every subsequent Bash call can source it
+cat > "$PROJECT_DIR/.veriflow/eda_env.sh" << ENVEOF
+export PYTHON_EXE="$PYTHON_EXE"
+export EDA_BIN="$EDA_BIN"
+export EDA_LIB="$EDA_LIB"
+export PATH="$EDA_BIN:$EDA_LIB:\$PATH"
+ENVEOF
+echo "[ENV] Saved EDA env to .veriflow/eda_env.sh"
+echo "[ENV] EDA_BIN=$EDA_BIN  EDA_LIB=$EDA_LIB"
+
+# Verify tools
+source "$PROJECT_DIR/.veriflow/eda_env.sh"
 which yosys iverilog vvp 2>/dev/null || echo "[WARN] Some EDA tools not found"
+
+# Quick smoke test — exit 127 means iverilog can't find its sub-tools
+iverilog -V 2>&1 | head -1 || echo "[WARN] iverilog smoke test failed — check EDA_LIB path"
 
 # Check existing state
 if [ -f "$PROJECT_DIR/.veriflow/pipeline_state.json" ]; then
@@ -68,7 +86,11 @@ TaskCreate: subject="Stage 8: Synth — yosys synthesis", activeForm="Running sy
 
 If resuming from a previous run, only create tasks for stages NOT in `stages_completed`. Mark already-completed stages' tasks as **completed** using TaskUpdate.
 
-**IMPORTANT**: Use `$PYTHON_EXE` instead of `python` for all `state.py` calls throughout the pipeline. Use `export PATH="$EDA_PATH:$PATH"` prefix for all iverilog/vvp/yosys commands.
+**IMPORTANT**: Every Bash call that uses EDA tools (iverilog, vvp, yosys) MUST start with:
+```
+source "$PROJECT_DIR/.veriflow/eda_env.sh"
+```
+Do NOT use bare `iverilog` or `yosys` without sourcing this file first — the PATH does not persist between Bash calls.
 
 ---
 
@@ -77,7 +99,7 @@ If resuming from a previous run, only create tasks for stages NOT in `stages_com
 After each stage hook passes:
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "STAGE_NAME"
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "STAGE_NAME"
 ```
 
 Replace `STAGE_NAME` with: architect, microarch, timing, coder, skill_d, lint, sim, synth.
@@ -550,12 +572,12 @@ ls -la "$PROJECT_DIR/workspace/rtl/"*.v
 ### 6b. Run lint
 
 ```bash
-cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && iverilog -Wall -tnull workspace/rtl/*.v 2>&1
+cd "$PROJECT_DIR" && source .veriflow/eda_env.sh && iverilog -Wall -tnull workspace/rtl/*.v 2>&1 | tee logs/lint.log; echo "EXIT_CODE: ${PIPESTATUS[0]}"
 ```
 
 ### 6c. Analyze results
 
-Categorize errors from iverilog output:
+Read `logs/lint.log`. Categorize errors:
 - **syntax error**: missing semicolons, typos
 - **port mismatch**: port connection errors
 - **undeclared**: undeclared signals
@@ -566,7 +588,7 @@ If errors found → go to Error Recovery below.
 ### 6d. Hook
 
 ```bash
-cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && iverilog -Wall -tnull workspace/rtl/*.v 2>&1; echo "EXIT_CODE: $?"
+cd "$PROJECT_DIR" && source .veriflow/eda_env.sh && iverilog -Wall -tnull workspace/rtl/*.v > /dev/null 2>&1; echo "EXIT_CODE: $?"
 ```
 
 If exit code != 0 → fix errors, re-run.
@@ -596,18 +618,20 @@ ls -la "$PROJECT_DIR/workspace/rtl/"*.v "$PROJECT_DIR/workspace/tb/"tb_*.v
 ### 7b. Compile
 
 ```bash
-cd "$PROJECT_DIR" && mkdir -p workspace/sim && export PATH="$EDA_PATH:$PATH" && iverilog -o workspace/sim/tb.vvp workspace/rtl/*.v workspace/tb/tb_*.v 2>&1
+cd "$PROJECT_DIR" && mkdir -p workspace/sim logs && source .veriflow/eda_env.sh && iverilog -o workspace/sim/tb.vvp workspace/rtl/*.v workspace/tb/tb_*.v 2>&1 | tee logs/compile.log; echo "EXIT_CODE: ${PIPESTATUS[0]}"
 ```
 
 ### 7c. Run simulation (only if compilation succeeded)
 
 ```bash
-cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && vvp workspace/sim/tb.vvp 2>&1
+cd "$PROJECT_DIR" && source .veriflow/eda_env.sh && vvp workspace/sim/tb.vvp 2>&1 | tee logs/sim.log; echo "EXIT_CODE: ${PIPESTATUS[0]}"
+# Cleanup VCD from project root (can be large)
+rm -f "$PROJECT_DIR"/*.vcd 2>/dev/null
 ```
 
 ### 7d. Analyze output
 
-Pass/Fail criteria:
+Read `logs/sim.log`. Pass/Fail criteria:
 - Output contains `PASS`/`pass`/`All tests passed` → pass
 - Output contains `FAIL`/`fail`/`Error` → fail
 - Simulation exits abnormally → fail
@@ -649,14 +673,14 @@ ls -la "$PROJECT_DIR/workspace/rtl/"*.v
 ### 8c. Run synthesis
 
 ```bash
-cd "$PROJECT_DIR" && export PATH="$EDA_PATH:$PATH" && yosys -p "read_verilog workspace/rtl/*.v; synth -top {top_module}; stat" 2>&1 | tee workspace/docs/synth_report.txt
+cd "$PROJECT_DIR" && mkdir -p workspace/synth && source .veriflow/eda_env.sh && yosys -p "read_verilog workspace/rtl/*.v; synth -top {top_module}; stat" 2>&1 | tee workspace/synth/synth_report.txt
 ```
 
 Replace `{top_module}` with `design_name` from spec.json.
 
 ### 8d. Analyze report
 
-Extract from yosys output:
+Read `workspace/synth/synth_report.txt`. Extract:
 - Whether synthesis succeeded
 - Number of cells
 - Maximum frequency (if available)
@@ -666,7 +690,7 @@ Extract from yosys output:
 ### 8e. Hook
 
 ```bash
-test -f "$PROJECT_DIR/workspace/docs/synth_report.txt" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+test -f "$PROJECT_DIR/workspace/synth/synth_report.txt" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
 ```
 
 ### 8f. Save state
@@ -710,10 +734,12 @@ Fix rules:
 - Only modify files that have issues
 - Preserve original coding style and design intent
 - Do NOT change module interfaces (ports)
-- Do NOT touch any file in `workspace/tb/` (testbench is read-only)
+- **RTL fixes**: Do NOT modify any file in `workspace/tb/`
+- **TB bugs**: If simulation fails due to a testbench bug (not an RTL bug), you MAY fix the testbench. But do NOT weaken assertions — only fix TB infrastructure (signal types, timing, connectivity)
 - Do NOT add new functionality or remove existing functionality
 - Make minimal changes
 - Fix one error at a time
+- **Debug budget**: If you spend more than 3 fix-and-retry cycles on the same error without progress, STOP and ask the user for help. Do NOT go in circles
 
 After fixing, re-run the failed stage's Bash command to verify.
 
