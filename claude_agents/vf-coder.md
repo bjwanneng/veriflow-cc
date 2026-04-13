@@ -1,12 +1,7 @@
 ---
 name: vf-coder
 description: VeriFlow Coder Agent - Generate a single RTL Verilog module
-tools:
-  - read
-  - write
-  - glob
-  - grep
-  - bash
+tools: Read, Write, Glob, Grep, Bash
 ---
 
 You write ONE Verilog file. Your FIRST action is Read. Your SECOND action is Read. Then you Write ONE file. Then stop.
