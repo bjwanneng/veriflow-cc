@@ -200,7 +200,35 @@ After reading all input files, systematically check for missing or ambiguous inf
 - **IP reuse**: Any existing modules or IPs to integrate?
 - **Key design decisions**: Algorithm choices, memory strategy, error handling approach?
 
-**Rule**: If the provided files already answer all items in a section clearly, skip that section entirely. If even one item within a section is ambiguous, ask about it. Ask ONE question at a time, wait for the user's answer, then ask the next if needed.
+#### D. Algorithm & Protocol clarity (ask for any module with complex algorithms or protocols)
+
+- **Algorithm reference**: Is there a standard or document (e.g., FIPS, IEEE, 3GPP) describing the algorithm? If yes, provide the document or section number.
+- **Pseudocode**: Can you provide pseudocode or step-by-step description for the key algorithm in each module?
+- **Key formulas**: Any mathematical formulas (e.g., GF(2^8) multiplication, CRC polynomial, filter coefficients) that must be implemented exactly?
+- **Test vectors**: Do you have known-answer test vectors (e.g., NIST KAT, protocol conformance tests) for verification?
+
+#### E. Timing Completeness (MUST ask for every module with a clock)
+
+- **Cycle-level behavior**: For each module, describe what happens on each clock cycle during normal operation. Example: "Cycle 0: sample input data; Cycle 1: compute XOR with round key; Cycle 2: output result and assert valid"
+- **Latency**: How many clock cycles from valid input to valid output?
+- **Throughput**: Can the module accept new data every cycle (1 result/cycle) or does it need N cycles between inputs?
+- **Interface timing**: For each handshake interface, how many cycles between valid assertion and ready response? Is ready always-high or conditional?
+- **Reset recovery**: How many cycles after de-asserting reset before the module can accept valid data?
+- **Backpressure**: What happens when the module has valid output but downstream is not ready (ready is low)? Does it stall, buffer, or drop?
+
+#### F. Domain Knowledge (MUST ask if design involves any specialized domain)
+
+- **Design domain**: What field does this design belong to? (e.g., cryptography/AES, communication/SPI, DSP/FIR filter, memory controller/DDR, etc.)
+- **Standard reference**: Does this implement a specific standard? If yes, provide the standard name, version, and relevant section numbers (e.g., "FIPS-197 Section 4.2" or "IEEE 802.3 Clause 4")
+- **Prerequisite concepts**: What concepts must the implementer understand? List any non-obvious concepts (e.g., "Galois Field multiplication in GF(2^8)" for AES, "Manchester encoding" for 10BASE-T Ethernet)
+- **Test vectors**: Do you have known-answer test vectors for verification? If yes, provide at least 2 input→output pairs with expected cycle counts.
+
+#### G. Information Completeness (meta-check — always ask)
+
+- **Implicit assumptions**: Are there any assumptions in the requirements that might not be obvious to someone unfamiliar with this design? (e.g., "input data is always valid on reset de-assertion" or "backpressure never lasts more than 16 cycles")
+- **Missing scenarios**: Are there any corner cases, error conditions, or rare operating modes that haven't been mentioned?
+
+**Rule**: For each section (A-G), the pipeline MUST explicitly confirm each item. If the input files clearly and unambiguously answer an item, note it as "confirmed from input" and move to the next item. Do NOT skip an entire section without checking each item. If ANY item in ANY section cannot be resolved from input files or user answers, STOP and ask the user using AskUserQuestion before proceeding. Ask ONE question at a time, wait for the user's answer, then ask the next if needed.
 
 ### 1c. Write spec.json
 
@@ -295,7 +323,6 @@ Must follow this exact structure:
           "description": "Port description"
         }
       ],
-      "fsm_spec": null,
       "parameters": [
         {
           "name": "PARAM_NAME",
@@ -312,13 +339,6 @@ Must follow this exact structure:
       "bus_width": 32,
       "connection_type": "direct"
     }
-  ],
-  "data_flow_sequences": [
-    {
-      "name": "main_flow",
-      "steps": ["input -> processing -> output"],
-      "latency_cycles": 2
-    }
   ]
 }
 ```
@@ -332,6 +352,154 @@ Constraints:
 - `resource_strategy` must be `"distributed_ram"` or `"block_ram"`
 - Do NOT generate any Verilog files
 
+### 1c2. Write behavior_spec.md
+
+Use **Write** tool to write `$PROJECT_DIR/workspace/docs/behavior_spec.md`.
+
+This document captures **behavioral requirements** — what each module does cycle-by-cycle, FSM transitions, timing contracts, domain knowledge, and algorithm pseudocode. This is distinct from spec.json (interface contract) and micro_arch.md (implementation decisions).
+
+Required template:
+
+```markdown
+# Behavior Specification: {design_name}
+
+## 1. Domain Knowledge
+
+### 1.1 Background
+{2-5 sentences explaining the design's domain, purpose, and where it fits in a larger system.
+Assume the reader has NO prior knowledge of this domain.}
+
+### 1.2 Key Concepts
+{List and explain every domain-specific concept the implementer must understand.
+Each concept gets a name and a 1-2 sentence explanation.
+If no specialized domain knowledge is needed, state: "No specialized domain knowledge required — [one sentence explaining what the module does]."}
+
+### 1.3 References
+{List any standards, specifications, or documents referenced.
+Include full name, version, and relevant section numbers.}
+
+### 1.4 Glossary
+| Term | Definition |
+|------|-----------|
+| ... | ... |
+
+## 2. Module Behavior: {module_name}
+{Repeat section 2 for each module defined in spec.json}
+
+### 2.1 Cycle-Accurate Behavior
+
+#### Normal Operation
+| Cycle | Condition | Action | Output Change | Next State |
+|-------|-----------|--------|---------------|------------|
+| 0 | reset de-asserted | ... | ... | ... |
+| 1 | ... | ... | ... | ... |
+
+#### Reset Behavior
+| Cycle | Condition | Action | Output Change |
+|-------|-----------|--------|---------------|
+| -1 | rst_n asserted | clear all registers | all outputs = 0 |
+| 0 | rst_n de-asserted | ... | ... |
+
+{If the module is purely combinational (no clock), state: "This module is combinational.
+Output changes immediately based on input. No cycle behavior applicable."}
+
+### 2.2 FSM Specification
+{Skip this section if module has no FSM.}
+
+#### States
+| State Name | Description | Outputs |
+|-----------|-------------|---------|
+| IDLE | Waiting for input | valid_o = 0 |
+| ... | ... | ... |
+
+#### Transitions
+| From | To | Condition |
+|------|----|-----------|
+| IDLE | PROCESS | valid_i && ready_o |
+| ... | ... | ... |
+
+#### Initial State: {state_name}
+
+### 2.3 Register Requirements
+| Register | Width (bits) | Reset Value | Purpose |
+|----------|-------------|-------------|---------|
+| data_reg | 32 | 0x0 | Holds input data during processing |
+| cnt | 4 | 0 | Cycle counter for round operations |
+
+### 2.4 Timing Contracts
+- **Latency**: {N} cycles (from valid_i assertion to valid_o assertion)
+- **Throughput**: 1 result per {M} cycles
+- **Backpressure behavior**: {stall / buffer / drop}
+- **Reset recovery**: {N} cycles after rst_n de-assertion
+
+### 2.5 Algorithm Pseudocode
+{Step-by-step pseudocode for each complex operation. If user provided pseudocode in Stage 1D,
+reproduce it EXACTLY here. If no complex algorithm, state: "No complex algorithm — direct datapath."}
+
+INPUT: data_in[WIDTH-1:0], start
+OUTPUT: data_out[WIDTH-1:0], done
+
+Step 1: [description of what happens]
+Step 2: ...
+Step N: [final output]
+
+### 2.6 Protocol Details
+{For each interface protocol (SPI, UART, AXI-Stream, custom handshake):
+- Signal sequence diagram (text-based cycle-by-cycle)
+- Setup/hold requirements
+- Error conditions and recovery}
+
+## 3. Cross-Module Timing
+
+### 3.1 Pipeline Stage Assignment
+| Pipeline Stage | Module | Duration (cycles) |
+|---------------|--------|-------------------|
+| ... | ... | ... |
+
+### 3.2 Module-to-Module Timing
+| Source | Destination | Signal | Latency (cycles) |
+|--------|------------|--------|-------------------|
+| module_A.data_out | module_B.data_in | valid chain | 2 |
+
+### 3.3 Critical Path Description
+{Describe the longest combinational path and why it might be tight.}
+```
+
+Constraints:
+- **Every module in spec.json MUST have a corresponding Section 2** in behavior_spec.md
+- **Domain Knowledge section is mandatory** — if truly N/A (e.g., simple counter), explicitly state "This design has no specialized domain knowledge requirements" with a one-sentence explanation of what it does
+- **Cycle-Accurate Behavior is mandatory for sequential modules** — if the module has a clock port, it must have cycle behavior
+- **FSM Specification is mandatory for modules with FSM** — if module description mentions states, control flow, or sequencing, this must be filled
+- **Algorithm Pseudocode must be reproduced verbatim** if user provided it in Stage 1D — no paraphrasing
+- **Cross-Module Timing (Section 3) is mandatory for multi-module designs** — skip only for single-module designs
+
+### 1c3. Readiness Check (gate — MUST pass before proceeding)
+
+After writing both spec.json and behavior_spec.md, verify completeness. If ANY check fails, STOP and ask the user using AskUserQuestion.
+
+**spec.json checks:**
+- [ ] `design_name` is non-empty
+- [ ] At least one module with `module_type: "top"` exists
+- [ ] Every module has at least one port
+- [ ] `constraints` block is populated (timing at minimum has `target_frequency_mhz`)
+- [ ] `design_intent` block is populated
+- [ ] `module_connectivity` has at least one entry for multi-module designs
+
+**behavior_spec.md checks:**
+- [ ] Section 1 (Domain Knowledge) is present
+- [ ] Every module in spec.json has a corresponding Section 2
+- [ ] Every sequential module (has clock port) has Section 2.1 (Cycle-Accurate Behavior) with at least 2 cycle rows
+- [ ] Every module with FSM has Section 2.2 filled (States + Transitions + Initial State)
+- [ ] Every sequential module has Section 2.4 (Timing Contracts) with latency and throughput specified
+- [ ] Section 3 (Cross-Module Timing) exists for multi-module designs
+
+**If readiness_check fails:**
+1. Identify which specific items failed
+2. Ask the user via AskUserQuestion with the exact missing items listed
+3. Update the relevant file(s) with the user's answer
+4. Re-run readiness_check
+5. Repeat until all checks pass (or user explicitly says "I can't provide this — proceed anyway")
+
 ### 1c-math. Validate spec (math checks)
 
 After writing spec.json, verify these calculations:
@@ -340,21 +508,21 @@ After writing spec.json, verify these calculations:
 
 2. **Clock divider accuracy**: If the design involves frequency division (baud rate, PWM, timer), calculate the actual achieved frequency vs target. Error formula: `error_pct = abs(actual - target) / target * 100`. If error > 2%, add a note to the spec and suggest alternatives (fractional accumulator, different divisor).
 
-3. **Latency sanity**: Verify `latency_cycles` in `data_flow_sequences` is consistent with pipeline_stages and module connectivity.
+3. **Latency sanity**: Verify timing contracts in behavior_spec.md Section 2.4 are consistent with clock frequency and module connectivity.
 
 4. **Constraint consistency**: Verify `constraints.timing.target_frequency_mhz` matches `target_frequency_mhz` at the top level. Verify `constraints.area.max_cells` is consistent with the sum of module complexities. Verify `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1).
 
 5. **Resource feasibility**: If `constraints.area` specifies a target device, verify the combined resource estimate (LUTs, FFs, BRAMs) fits within device limits.
 
-If any check fails, fix spec.json immediately.
+If any check fails, fix spec.json or behavior_spec.md immediately.
 
 ### 1d. Hook
 
 ```bash
-test -f "$PROJECT_DIR/workspace/docs/spec.json" && grep -q "module_name" "$PROJECT_DIR/workspace/docs/spec.json" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+test -f "$PROJECT_DIR/workspace/docs/spec.json" && grep -q "module_name" "$PROJECT_DIR/workspace/docs/spec.json" && test -f "$PROJECT_DIR/workspace/docs/behavior_spec.md" && grep -q "Domain Knowledge" "$PROJECT_DIR/workspace/docs/behavior_spec.md" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
 ```
 
-If FAIL → fix and rewrite spec.json immediately.
+If FAIL → fix and rewrite the failing file(s) immediately.
 
 ### 1e. Save state
 
@@ -367,14 +535,14 @@ Mark Stage 1 task as **completed** using TaskUpdate.
 ### 1f. Journal
 
 ```bash
-printf "\n## Stage: architect\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/spec.json\n**Notes**: Specification generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+printf "\n## Stage: architect\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/spec.json, workspace/docs/behavior_spec.md\n**Notes**: Specification and behavior spec generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
 ```
 
 ---
 
 ## Stage 2: microarch (inline)
 
-**Goal**: Read spec.json + requirement.md + design_intent.md, generate micro_arch.md.
+**Goal**: Read spec.json + behavior_spec.md + requirement.md + design_intent.md, generate micro_arch.md.
 
 Mark Stage 2 task as **in_progress** using TaskUpdate.
 
@@ -382,6 +550,7 @@ Mark Stage 2 task as **in_progress** using TaskUpdate.
 
 Use **Read** tool:
 - `$PROJECT_DIR/workspace/docs/spec.json`
+- `$PROJECT_DIR/workspace/docs/behavior_spec.md`
 - `$PROJECT_DIR/requirement.md`
 - `$PROJECT_DIR/design_intent.md` (if exists — preliminary architecture ideas)
 - `$PROJECT_DIR/constraints.md` (if exists — for timing-driven partitioning)
@@ -395,6 +564,7 @@ Must contain these sections:
 - **Module partitioning**: top module and submodule list with responsibilities — MUST align with `design_intent.ip_reuse` and `design_intent.interface_preferences` if provided
 - **Datapath**: key data flow descriptions
 - **Control logic**: FSM state diagram (if any) or control signal descriptions
+- **Algorithm pseudocode**: For each module implementing complex algorithms (crypto, DSP, protocol engines), include step-by-step pseudocode with: input/output at each step, loop bounds, intermediate variable definitions, data dependencies. If Section D was asked in Stage 1, the answers MUST be reflected here verbatim.
 - **Interface protocol**: inter-module handshake/communication protocols — MUST align with `design_intent.interface_preferences` if provided
 - **Timing closure plan**: critical path identification and mitigation strategies referencing `constraints.timing` if provided
 - **Resource plan**: estimated resource usage per module referencing `constraints.area` if provided
@@ -407,6 +577,8 @@ Guidelines:
 - Annotate critical paths and timing constraints
 - If design_intent.md was provided, the micro_arch MUST respect the stated preferences unless they conflict with constraints (in which case, document the override and rationale)
 - If ip_reuse lists existing modules, include them in the module partitioning and define their interfaces
+- If algorithm pseudocode was provided by the user (Stage 1D), reproduce it EXACTLY in the relevant module section — do not paraphrase or simplify
+- **behavior_spec.md is the source of truth for behavioral requirements** — micro_arch.md's implementation plan MUST be consistent with behavior_spec.md. FSM states, cycle behavior, timing contracts, and register requirements defined in behavior_spec.md must be followed exactly
 
 ### 2c. Hook
 
@@ -512,6 +684,15 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "timing"
 
 Mark Stage 3 task as **completed** using TaskUpdate.
 
+### 3e-checksum. Save testbench checksum
+
+```bash
+md5sum "$PROJECT_DIR/workspace/tb/"tb_*.v > "$PROJECT_DIR/.veriflow/tb_checksum"
+echo "[CHECKPOINT] TB checksum saved"
+```
+
+This checksum will be verified in Stage 7 to detect unauthorized testbench modifications.
+
 ### 3f. Journal
 
 ```bash
@@ -550,7 +731,7 @@ For each module in the list (skip top module initially, process it last):
 
 Call Agent with:
 - `subagent_type`: `vf-coder`
-- `prompt`: `CODING_STYLE={CODING_STYLE_PATH} SPEC={PROJECT_DIR}/workspace/docs/spec.json MICRO_ARCH={PROJECT_DIR}/workspace/docs/micro_arch.md MODULE_NAME={module_name} OUTPUT_DIR={PROJECT_DIR}/workspace/rtl. Read CODING_STYLE then Read SPEC then Read MICRO_ARCH then Write {PROJECT_DIR}/workspace/rtl/{module_name}.v. Follow coding_style.md and micro_arch.md strictly.`
+- `prompt`: `CODING_STYLE={CODING_STYLE_PATH} SPEC={PROJECT_DIR}/workspace/docs/spec.json BEHAVIOR_SPEC={PROJECT_DIR}/workspace/docs/behavior_spec.md MICRO_ARCH={PROJECT_DIR}/workspace/docs/micro_arch.md MODULE_NAME={module_name} OUTPUT_DIR={PROJECT_DIR}/workspace/rtl. Read CODING_STYLE then Read SPEC then Read BEHAVIOR_SPEC then Read MICRO_ARCH then Write {PROJECT_DIR}/workspace/rtl/{module_name}.v. Follow coding_style.md, behavior_spec.md, and micro_arch.md strictly.`
 
 Replace all `{...}` placeholders with actual values. Do NOT use shell variables in the prompt — use resolved absolute paths.
 
@@ -570,8 +751,9 @@ After each agent call, check the result. If the agent completed with **0 tool us
 If a module's agent still fails after retry, generate that module inline:
 1. Read `${CLAUDE_SKILL_DIR}/coding_style.md`
 2. Read `$PROJECT_DIR/workspace/docs/spec.json`
-3. Read `$PROJECT_DIR/workspace/docs/micro_arch.md`
-4. Use **Write** to create the failed module's .v file
+3. Read `$PROJECT_DIR/workspace/docs/behavior_spec.md`
+4. Read `$PROJECT_DIR/workspace/docs/micro_arch.md`
+5. Use **Write** to create the failed module's .v file
 
 ### 4b. Hook
 
@@ -647,6 +829,17 @@ Check for (do NOT run EDA tools):
 - Verify clock gating is present if `constraints.power.clock_gating` is true
 - Flag any violations as error-level issues
 
+**F. Functional Completeness**:
+1. Read spec.json — extract each module's `description` and `ports`
+2. For each RTL file in `workspace/rtl/`:
+   - Verify all ports declared in spec.json are present in the Verilog module
+   - Scan for comments or patterns indicating incomplete implementation:
+     - `"simplified"`, `"placeholder"`, `"TODO"`, `"FIXME"`, `"for now"`
+     - `assign` statements that directly connect input to output without processing
+     - Modules shorter than 20 lines (likely stubs)
+   - For algorithm-heavy modules: verify the module contains FSM or sequential logic proportional to the algorithm complexity described in micro_arch.md
+3. Flag any module where the implementation obviously doesn't match the spec description as **error-level**
+
 ### 5c. Write static_report.json
 
 Use **Write** tool to write `$PROJECT_DIR/workspace/docs/static_report.json`.
@@ -673,6 +866,7 @@ Format:
   "cdc_risks": [],
   "latch_risks": [],
   "constraint_violations": [],
+  "functional_gaps": [],
   "recommendation": "<single most important suggestion>"
 }
 ```
@@ -794,6 +988,10 @@ If sim fails → go to Error Recovery below. Still complete self-check.
 
 ```bash
 test -f "$PROJECT_DIR/workspace/sim/tb.vvp" || { echo "[HOOK] FAIL — tb.vvp not found"; exit 1; }
+# TB integrity check — detect unauthorized modifications
+if [ -f "$PROJECT_DIR/.veriflow/tb_checksum" ]; then
+    md5sum -c "$PROJECT_DIR/.veriflow/tb_checksum" >/dev/null 2>&1 || { echo "[HOOK] FAIL — testbench was modified after Stage 3!"; exit 1; }
+fi
 grep -qiE "FAIL|error" "$PROJECT_DIR/logs/sim.log" && { echo "[HOOK] FAIL — simulation has failures, check logs/sim.log"; exit 1; }
 grep -qiE "PASS|All tests passed" "$PROJECT_DIR/logs/sim.log" && echo "[HOOK] PASS" || echo "[HOOK] FAIL — no PASS found in sim output"
 ```
@@ -835,10 +1033,12 @@ ls -la "$PROJECT_DIR/workspace/rtl/"*.v
 ### 8c. Run synthesis
 
 ```bash
-cd "$PROJECT_DIR" && mkdir -p workspace/synth && source .veriflow/eda_env.sh && yosys -p "read_verilog workspace/rtl/*.v; synth -top {top_module}; stat" 2>&1 | tee workspace/synth/synth_report.txt
+cd "$PROJECT_DIR" && mkdir -p workspace/synth && source .veriflow/eda_env.sh
+RTL_FILES=$(ls workspace/rtl/*.v | xargs printf 'read_verilog %s; ')
+yosys -p "${RTL_FILES} synth -top {top_module}; stat" 2>&1 | tee workspace/synth/synth_report.txt
 ```
 
-Replace `{top_module}` with `design_name` from spec.json.
+Replace `{top_module}` with `design_name` from spec.json. Using bash `ls` expansion avoids yosys glob issues on Windows.
 
 ### 8d. Analyze report
 
@@ -905,6 +1105,9 @@ Fix rules:
 - **RTL fixes**: Do NOT modify any file in `workspace/tb/`
 - **TB bugs**: If simulation fails due to a testbench bug (not an RTL bug), you MAY fix the testbench. But do NOT weaken assertions — only fix TB infrastructure (signal types, timing, connectivity)
 - Do NOT add new functionality or remove existing functionality
+- **Functional integrity**: A fix must NOT remove, disable, or stub out existing functionality. Replacing a working module with a simplified version that loses functionality is NOT allowed. If the fix is too complex, STOP and ask the user.
+- **No testbench modifications**: Do NOT modify any file in `workspace/tb/` during error recovery. If the testbench appears to have a bug, note it in the journal and ask the user — do NOT fix it yourself.
+- **Verify fix scope**: After fixing, re-read the modified file and confirm: (1) all ports are still present, (2) no functionality was removed, (3) the module still matches its description in spec.json.
 - Make minimal changes
 - Fix one error at a time
 - **Debug budget**: If you spend more than 3 fix-and-retry cycles on the same error without progress, STOP and ask the user for help. Do NOT go in circles

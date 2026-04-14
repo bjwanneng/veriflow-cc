@@ -19,7 +19,7 @@ User types /vf-pipeline <project_dir>
      ↓
 Main Claude (skill prompt injected)
      │
-     ├→ Stage 1: architect   (inline) → spec.json
+     ├→ Stage 1: architect   (inline) → spec.json + behavior_spec.md
      ├→ Stage 2: microarch   (inline) → micro_arch.md
      ├→ Stage 3: timing      (inline) → timing_model.yaml + testbench
      ├→ Stage 4: coder       (vf-coder sub-agent) → rtl/*.v
@@ -84,10 +84,10 @@ architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
 
 | Stage | Type | Input | Output |
 |-------|------|-------|--------|
-| architect | LLM | requirement.md, constraints.md, design_intent.md, context/ | spec.json |
-| microarch | LLM | spec.json, requirement.md, design_intent.md | micro_arch.md |
+| architect | LLM | requirement.md, constraints.md, design_intent.md, context/ | spec.json + behavior_spec.md |
+| microarch | LLM | spec.json, behavior_spec.md, requirement.md, design_intent.md | micro_arch.md |
 | timing | LLM | spec.json, micro_arch.md | timing_model.yaml, testbench |
-| coder | LLM (sub-agent) | spec + coding_style + micro_arch | rtl/*.v |
+| coder | LLM (sub-agent) | spec + behavior_spec + coding_style + micro_arch | rtl/*.v |
 | skill_d | LLM | rtl/*.v, spec.json | static_report.json |
 | lint | EDA (iverilog) | rtl/*.v | logs/lint.log |
 | sim | EDA (iverilog+vvp) | rtl/*.v, tb/*.v | logs/sim.log |
@@ -99,12 +99,30 @@ architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
 Pipeline stages appear as a todo list in Claude Code's status bar. Current stage shows a spinner, completed stages get checkmarks.
 
 ### Requirements Clarification (Stage 1)
-The pipeline checks a structured clarity checklist in three categories before generating spec.json:
-- **Functional**: module behavior, protocols, data format, FSM, clock domains
-- **Constraints**: clock frequency, target device, area/power budget, IO standards
-- **Design intent**: architecture style, module partitioning, interface preferences, IP reuse
+The pipeline checks a structured clarity checklist in **seven categories** before generating spec.json and behavior_spec.md:
+- **A. Functional**: module behavior, protocols, data format, FSM, clock domains
+- **B. Constraints**: clock frequency, target device, area/power budget, IO standards
+- **C. Design intent**: architecture style, module partitioning, interface preferences, IP reuse
+- **D. Algorithm & Protocol**: algorithm references, pseudocode, key formulas, test vectors
+- **E. Timing Completeness**: cycle-level behavior, latency, throughput, interface timing, reset recovery, backpressure
+- **F. Domain Knowledge**: design domain, standard references, prerequisite concepts, test vectors
+- **G. Information Completeness**: implicit assumptions, missing scenarios (meta-check)
 
-If any item is ambiguous (either not in the input files or unclear), it asks the user one question at a time using AskUserQuestion.
+Each item must be explicitly confirmed — no section-level skip. If any item is ambiguous, the pipeline asks the user one question at a time using AskUserQuestion.
+
+### Behavior Specification (behavior_spec.md)
+Stage 1 now produces a second artifact: `behavior_spec.md`. This document captures behavioral requirements that downstream stages (especially the coder) need:
+- **Domain Knowledge**: background, key concepts, references, glossary
+- **Cycle-Accurate Behavior**: per-module, per-cycle operation tables
+- **FSM Specification**: states, transitions, initial state, outputs per state
+- **Register Requirements**: name, width, reset value, purpose
+- **Timing Contracts**: latency, throughput, backpressure, reset recovery
+- **Algorithm Pseudocode**: verbatim from user input
+- **Protocol Details**: signal sequence, setup/hold, error recovery
+- **Cross-Module Timing**: pipeline stages, module-to-module latency, critical path
+
+### Readiness Check Gate
+Before proceeding past Stage 1, a **readiness_check** validates both spec.json and behavior_spec.md for completeness. If any check fails, the pipeline stops and asks the user for the missing information. This ensures the pipeline never proceeds with incomplete requirements.
 
 ### Persistent EDA Environment
 EDA tool paths (iverilog, vvp, yosys) are discovered once in Step 0 and saved to `.veriflow/eda_env.sh`. Every subsequent EDA command sources this file, avoiding the "PATH doesn't persist between Bash calls" issue.
@@ -141,7 +159,8 @@ my_project/
 │   └── sim.log                  # Simulation output
 └── workspace/
     ├── docs/
-    │   ├── spec.json            # Design specification (includes constraints + design_intent)
+    │   ├── spec.json            # Interface specification (ports, constraints, connectivity)
+	    │   ├── behavior_spec.md     # Behavioral specification (cycle behavior, FSM, timing contracts)
     │   ├── micro_arch.md        # Microarchitecture document
     │   ├── timing_model.yaml    # Timing scenarios
     │   └── static_report.json   # Static analysis report
@@ -167,7 +186,8 @@ veriflow-cc/
 │   └── coding_style.md          # Coding style reference
 ├── install.py                   # Install skill + agent to ~/.claude/
 ├── tests/
-│   └── test_state.py            # State machine tests
+│   ├── test_state.py            # State machine tests
+│   └── test_behavior_spec.py    # behavior_spec.md and readiness check tests
 ├── CLAUDE.md                    # Claude Code project instructions
 └── README.md                    # This file
 ```
@@ -185,6 +205,7 @@ veriflow-cc/
 
 ```bash
 python tests/test_state.py
+python tests/test_behavior_spec.py
 ```
 
 ## Uninstall
