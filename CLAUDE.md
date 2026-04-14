@@ -38,14 +38,63 @@ All non-trivial changes must follow this cycle:
 ## Architecture Notes
 
 - `state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER` and `STAGE_PREREQUISITES` enforce strict execution order.
-- `.claude/skills/pipeline/SKILL.md` — Pipeline orchestration skill (project source), installed to `~/.claude/skills/pipeline/SKILL.md`. Invoked via `/pipeline <project_dir>`.
-- `claude_agents/vf-*.md` — 9 sub-agent definitions (project source), installed to `~/.claude/agents/`.
-- `install.py` — Installs 1 skill + 9 agents to `~/.claude/`.
-- Pipeline flow: Main Claude (skill) → Agent(vf-architect) → Bash Hook verification → next stage.
-- 1-layer nesting: Main Claude calls sub-agents directly, no intermediate pipeline agent.
-- LLM agent results must include a `summary` field for session recovery.
+- `.claude/skills/vf-pipeline/SKILL.md` — Pipeline skill (project source). All 8 stages defined inline. Installed to `~/.claude/skills/vf-pipeline/`. Invoked via `/vf-pipeline <project_dir>`.
+- `.claude/skills/vf-pipeline/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
+- `claude_agents/vf-coder.md` — Only sub-agent (project source). Installed to `~/.claude/agents/`. Handles RTL code generation.
+  - **CRITICAL**: Agent `tools` field MUST be comma-separated capitalized names: `tools: Read, Write, Glob, Grep, Bash`. YAML list syntax causes silent tool permission failure (see GitHub #12392).
+- `install.py` — Installs 1 skill (3 files: SKILL.md, state.py, coding_style.md) + 1 agent to `~/.claude/`.
+- Pipeline flow: Main Claude executes stages 1-3, 5-8 inline. Only Stage 4 (coder) calls vf-coder sub-agent.
+- Error recovery: Main Claude reads errors, fixes RTL, re-runs. 3-retry budget, then asks user.
+- EDA environment: Discovered once in Step 0, saved to `.veriflow/eda_env.sh`, sourced before every EDA command.
+- Logs: `logs/lint.log`, `logs/compile.log`, `logs/sim.log`, `workspace/synth/synth_report.txt`.
+- Sim hook: Checks sim.log for actual PASS/FAIL, not just file existence.
 
 ## File Hygiene
 
 - Put temporary scripts and debug logs in `.claude/scratch/`.
 - Never leave `print()` debugging statements in committed code.
+
+# 🤖 CLAUDE.md - Global Engineering Constitution
+
+<important if="you are a subagent">
+**🚨 SUBAGENT OVERRIDE DIRECTIVE (子 Agent 专属指令)**
+You are an executing subagent. Your primary goal is speed, accuracy, and direct execution.
+1. **Strict Focus**: Execute your assigned micro-task strictly and directly. 
+2. **Action Oriented**: Use tools (Bash, Read, Grep, etc.) immediately to gather context or make changes. Do NOT guess.
+3. **No Yapping**: Do NOT output verbose `/plan`s, thinking steps, or `Session Handoff` summaries unless explicitly asked by the delegating agent.
+4. **Total Context Filter**: Ignore ALL other rules, strategies, and standards in this document. Rely ONLY on the specific tool instructions passed to you in this current task.
+</important>
+
+<important if="you are the main orchestrating agent, NOT a subagent">
+
+## 🧠 Reasoning & Strategy (Thinking Protocol)
+1. **First Principles**: When debugging complex issues (especially hardware timing or race conditions), reason from the physical or protocol layer. Avoid "guess-and-check" fixes.
+2. **Plan-Before-Code**: For any non-trivial task, you MUST output a `/plan` first. It must include:
+   - Goal description.
+   - Atomic sub-tasks.
+   - Potential risks and trade-offs.
+3. **Task Decomposition**: Break large requirements into small, verifiable steps. Complete one before starting the next.
+4. **Context Honesty**: If a requirement is ambiguous or conflicts with existing logic, stop and ask. Do not hallucinate business logic.
+
+## 🛠 Execution Standards
+1. **Tool-First**: Before compiling or simulating, verify the environment (Compiler, Linter, EDA paths).
+2. **Incremental Development**: Follow a "Modify -> Check -> Verify" loop. Run tests/lints after every significant change.
+3. **Filesystem Hygiene**: 
+   - Never clutter the root directory.
+   - Place temporary scripts, logic spikes, or debug logs in `.claude/scratch/`.
+
+## 🧪 Quality & Review (The "Senior" Bar)
+1. **Validation Mindset**: Every line of code should be written with the question: "How will I prove this is correct?"
+2. **Review Criteria**:
+   - **Maintainability**: Are variable names self-explanatory? (e.g., `is_buffer_empty` vs `f1`).
+   - **Efficiency**: Are there redundant registers (FPGA) or memory leaks (Software)?
+   - **Robustness**: Are boundary cases (Reset, Overflow, Null pointers) handled?
+
+## 🔄 State Sync & Handoff
+1. **Sync First**: At the start of a session, check if a `status.md` or `readme_first.md` exists to align on progress.
+2. **Session Handoff**: Before ending a session, provide a summary:
+   - Specific changes made.
+   - The exact file/line where you stopped.
+   - Next steps for the "active memory."
+
+</important>

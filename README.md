@@ -4,34 +4,32 @@
 
 ## What It Is
 
-VeriFlow-CC treats Claude Code as the pipeline brain: the main Claude Code session controls stage transitions, calls sub-agents to execute tasks, and handles errors and rollbacks.
+VeriFlow-CC treats Claude Code as the pipeline brain: the main Claude Code session controls stage transitions, calls a sub-agent for RTL generation, and handles errors and rollbacks.
 
 Differences from the full VeriFlow-Agent:
 - No LangGraph / LangChain / Streamlit
 - No `pip install` required
 - Claude Code itself is the interaction and decision layer
-- State persisted to JSON, recoverable after `/clear`
+- State persisted to JSON, recoverable after session restart
 
 ## Architecture
 
 ```
-User types /pipeline <project_dir>
+User types /vf-pipeline <project_dir>
      ↓
 Main Claude (skill prompt injected)
      │
-     ├→ Agent(vf-architect)  → Bash Hook verify spec.json
-     ├→ Agent(vf-microarch)  → Bash Hook verify micro_arch.md
-     ├→ Agent(vf-timing)     → Bash Hook verify timing_model.yaml + tb_*.v
-     ├→ Agent(vf-coder)      → Bash Hook verify rtl/*.v
-     ├→ Agent(vf-skill-d)    → Bash Hook verify static_report.json
-     ├→ Agent(vf-lint)       → Bash Hook verify iverilog pass
-     ├→ Agent(vf-sim)        → Bash Hook verify simulation pass
-     └→ Agent(vf-synth)      → Bash Hook verify synth_report.txt
-          │
-          └→ Hook fail → Agent(vf-debugger) fix → retry
+     ├→ Stage 1: architect   (inline) → spec.json
+     ├→ Stage 2: microarch   (inline) → micro_arch.md
+     ├→ Stage 3: timing      (inline) → timing_model.yaml + testbench
+     ├→ Stage 4: coder       (vf-coder sub-agent) → rtl/*.v
+     ├→ Stage 5: skill_d     (inline) → static_report.json
+     ├→ Stage 6: lint        (inline, iverilog) → logs/lint.log
+     ├→ Stage 7: sim         (inline, iverilog+vvp) → logs/sim.log
+     └→ Stage 8: synth       (inline, yosys) → workspace/synth/synth_report.txt
 ```
 
-**1-layer nesting**: Main Claude calls sub-agents directly, no intermediate pipeline agent.
+**1-layer nesting**: Only Stage 4 (coder) calls the vf-coder sub-agent. All other stages execute inline in the main session.
 
 ## Quick Start
 
@@ -42,8 +40,10 @@ python install.py
 ```
 
 Installs to `~/.claude/`:
-- `skills/pipeline/SKILL.md` — Pipeline orchestration skill
-- `agents/vf-*.md` — 9 sub-agent definitions
+- `skills/vf-pipeline/SKILL.md` — Pipeline orchestration skill
+- `skills/vf-pipeline/state.py` — State management
+- `skills/vf-pipeline/coding_style.md` — Verilog coding style rules
+- `agents/vf-coder.md` — RTL code generation sub-agent
 
 ### 2. Prepare Project Directory
 
@@ -55,7 +55,7 @@ my_alu/
 ### 3. Run in Claude Code
 
 ```
-/pipeline /path/to/my_alu
+/vf-pipeline /path/to/my_alu
 ```
 
 ## Pipeline Stages
@@ -72,62 +72,89 @@ architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
 | architect | LLM | requirement.md | spec.json |
 | microarch | LLM | spec.json | micro_arch.md |
 | timing | LLM | spec.json, micro_arch.md | timing_model.yaml, testbench |
-| coder | LLM | spec + timing + microarch | rtl/*.v |
-| skill_d | LLM | rtl/*.v | Quality score |
-| lint | EDA | rtl/*.v | Syntax check |
-| sim | EDA | rtl/*.v, tb/*.v | Simulation results |
-| synth | EDA | rtl/*.v | Synthesis report |
+| coder | LLM (sub-agent) | spec + coding_style | rtl/*.v |
+| skill_d | LLM | rtl/*.v | static_report.json |
+| lint | EDA (iverilog) | rtl/*.v | logs/lint.log |
+| sim | EDA (iverilog+vvp) | rtl/*.v, tb/*.v | logs/sim.log |
+| synth | EDA (yosys) | rtl/*.v | workspace/synth/synth_report.txt |
 
-## Error Recovery
+## Key Features
+
+### Status Bar Progress
+Pipeline stages appear as a todo list in Claude Code's status bar. Current stage shows a spinner, completed stages get checkmarks.
+
+### Requirements Clarification (Stage 1)
+The pipeline checks a 9-item clarity checklist before generating spec.json. If any item is ambiguous, it asks the user one question at a time using AskUserQuestion.
+
+### Persistent EDA Environment
+EDA tool paths (iverilog, vvp, yosys) are discovered once in Step 0 and saved to `.veriflow/eda_env.sh`. Every subsequent EDA command sources this file, avoiding the "PATH doesn't persist between Bash calls" issue.
+
+### Structured Logging
+All EDA outputs are saved to log files for post-run analysis:
+- `logs/lint.log` — iverilog syntax check output
+- `logs/compile.log` — compilation output
+- `logs/sim.log` — simulation output
+- `workspace/synth/synth_report.txt` — yosys synthesis report
+
+### Sim Hook Verification
+The simulation hook checks `logs/sim.log` for actual PASS/FAIL strings. It does not pass when simulations had assertion failures (prevents false-positive pipeline completion).
+
+### Error Recovery
+- **3-retry budget**: Stops after 3 failed fix attempts and asks user for help
+- **Testbench rule**: TB infrastructure bugs may be fixed; assertions must not be weakened
+- Rollback: syntax errors → coder, logic errors → microarch, timing errors → timing
+
+## Project Output Structure
 
 ```
-stage fails
-  |-- 1st failure -> debugger fixes -> retry stage
-  |-- 2nd failure -> debugger -> rollback to earlier stage -> re-run
-  +-- 3rd failure -> pause, notify user
+my_project/
+├── requirement.md
+├── .veriflow/
+│   ├── pipeline_state.json      # Pipeline state (resumable)
+│   └── eda_env.sh               # EDA tool paths (auto-generated)
+├── logs/
+│   ├── lint.log                 # iverilog lint output
+│   ├── compile.log              # Compilation output
+│   └── sim.log                  # Simulation output
+└── workspace/
+    ├── docs/
+    │   ├── spec.json            # Design specification
+    │   ├── micro_arch.md        # Microarchitecture document
+    │   ├── timing_model.yaml    # Timing scenarios
+    │   └── static_report.json   # Static analysis report
+    ├── rtl/                     # Generated Verilog files
+    ├── tb/                      # Testbench (generated in Stage 3)
+    ├── sim/                     # Compiled simulation (tb.vvp)
+    └── synth/
+        └── synth_report.txt     # Yosys synthesis report
 ```
 
-Rollback rules: syntax errors → coder, logic errors → microarch, timing errors → timing.
-
-## Session Recovery
-
-After `/clear` or a new session, `/pipeline <project_dir>` automatically restores from `pipeline_state.json`:
-- `stages_completed` — list of completed stages
-- `stage_summaries` — one-line summary per stage
-- `next_stage()` — the next stage to execute
-
-## File Structure
+## File Structure (Source)
 
 ```
 veriflow-cc/
 ├── .claude/
 │   └── skills/
-│       └── pipeline/
-│           └── SKILL.md        # Pipeline orchestration skill (/pipeline)
-├── state.py                    # State management (JSON persistence + order validation)
-├── install.py                  # Install agents + skill to ~/.claude/
-├── claude_agents/              # Sub-agent definitions
-│   ├── vf-architect.md
-│   ├── vf-microarch.md
-│   ├── vf-timing.md
-│   ├── vf-coder.md
-│   ├── vf-skill-d.md
-│   ├── vf-lint.md
-│   ├── vf-sim.md
-│   ├── vf-synth.md
-│   └── vf-debugger.md
+│       └── vf-pipeline/
+│           ├── SKILL.md          # Pipeline orchestration skill
+│           ├── state.py          # State machine (JSON persistence)
+│           └── coding_style.md   # Verilog-2005 coding rules
+├── claude_agents/
+│   ├── vf-coder.md              # RTL code generation sub-agent
+│   └── coding_style.md          # Coding style reference
+├── install.py                   # Install skill + agent to ~/.claude/
 ├── tests/
-│   └── test_state.py           # Tests: ordering, summaries, rollback, persistence
-└── my_project/
-    └── requirement.md          # Sample project
+│   └── test_state.py            # State machine tests
+├── CLAUDE.md                    # Claude Code project instructions
+└── README.md                    # This file
 ```
 
 ## Dependencies
 
-- Python 3.10+ (for state.py only)
+- Python 3.10+ (for state.py only, no pip packages)
 - Claude Code (logged in)
-- `iverilog` / `vvp` (optional, skip sim if unavailable)
-- `yosys` (optional, skip synth if unavailable)
+- `iverilog` / `vvp` (optional, for lint/sim stages)
+- `yosys` (optional, for synth stage)
 
 **No pip install required.**
 
@@ -142,3 +169,27 @@ python tests/test_state.py
 ```bash
 python install.py --uninstall
 ```
+
+## Troubleshooting
+
+### Sub-agent returns "0 tool uses"
+Ensure the agent's `tools` field uses **comma-separated capitalized names**:
+```yaml
+# WRONG — causes silent tool permission failure
+tools:
+  - read
+  - write
+
+# CORRECT
+tools: Read, Write, Glob, Grep, Bash
+```
+See [GitHub Issue #12392](https://github.com/anthropics/claude-code/issues/12392) for details.
+
+### iverilog returns exit code 127
+iverilog needs its internal drivers (`ivlpp.exe`, `ivl.exe`) which live in `lib/ivl/`. The pipeline auto-discovers and saves these paths. Verify with:
+```bash
+source .veriflow/eda_env.sh && iverilog -V
+```
+
+### Simulation passes but pipeline reports FAIL
+The sim hook checks `logs/sim.log` for `FAIL` or `Error` strings. If your testbench prints those words in passing messages, rename them.
