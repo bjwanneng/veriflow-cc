@@ -20,6 +20,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 SKILL_SRC_DIR = PROJECT_DIR / ".claude" / "skills" / "vf-pipeline"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
 SKILL_FILES = ["SKILL.md", "state.py"]
+STAGES_DIR = "stages"
 
 # Source for coding_style.md is in claude_agents/, but installed to skill dir
 CODING_STYLE_SRC = PROJECT_DIR / "claude_agents" / "coding_style.md"
@@ -37,6 +38,15 @@ AGENT_FILES = [
 def main():
     if "--uninstall" in sys.argv:
         removed = 0
+
+        # Remove stage files
+        stages_dst = SKILL_DST_DIR / STAGES_DIR
+        if stages_dst.exists():
+            for f in stages_dst.iterdir():
+                f.unlink()
+                print(f"  Removed stage: {f.name}")
+                removed += 1
+            stages_dst.rmdir()
 
         # Remove skill
         for name in SKILL_FILES + [CODING_STYLE_DST_NAME]:
@@ -106,6 +116,19 @@ def main():
         skill_installed += 1
     else:
         print(f"  [skip]   vf-pipeline/{CODING_STYLE_DST_NAME} not found at {CODING_STYLE_SRC}")
+
+    # 1c. Install stage files
+    stages_src = SKILL_SRC_DIR / STAGES_DIR
+    stages_dst = SKILL_DST_DIR / STAGES_DIR
+    if stages_src.exists():
+        stages_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(stages_src.glob("stage_*.md")):
+            dst = stages_dst / f.name
+            shutil.copy2(f, dst)
+            print(f"  [stage]  vf-pipeline/{STAGES_DIR}/{f.name}  →  {dst}")
+            skill_installed += 1
+    else:
+        print(f"  [skip]   vf-pipeline/{STAGES_DIR}/ not found at {stages_src}")
 
     # 2. Install sub-agents
     AGENTS_DST_DIR.mkdir(parents=True, exist_ok=True)

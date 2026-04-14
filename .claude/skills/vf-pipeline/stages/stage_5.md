@@ -1,0 +1,111 @@
+# Stage 5: skill_d (inline)
+
+**Goal**: Read RTL files, perform quality checks, write static_report.json.
+
+Mark Stage 5 task as **in_progress** using TaskUpdate.
+
+## 5a. Read inputs
+
+Use **Read** tool to read every file in `$PROJECT_DIR/workspace/rtl/*.v` and `$PROJECT_DIR/workspace/docs/spec.json`.
+
+## 5b. Perform checks
+
+Check for (do NOT run EDA tools):
+
+**A. Static Checks**:
+1. `initial` blocks in RTL files
+2. Empty or near-empty files
+3. Missing `endmodule`
+4. Obvious syntax issues
+
+**B. Deep Code Review**:
+1. Latch inference: missing `case`/`if` branches in combinational logic
+2. Combinational loops: feedback paths in combinational logic
+3. Uninitialized registers: registers used before assignment in reset path
+4. Non-synthesizable constructs: `$display`, `#delay` (non-TB), `initial` (non-TB)
+5. Clock domain crossing: multi-clock-domain signals without synchronizers
+
+**C. Logic Depth Estimate**:
+- Each gate/operator = 1 level
+- Multiplier trees = ~log2(width) levels
+- Adder carries = ~log2(width)/2 levels
+- Compare against `critical_path_budget` from spec.json
+
+**D. Resource Estimate**:
+- Each flip-flop = 1 cell
+- Each 2-input logic gate = 0.5 cells
+- Each mux = 1 cell per bit
+- Each adder = 1 cell per bit
+- Compare against `constraints.area.max_cells` (or `max_luts`/`max_ffs` if specified) from spec.json
+
+**E. Constraint Compliance**:
+- Verify logic depth fits within `constraints.timing.critical_path_ns`
+- Verify estimated resources fit within `constraints.area` limits
+- Verify clock gating is present if `constraints.power.clock_gating` is true
+- Flag any violations as error-level issues
+
+**F. Functional Completeness**:
+1. Read spec.json — extract each module's `description` and `ports`
+2. For each RTL file in `workspace/rtl/`:
+   - Verify all ports declared in spec.json are present in the Verilog module
+   - Scan for comments or patterns indicating incomplete implementation:
+     - `"simplified"`, `"placeholder"`, `"TODO"`, `"FIXME"`, `"for now"`
+     - `assign` statements that directly connect input to output without processing
+     - Modules shorter than 20 lines (likely stubs)
+   - For algorithm-heavy modules: verify the module contains FSM or sequential logic proportional to the algorithm complexity described in micro_arch.md
+3. Flag any module where the implementation obviously doesn't match the spec description as **error-level**
+
+## 5c. Write static_report.json
+
+Use **Write** tool to write `$PROJECT_DIR/workspace/docs/static_report.json`.
+
+Format:
+```json
+{
+  "design": "<design_name>",
+  "analyzed_files": ["<file1.v>", "<file2.v>"],
+  "logic_depth_estimate": {
+    "max_levels": 0,
+    "budget": 0,
+    "status": "OK|OVER_BUDGET|UNKNOWN",
+    "worst_path": "<description>"
+  },
+  "resource_estimate": {
+    "cells": 0,
+    "luts": 0,
+    "ffs": 0,
+    "brams": 0,
+    "status": "OK|OVER_BUDGET|UNKNOWN",
+    "budget": {}
+  },
+  "cdc_risks": [],
+  "latch_risks": [],
+  "constraint_violations": [],
+  "functional_gaps": [],
+  "recommendation": "<single most important suggestion>"
+}
+```
+
+Quality score (0-1). Pass threshold: 0.5. Auto-fail if any error-level issues exist. Severity per issue: error / warning / info.
+
+## 5d. Hook
+
+```bash
+test -f "$PROJECT_DIR/workspace/docs/static_report.json" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+```
+
+If FAIL → rewrite immediately.
+
+## 5e. Save state
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "skill_d"
+```
+
+Mark Stage 5 task as **completed** using TaskUpdate.
+
+## 5f. Journal
+
+```bash
+printf "\n## Stage: skill_d\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/static_report.json\n**Notes**: Static analysis complete.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
