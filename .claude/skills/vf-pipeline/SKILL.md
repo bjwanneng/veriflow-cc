@@ -144,19 +144,23 @@ Use **Read** tool:
 - `$PROJECT_DIR/requirement.md`
 - Any `$PROJECT_DIR/context/*.md` files (use Bash `ls` to check first)
 
-### 1b. Clarify requirements (if needed)
+### 1b. Clarify requirements (MUST do before generating spec)
 
-After reading the requirements, check for ambiguities or missing details. If any of the following are unclear, ask the user **one question at a time** using AskUserQuestion:
+After reading the requirements, systematically check for missing or ambiguous information. You **MUST** ask the user using AskUserQuestion **one question at a time** for each unclear item below. Do NOT proceed to 1c until all questions are resolved.
 
-- Module functionality or behavior
-- Interface protocol details (handshake, bus width, etc.)
-- Clock frequency or timing constraints
-- Reset strategy
-- Data processing specifics (bit width, encoding, etc.)
-- FSM states or transitions
-- Target platform or resource constraints
+Required clarity checklist (ask about each that is unclear):
 
-If all requirements are clear, proceed directly to 1c. Do NOT ask unnecessary questions.
+- **Module functionality**: What exactly does the module do? Any special modes or edge cases?
+- **Interface protocol**: Handshake type (valid/ready? pulse? level?), bus widths, signal directions
+- **Clock frequency**: Target clock frequency in MHz
+- **Reset strategy**: Synchronous or asynchronous? Active-high or active-low?
+- **Data format**: Bit width, byte order (MSB/LSB first), encoding
+- **FSM behavior**: States, transitions, error handling
+- **Target platform**: FPGA family, ASIC node, or technology-agnostic?
+- **Area/speed tradeoff**: Iterative (small, slow) vs pipelined (big, fast)?
+- **Clock domain crossings**: Multiple clocks? Need synchronizers?
+
+**Rule**: If the requirement.md already answers all of these clearly, skip directly to 1c. If even one is ambiguous, ask about it. Ask ONE question at a time, wait for the user's answer, then ask the next if needed.
 
 ### 1c. Write spec.json
 
@@ -641,8 +645,12 @@ If sim fails → go to Error Recovery below. Still complete self-check.
 ### 7e. Hook
 
 ```bash
-test -f "$PROJECT_DIR/workspace/sim/tb.vvp" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+test -f "$PROJECT_DIR/workspace/sim/tb.vvp" || { echo "[HOOK] FAIL — tb.vvp not found"; exit 1; }
+grep -qiE "FAIL|error" "$PROJECT_DIR/logs/sim.log" && { echo "[HOOK] FAIL — simulation has failures, check logs/sim.log"; exit 1; }
+grep -qiE "PASS|All tests passed" "$PROJECT_DIR/logs/sim.log" && echo "[HOOK] PASS" || echo "[HOOK] FAIL — no PASS found in sim output"
 ```
+
+If FAIL → go to Error Recovery. Do NOT mark sim as completed.
 
 ### 7f. Save state
 
