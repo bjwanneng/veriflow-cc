@@ -76,6 +76,22 @@ fi
 
 If resuming, check `stages_completed` in pipeline_state.json and skip those stages.
 
+### 0a. Initialize stage journal
+
+Use Bash to create or resume `workspace/docs/stage_journal.md`:
+
+```bash
+if [ -f "$PROJECT_DIR/workspace/docs/stage_journal.md" ]; then
+    printf "\n---\n\n**Session resumed** at $(date -Iseconds)\n\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+else
+    cat > "$PROJECT_DIR/workspace/docs/stage_journal.md" << 'EOF'
+# VeriFlow Pipeline Stage Journal
+
+This file records the progress, outputs, and key decisions for each pipeline stage.
+EOF
+fi
+```
+
 ### 0b. Create pipeline task list (status bar progress)
 
 Use **TaskCreate** to create one task per pipeline stage. Call all 8 in sequence:
@@ -348,6 +364,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "architect"
 
 Mark Stage 1 task as **completed** using TaskUpdate.
 
+### 1f. Journal
+
+```bash
+printf "\n## Stage: architect\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/spec.json\n**Notes**: Specification generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
+
 ---
 
 ## Stage 2: microarch (inline)
@@ -401,6 +423,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "microarch"
 ```
 
 Mark Stage 2 task as **completed** using TaskUpdate.
+
+### 2e. Journal
+
+```bash
+printf "\n## Stage: microarch\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/micro_arch.md\n**Notes**: Microarchitecture documented.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
 
 ---
 
@@ -484,6 +512,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "timing"
 
 Mark Stage 3 task as **completed** using TaskUpdate.
 
+### 3f. Journal
+
+```bash
+printf "\n## Stage: timing\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/timing_model.yaml, workspace/tb/tb_*.v\n**Notes**: Timing model and testbench generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
+
 ---
 
 ## Stage 4: coder (sub-agent per module)
@@ -558,6 +592,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "coder"
 ```
 
 Mark Stage 4 task as **completed** using TaskUpdate.
+
+### 4d. Journal
+
+```bash
+printf "\n## Stage: coder\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/rtl/*.v\n**Notes**: RTL modules generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
 
 ---
 
@@ -655,6 +695,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "skill_d"
 
 Mark Stage 5 task as **completed** using TaskUpdate.
 
+### 5f. Journal
+
+```bash
+printf "\n## Stage: skill_d\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/static_report.json\n**Notes**: Static analysis complete.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
+
 ---
 
 ## Stage 6: lint (inline)
@@ -700,6 +746,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint"
 ```
 
 Mark Stage 6 task as **completed** using TaskUpdate.
+
+### 6f. Journal
+
+```bash
+printf "\n## Stage: lint\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: logs/lint.log\n**Notes**: Syntax check passed.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
 
 ---
 
@@ -756,6 +808,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "sim"
 
 Mark Stage 7 task as **completed** using TaskUpdate.
 
+### 7g. Journal
+
+```bash
+printf "\n## Stage: sim\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/sim/tb.vvp, logs/sim.log\n**Notes**: Simulation passed.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
+
 ---
 
 ## Stage 8: synth (inline)
@@ -805,6 +863,12 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "synth"
 
 Mark Stage 8 task as **completed** using TaskUpdate.
 
+### 8g. Journal
+
+```bash
+printf "\n## Stage: synth\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/synth/synth_report.txt\n**Notes**: Synthesis complete.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
+
 ---
 
 ## Error Recovery
@@ -853,6 +917,16 @@ If the fix changes architectural behavior (FSM states, timing parameters, sampli
 - **Logic fix** → update `workspace/docs/micro_arch.md` to match the actual RTL behavior
 - **Timing fix** → update `workspace/docs/timing_model.yaml` if scenarios/assertions are affected
 - Always update `micro_arch.md` if FSM states, datapath, or control logic changed
+
+### Step 5: Log recovery to journal
+
+After each fix attempt, append a recovery entry to `stage_journal.md`:
+
+```bash
+printf "\n### Recovery: <stage_name>\n**Timestamp**: $(date -Iseconds)\n**Attempt**: <attempt_number>\n**Error type**: <syntax|logic|timing>\n**Fix summary**: <brief description>\n**Result**: <PASS|FAIL|PENDING>\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+```
+
+Replace placeholders with actual values. Update the result after verifying the fix.
 
 ### Retry Policy
 
