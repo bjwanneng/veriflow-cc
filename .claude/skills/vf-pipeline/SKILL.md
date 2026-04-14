@@ -435,7 +435,7 @@ For each module in the list (skip top module initially, process it last):
 
 Call Agent with:
 - `subagent_type`: `vf-coder`
-- `prompt`: `CODING_STYLE={CODING_STYLE_PATH} SPEC={PROJECT_DIR}/workspace/docs/spec.json MODULE_NAME={module_name} OUTPUT_DIR={PROJECT_DIR}/workspace/rtl. Read CODING_STYLE then Read SPEC then Write {PROJECT_DIR}/workspace/rtl/{module_name}.v. Follow coding_style.md strictly.`
+- `prompt`: `CODING_STYLE={CODING_STYLE_PATH} SPEC={PROJECT_DIR}/workspace/docs/spec.json MICRO_ARCH={PROJECT_DIR}/workspace/docs/micro_arch.md MODULE_NAME={module_name} OUTPUT_DIR={PROJECT_DIR}/workspace/rtl. Read CODING_STYLE then Read SPEC then Read MICRO_ARCH then Write {PROJECT_DIR}/workspace/rtl/{module_name}.v. Follow coding_style.md and micro_arch.md strictly.`
 
 Replace all `{...}` placeholders with actual values. Do NOT use shell variables in the prompt — use resolved absolute paths.
 
@@ -455,7 +455,8 @@ After each agent call, check the result. If the agent completed with **0 tool us
 If a module's agent still fails after retry, generate that module inline:
 1. Read `${CLAUDE_SKILL_DIR}/coding_style.md`
 2. Read `$PROJECT_DIR/workspace/docs/spec.json`
-3. Use **Write** to create the failed module's .v file
+3. Read `$PROJECT_DIR/workspace/docs/micro_arch.md`
+4. Use **Write** to create the failed module's .v file
 
 ### 4b. Hook
 
