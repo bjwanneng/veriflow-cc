@@ -22,6 +22,13 @@ PROJECT_DIR="$ARGUMENTS"
 ls -la "$PROJECT_DIR/requirement.md" || { echo "ERROR: requirement.md not found"; exit 1; }
 cd "$PROJECT_DIR" && mkdir -p workspace/docs workspace/rtl workspace/tb workspace/sim workspace/synth .veriflow logs
 
+# Report available input files
+echo "[INPUT] requirement.md: $(test -f requirement.md && echo YES || echo NO)"
+echo "[INPUT] constraints.md: $(test -f constraints.md && echo YES || echo NO)"
+echo "[INPUT] design_intent.md: $(test -f design_intent.md && echo YES || echo NO)"
+echo "[INPUT] context/: $(ls context/*.md 2>/dev/null | wc -l) file(s)"
+ls context/*.md 2>/dev/null || true
+
 # Discover Python
 PYTHON_EXE=$(which python3 2>/dev/null || which python 2>/dev/null || true)
 if [ -z "$PYTHON_EXE" ]; then
@@ -134,33 +141,50 @@ Replace `STAGE_NAME` with: architect, microarch, timing, coder, skill_d, lint, s
 
 ## Stage 1: architect (inline)
 
-**Goal**: Read requirement.md, generate spec.json.
+**Goal**: Read all input files, generate spec.json.
 
 Mark Stage 1 task as **in_progress** using TaskUpdate.
 
 ### 1a. Read inputs
 
-Use **Read** tool:
-- `$PROJECT_DIR/requirement.md`
-- Any `$PROJECT_DIR/context/*.md` files (use Bash `ls` to check first)
+Use **Read** tool on every available input file:
+- `$PROJECT_DIR/requirement.md` (required — functional requirements)
+- `$PROJECT_DIR/constraints.md` (optional — timing, area, power, IO constraints)
+- `$PROJECT_DIR/design_intent.md` (optional — preliminary architecture, IP reuse, design decisions)
+- Any `$PROJECT_DIR/context/*.md` files (optional — reference materials)
+
+Use Bash `ls` to check which optional files exist before reading.
 
 ### 1b. Clarify requirements (MUST do before generating spec)
 
-After reading the requirements, systematically check for missing or ambiguous information. You **MUST** ask the user using AskUserQuestion **one question at a time** for each unclear item below. Do NOT proceed to 1c until all questions are resolved.
+After reading all input files, systematically check for missing or ambiguous information. You **MUST** ask the user using AskUserQuestion **one question at a time** for each unclear item below. Do NOT proceed to 1c until all questions are resolved.
 
-Required clarity checklist (ask about each that is unclear):
+#### A. Functional clarity (from requirement.md)
 
 - **Module functionality**: What exactly does the module do? Any special modes or edge cases?
 - **Interface protocol**: Handshake type (valid/ready? pulse? level?), bus widths, signal directions
-- **Clock frequency**: Target clock frequency in MHz
-- **Reset strategy**: Synchronous or asynchronous? Active-high or active-low?
 - **Data format**: Bit width, byte order (MSB/LSB first), encoding
 - **FSM behavior**: States, transitions, error handling
-- **Target platform**: FPGA family, ASIC node, or technology-agnostic?
-- **Area/speed tradeoff**: Iterative (small, slow) vs pipelined (big, fast)?
 - **Clock domain crossings**: Multiple clocks? Need synchronizers?
 
-**Rule**: If the requirement.md already answers all of these clearly, skip directly to 1c. If even one is ambiguous, ask about it. Ask ONE question at a time, wait for the user's answer, then ask the next if needed.
+#### B. Constraint clarity (from constraints.md — ask if missing or incomplete)
+
+- **Clock frequency**: Target clock frequency in MHz
+- **Target platform**: FPGA family/part number, ASIC node, or technology-agnostic?
+- **Area budget**: Maximum LUTs, FFs, BRAMs (FPGA) or gate count (ASIC)
+- **Power budget**: Power envelope in mW
+- **Reset strategy**: Synchronous or asynchronous? Active-high or active-low?
+- **IO standards**: IO voltage levels, external interface specifications
+
+#### C. Design intent clarity (from design_intent.md — ask if missing or incomplete)
+
+- **Architecture style**: Pipelined (fast, large) vs iterative (small, slow) vs folded?
+- **Module partitioning**: Any preferred submodule breakdown or hierarchy?
+- **Interface preferences**: Internal handshake protocol (valid/ready, pulse, register-based)?
+- **IP reuse**: Any existing modules or IPs to integrate?
+- **Key design decisions**: Algorithm choices, memory strategy, error handling approach?
+
+**Rule**: If the provided files already answer all items in a section clearly, skip that section entirely. If even one item within a section is ambiguous, ask about it. Ask ONE question at a time, wait for the user's answer, then ask the next if needed.
 
 ### 1c. Write spec.json
 
@@ -175,14 +199,60 @@ Must follow this exact structure:
   "target_frequency_mhz": 200,
   "data_width": 32,
   "byte_order": "MSB_FIRST",
-  "target_kpis": {
-    "frequency_mhz": 200,
-    "max_cells": 5000,
-    "power_mw": 100
+  "constraints": {
+    "timing": {
+      "target_frequency_mhz": 200,
+      "critical_path_ns": 5.0,
+      "jitter_ns": 0.1,
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "frequency_mhz": 200,
+          "source": "external"
+        }
+      ]
+    },
+    "area": {
+      "target_device": "XC7A35T",
+      "target_device_family": "Artix-7",
+      "max_luts": 8000,
+      "max_ffs": 5000,
+      "max_brams": 16,
+      "max_cells": 5000
+    },
+    "power": {
+      "budget_mw": 200,
+      "clock_gating": true
+    },
+    "io": {
+      "standard": "LVCMOS33",
+      "external_interfaces": [
+        {
+          "name": "uart",
+          "type": "UART",
+          "params": "115200 baud, 8N1"
+        }
+      ]
+    },
+    "verification": {
+      "coverage_target_pct": 95,
+      "formal_verification": false
+    }
   },
-  "pipeline_stages": 2,
+  "design_intent": {
+    "architecture_style": "iterative",
+    "pipeline_stages": 2,
+    "resource_strategy": "distributed_ram",
+    "interface_preferences": {
+      "internal": "valid/ready",
+      "register": "apb-like"
+    },
+    "ip_reuse": [],
+    "key_decisions": [
+      "Decision and rationale"
+    ]
+  },
   "critical_path_budget": 50,
-  "resource_strategy": "distributed_ram",
   "modules": [
     {
       "module_name": "module_name",
@@ -240,7 +310,8 @@ Must follow this exact structure:
 Constraints:
 - One module MUST have `"module_type": "top"`
 - Every module must have complete port definitions
-- `target_kpis` is REQUIRED
+- `constraints` block is REQUIRED — populate from constraints.md or from clarification answers
+- `design_intent` block is REQUIRED — populate from design_intent.md or from clarification answers
 - `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1)
 - `resource_strategy` must be `"distributed_ram"` or `"block_ram"`
 - Do NOT generate any Verilog files
@@ -254,6 +325,10 @@ After writing spec.json, verify these calculations:
 2. **Clock divider accuracy**: If the design involves frequency division (baud rate, PWM, timer), calculate the actual achieved frequency vs target. Error formula: `error_pct = abs(actual - target) / target * 100`. If error > 2%, add a note to the spec and suggest alternatives (fractional accumulator, different divisor).
 
 3. **Latency sanity**: Verify `latency_cycles` in `data_flow_sequences` is consistent with pipeline_stages and module connectivity.
+
+4. **Constraint consistency**: Verify `constraints.timing.target_frequency_mhz` matches `target_frequency_mhz` at the top level. Verify `constraints.area.max_cells` is consistent with the sum of module complexities. Verify `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1).
+
+5. **Resource feasibility**: If `constraints.area` specifies a target device, verify the combined resource estimate (LUTs, FFs, BRAMs) fits within device limits.
 
 If any check fails, fix spec.json immediately.
 
@@ -277,7 +352,7 @@ Mark Stage 1 task as **completed** using TaskUpdate.
 
 ## Stage 2: microarch (inline)
 
-**Goal**: Read spec.json + requirement.md, generate micro_arch.md.
+**Goal**: Read spec.json + requirement.md + design_intent.md, generate micro_arch.md.
 
 Mark Stage 2 task as **in_progress** using TaskUpdate.
 
@@ -286,6 +361,8 @@ Mark Stage 2 task as **in_progress** using TaskUpdate.
 Use **Read** tool:
 - `$PROJECT_DIR/workspace/docs/spec.json`
 - `$PROJECT_DIR/requirement.md`
+- `$PROJECT_DIR/design_intent.md` (if exists — preliminary architecture ideas)
+- `$PROJECT_DIR/constraints.md` (if exists — for timing-driven partitioning)
 
 ### 2b. Write micro_arch.md
 
@@ -293,17 +370,21 @@ Use **Write** tool to write `$PROJECT_DIR/workspace/docs/micro_arch.md`.
 
 Must contain these sections:
 
-- **Module partitioning**: top module and submodule list with responsibilities
+- **Module partitioning**: top module and submodule list with responsibilities — MUST align with `design_intent.ip_reuse` and `design_intent.interface_preferences` if provided
 - **Datapath**: key data flow descriptions
 - **Control logic**: FSM state diagram (if any) or control signal descriptions
-- **Interface protocol**: inter-module handshake/communication protocols
-- **Key design decisions**: rationale for partitioning, trade-off explanations
+- **Interface protocol**: inter-module handshake/communication protocols — MUST align with `design_intent.interface_preferences` if provided
+- **Timing closure plan**: critical path identification and mitigation strategies referencing `constraints.timing` if provided
+- **Resource plan**: estimated resource usage per module referencing `constraints.area` if provided
+- **Key design decisions**: rationale for partitioning, trade-off explanations — MUST reference `design_intent.key_decisions` if provided
 
 Guidelines:
 - Each submodule should have a single responsibility
 - Clearly define inter-module interfaces (signal name, width, protocol)
 - If FSMs exist, list all states and transition conditions
 - Annotate critical paths and timing constraints
+- If design_intent.md was provided, the micro_arch MUST respect the stated preferences unless they conflict with constraints (in which case, document the override and rationale)
+- If ip_reuse lists existing modules, include them in the module partitioning and define their interfaces
 
 ### 2c. Hook
 
@@ -518,7 +599,13 @@ Check for (do NOT run EDA tools):
 - Each 2-input logic gate = 0.5 cells
 - Each mux = 1 cell per bit
 - Each adder = 1 cell per bit
-- Compare against `max_cells` from spec.json `target_kpis`
+- Compare against `constraints.area.max_cells` (or `max_luts`/`max_ffs` if specified) from spec.json
+
+**E. Constraint Compliance**:
+- Verify logic depth fits within `constraints.timing.critical_path_ns`
+- Verify estimated resources fit within `constraints.area` limits
+- Verify clock gating is present if `constraints.power.clock_gating` is true
+- Flag any violations as error-level issues
 
 ### 5c. Write static_report.json
 
@@ -535,9 +622,17 @@ Format:
     "status": "OK|OVER_BUDGET|UNKNOWN",
     "worst_path": "<description>"
   },
+  "resource_estimate": {
+    "cells": 0,
+    "luts": 0,
+    "ffs": 0,
+    "brams": 0,
+    "status": "OK|OVER_BUDGET|UNKNOWN",
+    "budget": {}
+  },
   "cdc_risks": [],
   "latch_risks": [],
-  "cell_estimate": 0,
+  "constraint_violations": [],
   "recommendation": "<single most important suggestion>"
 }
 ```

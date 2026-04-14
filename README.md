@@ -49,8 +49,23 @@ Installs to `~/.claude/`:
 
 ```
 my_alu/
-└── requirement.md    # Write design requirements
+├── requirement.md        # Functional requirements (required)
+├── constraints.md        # Design constraints (optional)
+├── design_intent.md      # Preliminary design ideas (optional)
+└── context/              # Reference materials (optional)
+    └── reference.md
 ```
+
+**Input files**:
+
+| File | Required | Description |
+|------|----------|-------------|
+| `requirement.md` | Yes | Functional requirements: what the design does |
+| `constraints.md` | No | Timing, area, power, IO constraints |
+| `design_intent.md` | No | Architecture preferences, IP reuse, design decisions |
+| `context/*.md` | No | Reference materials, IP docs, datasheets |
+
+If optional files are missing, the pipeline asks targeted clarification questions during Stage 1.
 
 ### 3. Run in Claude Code
 
@@ -69,11 +84,11 @@ architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
 
 | Stage | Type | Input | Output |
 |-------|------|-------|--------|
-| architect | LLM | requirement.md | spec.json |
-| microarch | LLM | spec.json | micro_arch.md |
+| architect | LLM | requirement.md, constraints.md, design_intent.md, context/ | spec.json |
+| microarch | LLM | spec.json, requirement.md, design_intent.md | micro_arch.md |
 | timing | LLM | spec.json, micro_arch.md | timing_model.yaml, testbench |
-| coder | LLM (sub-agent) | spec + coding_style | rtl/*.v |
-| skill_d | LLM | rtl/*.v | static_report.json |
+| coder | LLM (sub-agent) | spec + coding_style + micro_arch | rtl/*.v |
+| skill_d | LLM | rtl/*.v, spec.json | static_report.json |
 | lint | EDA (iverilog) | rtl/*.v | logs/lint.log |
 | sim | EDA (iverilog+vvp) | rtl/*.v, tb/*.v | logs/sim.log |
 | synth | EDA (yosys) | rtl/*.v | workspace/synth/synth_report.txt |
@@ -84,7 +99,12 @@ architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
 Pipeline stages appear as a todo list in Claude Code's status bar. Current stage shows a spinner, completed stages get checkmarks.
 
 ### Requirements Clarification (Stage 1)
-The pipeline checks a 9-item clarity checklist before generating spec.json. If any item is ambiguous, it asks the user one question at a time using AskUserQuestion.
+The pipeline checks a structured clarity checklist in three categories before generating spec.json:
+- **Functional**: module behavior, protocols, data format, FSM, clock domains
+- **Constraints**: clock frequency, target device, area/power budget, IO standards
+- **Design intent**: architecture style, module partitioning, interface preferences, IP reuse
+
+If any item is ambiguous (either not in the input files or unclear), it asks the user one question at a time using AskUserQuestion.
 
 ### Persistent EDA Environment
 EDA tool paths (iverilog, vvp, yosys) are discovered once in Step 0 and saved to `.veriflow/eda_env.sh`. Every subsequent EDA command sources this file, avoiding the "PATH doesn't persist between Bash calls" issue.
@@ -108,7 +128,10 @@ The simulation hook checks `logs/sim.log` for actual PASS/FAIL strings. It does 
 
 ```
 my_project/
-├── requirement.md
+├── requirement.md               # Functional requirements (required)
+├── constraints.md               # Timing, area, power, IO constraints (optional)
+├── design_intent.md             # Architecture preferences, IP reuse (optional)
+├── context/                     # Reference materials (optional)
 ├── .veriflow/
 │   ├── pipeline_state.json      # Pipeline state (resumable)
 │   └── eda_env.sh               # EDA tool paths (auto-generated)
@@ -118,7 +141,7 @@ my_project/
 │   └── sim.log                  # Simulation output
 └── workspace/
     ├── docs/
-    │   ├── spec.json            # Design specification
+    │   ├── spec.json            # Design specification (includes constraints + design_intent)
     │   ├── micro_arch.md        # Microarchitecture document
     │   ├── timing_model.yaml    # Timing scenarios
     │   └── static_report.json   # Static analysis report
