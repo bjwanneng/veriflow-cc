@@ -1,0 +1,47 @@
+{
+  "design_name": "led_blinker",
+  "description": "Simple LED blinker",
+  "target_frequency_mhz": 100,
+  "data_width": 8,
+  "byte_order": "MSB_FIRST",
+  "target_kpis": {
+    "frequency_mhz": 100,
+    "max_cells": 100,
+    "power_mw": 50
+  },
+  "pipeline_stages": 1,
+  "critical_path_budget": 100,
+  "resource_strategy": "distributed_ram",
+  "modules": [
+    {
+      "module_name": "led_blinker",
+      "description": "Top module - blinks an LED",
+      "module_type": "top",
+      "hierarchy_level": 0,
+      "parent": null,
+      "submodules": [],
+      "clock_domains": [
+        {
+          "name": "clk",
+          "clock_port": "clk",
+          "reset_port": "rst_n",
+          "frequency_mhz": 100,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock"},
+        {"name": "rst_n", "direction": "input", "width": 1, "protocol": "reset", "description": "Active-low reset"},
+        {"name": "led_o", "direction": "output", "width": 1, "protocol": "data", "description": "LED output"}
+      ],
+      "fsm_spec": null,
+      "parameters": [
+        {"name": "BLINK_COUNT", "default_value": 25000000, "description": "Counter limit for 0.5s blink at 50MHz"}
+      ]
+    }
+  ],
+  "module_connectivity": [],
+  "data_flow_sequences": [
+    {"name": "blink", "steps": ["counter overflow -> toggle led"], "latency_cycles": 1}
+  ]
+}
