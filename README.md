@@ -243,3 +243,7 @@ The sim hook checks `logs/sim.log` for `FAIL` or `Error` strings. If your testbe
   <img src="images/wechat_ai_verilog.jpg" width="300" alt="微信二维码">
 </p>
 
+#Please add the wechat 
+<p align="center">
+  <img src="images/Weixin-laozhang.jpg" width="300" alt="微信二维码">
+</p>
