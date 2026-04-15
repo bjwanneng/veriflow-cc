@@ -239,5 +239,7 @@ source .veriflow/eda_env.sh && iverilog -V
 The sim hook checks `logs/sim.log` for `FAIL` or `Error` strings. If your testbench prints those words in passing messages, rename them.
 
 #Please add the wechat group
-![微信二维码](images/wechat_ai_verilog.jpg)
+<p align="center">
+  <img src="images/wechat_ai_verilog.jpg" width="300" alt="微信二维码">
+</p>
 
