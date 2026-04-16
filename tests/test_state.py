@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Add project root to path
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / ".claude" / "skills" / "vf-pipeline"))
 
 from state import (
     PipelineState, STAGE_ORDER, STAGE_PREREQUISITES,
@@ -59,14 +59,6 @@ def test_validate_allows_correct_order():
     s = PipelineState(project_dir="/tmp/test")
     s.stages_completed = ["architect", "microarch", "timing"]
     ok, _ = s.validate_before_run("coder")
-    assert ok
-
-
-def test_validate_allows_debugger_anytime():
-    """debugger is not in STAGE_ORDER, should be allowed anytime."""
-    s = PipelineState(project_dir="/tmp/test")
-    s.stages_completed = []
-    ok, _ = s.validate_before_run("debugger")
     assert ok
 
 

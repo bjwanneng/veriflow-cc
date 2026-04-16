@@ -58,7 +58,10 @@ def main():
         if SKILL_DST_DIR.exists():
             try:
                 SKILL_DST_DIR.rmdir()
-                (CLAUDE_DIR / "skills").rmdir()
+                skills_dir = CLAUDE_DIR / "skills"
+                if skills_dir.exists() and not any(skills_dir.iterdir()):
+                    skills_dir.rmdir()
+                    print("  Removed empty ~/.claude/skills/ directory")
             except OSError:
                 pass
 

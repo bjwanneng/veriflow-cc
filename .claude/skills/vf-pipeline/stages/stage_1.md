@@ -152,9 +152,9 @@ Must follow this exact structure:
         {
           "name": "clk_domain_name",
           "clock_port": "clk",
-          "reset_port": "rst_n",
+          "reset_port": "rst",
           "frequency_mhz": 200,
-          "reset_type": "async_active_low"
+          "reset_type": "sync_active_high"
         }
       ],
       "ports": [
@@ -240,8 +240,8 @@ Include full name, version, and relevant section numbers.}
 #### Reset Behavior
 | Cycle | Condition | Action | Output Change |
 |-------|-----------|--------|---------------|
-| -1 | rst_n asserted | clear all registers | all outputs = 0 |
-| 0 | rst_n de-asserted | ... | ... |
+| -1 | rst asserted | clear all registers | all outputs = 0 |
+| 0 | rst de-asserted | ... | ... |
 
 {If the module is purely combinational (no clock), state: "This module is combinational.
 Output changes immediately based on input. No cycle behavior applicable."}
@@ -273,7 +273,7 @@ Output changes immediately based on input. No cycle behavior applicable."}
 - **Latency**: {N} cycles (from valid_i assertion to valid_o assertion)
 - **Throughput**: 1 result per {M} cycles
 - **Backpressure behavior**: {stall / buffer / drop}
-- **Reset recovery**: {N} cycles after rst_n de-assertion
+- **Reset recovery**: {N} cycles after rst de-assertion
 
 ### 2.5 Algorithm Pseudocode
 {Step-by-step pseudocode for each complex operation. If user provided pseudocode in Stage 1D,

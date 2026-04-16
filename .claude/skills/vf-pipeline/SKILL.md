@@ -131,23 +131,7 @@ Replace `STAGE_NAME` with: architect, microarch, timing, coder, skill_d, lint, s
 
 ## Design Rules (Apply to ALL stages)
 
-- All modules use **asynchronous reset, active-low, with synchronous release** (`posedge clk or negedge rst_n`)
-  - The reset input `rst_n` must pass through a **2-stage synchronizer** before use:
-  ```verilog
-  // Reset synchronizer (in top module or each clock domain)
-  reg rst_n_meta, rst_n_sync;
-  always @(posedge clk or negedge rst_n) begin
-      if (!rst_n) begin
-          rst_n_meta <= 1'b0;
-          rst_n_sync <= 1'b0;
-      end else begin
-          rst_n_meta <= 1'b1;
-          rst_n_sync <= rst_n_meta;
-      end
-  end
-  // Use rst_n_sync (not raw rst_n) as reset for all internal logic
-  ```
-  - External `rst_n` pin connects to the synchronizer only. All internal modules use the synchronized reset.
+- All modules use **synchronous active-high reset** named `rst`. Reset is checked inside `always @(posedge clk)` only — no async sensitivity list. See `coding_style.md` Section 6 for full rules.
 - Port naming: `_n` suffix for active-low, `_i`/`_o` for direction
 - Parameterized design: use `parameter` for widths and depths
 - Clock domains must be explicitly declared

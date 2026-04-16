@@ -63,7 +63,6 @@ class PipelineState:
     lint_output: Optional[dict] = None
     sim_output: Optional[dict] = None
     synth_output: Optional[dict] = None
-    debugger_output: Optional[dict] = None
 
     # Error recovery
     retry_count: dict = field(default_factory=dict)
@@ -168,8 +167,6 @@ class PipelineState:
         # 1. Check strict ordering
         expected = next_pending_stage(self.stages_completed)
         if stage != expected:
-            if stage == "debugger":
-                return True, ""  # debugger is a special stage, not bound by order
             return False, f"Order violation: expected '{expected}', but attempted '{stage}'. Stages cannot be skipped."
 
         # 2. Check prerequisites
