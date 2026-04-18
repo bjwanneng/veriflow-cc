@@ -1,0 +1,142 @@
+{
+  "design_name": "aes_128_core",
+  "description": "AES-128 encryption core using FSM + iterative round architecture. Encrypts 128-bit plaintext with 128-bit key in 12 clock cycles. Conforms to FIPS-197.",
+  "target_frequency_mhz": 100,
+  "data_width": 128,
+  "byte_order": "MSB_FIRST",
+  "constraints": {
+    "timing": {
+      "target_frequency_mhz": 100,
+      "critical_path_ns": 10.0,
+      "jitter_ns": 0.1,
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "frequency_mhz": 100,
+          "source": "external"
+        }
+      ]
+    },
+    "area": {
+      "target_device": "XC7A35TFTG256",
+      "target_device_family": "Artix-7",
+      "max_luts": 4000,
+      "max_ffs": 2000,
+      "max_brams": 0,
+      "max_cells": 4000
+    },
+    "power": {
+      "budget_mw": 200,
+      "clock_gating": false
+    },
+    "io": {
+      "standard": "LVCMOS33",
+      "external_interfaces": []
+    },
+    "verification": {
+      "coverage_target_pct": 95,
+      "formal_verification": false,
+      "test_vectors": "NIST FIPS-197 Appendix B"
+    }
+  },
+  "design_intent": {
+    "architecture_style": "iterative_fsm",
+    "pipeline_stages": 0,
+    "resource_strategy": "distributed_ram",
+    "interface_preferences": {
+      "internal": "pulse_start_valid",
+      "register": "none"
+    },
+    "ip_reuse": [],
+    "key_decisions": [
+      "FSM + iterative round architecture (not pipelined) for area efficiency",
+      "On-the-fly key expansion via combinational logic (no round key storage)",
+      "S-Box implemented as combinational case statement (no BRAM)",
+      "MixColumns uses xtime (GF(2^8) multiply by 02/03) in pure RTL",
+      "Single clock domain, no clock gating"
+    ]
+  },
+  "critical_path_budget": 100,
+  "modules": [
+    {
+      "module_name": "aes_128_core",
+      "description": "Top-level AES-128 encryption core. FSM controls round iteration: IDLE -> ROUND_0 (AddRoundKey) -> ROUND_1_TO_9 (full rounds) -> ROUND_10 (final round, no MixColumns) -> DONE.",
+      "module_type": "top",
+      "hierarchy_level": 0,
+      "parent": null,
+      "submodules": ["aes_round_logic", "aes_key_expansion"],
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "clock_port": "clk",
+          "reset_port": "rst_n",
+          "frequency_mhz": 100,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock"},
+        {"name": "rst_n", "direction": "input", "width": 1, "protocol": "reset", "description": "Asynchronous reset, active-low"},
+        {"name": "start", "direction": "input", "width": 1, "protocol": "flag", "description": "Pulse to start encryption; data_in and key_in must be valid"},
+        {"name": "data_in", "direction": "input", "width": 128, "protocol": "data", "description": "128-bit plaintext input"},
+        {"name": "key_in", "direction": "input", "width": 128, "protocol": "data", "description": "128-bit initial key input"},
+        {"name": "data_out", "direction": "output", "width": 128, "protocol": "data", "description": "128-bit ciphertext output"},
+        {"name": "valid", "direction": "output", "width": 1, "protocol": "flag", "description": "Pulse high for 1 cycle when data_out is valid"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "aes_round_logic",
+      "description": "Combinational round function. Performs SubBytes (16 parallel S-Box), ShiftRows (wiring), MixColumns (GF(2^8)), and AddRoundKey (XOR). MixColumns is bypassed when round_num=10.",
+      "module_type": "processing",
+      "hierarchy_level": 1,
+      "parent": "aes_128_core",
+      "submodules": ["aes_sbox"],
+      "clock_domains": [],
+      "ports": [
+        {"name": "state_in", "direction": "input", "width": 128, "protocol": "data", "description": "Current 128-bit state"},
+        {"name": "round_key", "direction": "input", "width": 128, "protocol": "data", "description": "128-bit round key for AddRoundKey"},
+        {"name": "round_num", "direction": "input", "width": 4, "protocol": "data", "description": "Current round number (0-10)"},
+        {"name": "state_out", "direction": "output", "width": 128, "protocol": "data", "description": "Resulting 128-bit state after round operations"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "aes_key_expansion",
+      "description": "Combinational on-the-fly key expansion. Given the initial 128-bit key and round number, computes the 128-bit round key for that round using RotWord, SubWord (4 S-Box instances), Rcon XOR.",
+      "module_type": "processing",
+      "hierarchy_level": 1,
+      "parent": "aes_128_core",
+      "submodules": ["aes_sbox"],
+      "clock_domains": [],
+      "ports": [
+        {"name": "key_in", "direction": "input", "width": 128, "protocol": "data", "description": "128-bit initial key"},
+        {"name": "round_num", "direction": "input", "width": 4, "protocol": "data", "description": "Round number (0-10); round 0 returns key_in directly"},
+        {"name": "round_key", "direction": "output", "width": 128, "protocol": "data", "description": "128-bit round key for the specified round"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "aes_sbox",
+      "description": "AES S-Box: 8-bit input to 8-bit output combinational lookup. Implements the standard AES 16x16 substitution table via case statement.",
+      "module_type": "processing",
+      "hierarchy_level": 2,
+      "parent": "aes_round_logic",
+      "submodules": [],
+      "clock_domains": [],
+      "ports": [
+        {"name": "addr", "direction": "input", "width": 8, "protocol": "data", "description": "8-bit S-Box address (byte value to substitute)"},
+        {"name": "dout", "direction": "output", "width": 8, "protocol": "data", "description": "8-bit S-Box output (substituted byte)"}
+      ],
+      "parameters": []
+    }
+  ],
+  "module_connectivity": [
+    {"source": "aes_128_core.state_reg", "destination": "aes_round_logic.state_in", "bus_width": 128, "connection_type": "direct"},
+    {"source": "aes_key_expansion.round_key", "destination": "aes_round_logic.round_key", "bus_width": 128, "connection_type": "direct"},
+    {"source": "aes_128_core.round_cnt", "destination": "aes_round_logic.round_num", "bus_width": 4, "connection_type": "direct"},
+    {"source": "aes_128_core.round_cnt", "destination": "aes_key_expansion.round_num", "bus_width": 4, "connection_type": "direct"},
+    {"source": "aes_128_core.key_reg", "destination": "aes_key_expansion.key_in", "bus_width": 128, "connection_type": "direct"},
+    {"source": "aes_round_logic.state_out", "destination": "aes_128_core.state_next", "bus_width": 128, "connection_type": "direct"}
+  ]
+}

@@ -1,0 +1,252 @@
+{
+  "design_name": "uart_top",
+  "description": "UART transceiver with 16x oversampling receiver, fixed 115200 baud, 8N1 frame format, 50MHz system clock",
+  "target_frequency_mhz": 50,
+  "data_width": 8,
+  "byte_order": "LSB_FIRST",
+  "constraints": {
+    "timing": {
+      "target_frequency_mhz": 50,
+      "critical_path_ns": 20.0,
+      "jitter_ns": 0.5,
+      "clock_domains": [
+        {
+          "name": "clk_sys",
+          "frequency_mhz": 50,
+          "source": "external"
+        }
+      ]
+    },
+    "area": {
+      "target_device": "generic",
+      "target_device_family": "technology-agnostic",
+      "max_luts": null,
+      "max_ffs": null,
+      "max_brams": 0,
+      "max_cells": null
+    },
+    "power": {
+      "budget_mw": null,
+      "clock_gating": false
+    },
+    "io": {
+      "standard": "LVCMOS33",
+      "external_interfaces": [
+        {
+          "name": "uart",
+          "type": "UART",
+          "params": "115200 baud, 8N1, 16x oversampling"
+        }
+      ]
+    },
+    "verification": {
+      "coverage_target_pct": 95,
+      "formal_verification": false
+    }
+  },
+  "design_intent": {
+    "architecture_style": "iterative",
+    "pipeline_stages": 0,
+    "resource_strategy": "distributed_ram",
+    "interface_preferences": {
+      "internal": "pulse",
+      "register": "direct"
+    },
+    "ip_reuse": [],
+    "key_decisions": [
+      "16x oversampling for robust RX sampling at bit center",
+      "No parity bit per requirement — skip PARITY state in TX FSM",
+      "Fixed baud rate 115200 with divider N=27 (0.47% error)",
+      "Two-stage synchronizer on uart_rxd for metastability protection",
+      "Two-stage synchronizer on external rst_n before internal use"
+    ]
+  },
+  "critical_path_budget": 200,
+  "modules": [
+    {
+      "module_name": "uart_top",
+      "description": "Top-level UART wrapper instantiating baud_gen, uart_tx, uart_rx with reset synchronizer",
+      "module_type": "top",
+      "hierarchy_level": 0,
+      "parent": null,
+      "submodules": ["baud_gen", "uart_tx", "uart_rx"],
+      "clock_domains": [
+        {
+          "name": "clk_sys",
+          "clock_port": "clk",
+          "reset_port": "rst_n",
+          "frequency_mhz": 50,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk",          "direction": "input",  "width": 1,  "protocol": "clock",   "description": "System clock 50MHz"},
+        {"name": "rst_n",        "direction": "input",  "width": 1,  "protocol": "reset",    "description": "Async reset, active-low"},
+        {"name": "tx_data",      "direction": "input",  "width": 8,  "protocol": "data",     "description": "Data byte to transmit"},
+        {"name": "tx_en",        "direction": "input",  "width": 1,  "protocol": "valid",    "description": "Transmit enable pulse"},
+        {"name": "uart_txd",     "direction": "output", "width": 1,  "protocol": "data",     "description": "UART transmit serial output"},
+        {"name": "tx_busy",      "direction": "output", "width": 1,  "protocol": "flag",     "description": "Transmitter busy indicator"},
+        {"name": "uart_rxd",     "direction": "input",  "width": 1,  "protocol": "data",     "description": "UART receive serial input"},
+        {"name": "rx_data",      "direction": "output", "width": 8,  "protocol": "data",     "description": "Received data byte"},
+        {"name": "rx_done",      "direction": "output", "width": 1,  "protocol": "valid",    "description": "Receive complete pulse"},
+        {"name": "rx_frame_err", "direction": "output", "width": 1,  "protocol": "flag",     "description": "Frame error flag, active-high"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "baud_gen",
+      "description": "Baud rate tick generator producing 16x oversampling clock ticks at 115200 baud",
+      "module_type": "interface",
+      "hierarchy_level": 1,
+      "parent": "uart_top",
+      "submodules": [],
+      "clock_domains": [
+        {
+          "name": "clk_sys",
+          "clock_port": "clk",
+          "reset_port": "rst_n",
+          "frequency_mhz": 50,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk",     "direction": "input",  "width": 1, "protocol": "clock", "description": "System clock 50MHz"},
+        {"name": "rst_n",   "direction": "input",  "width": 1, "protocol": "reset", "description": "Synchronized async reset, active-low"},
+        {"name": "tick_16x","direction": "output", "width": 1, "protocol": "valid", "description": "16x baud rate tick pulse"}
+      ],
+      "parameters": [
+        {"name": "CLK_FREQ",     "default_value": 50000000, "description": "System clock frequency in Hz"},
+        {"name": "BAUD_RATE",    "default_value": 115200,   "description": "Target baud rate"},
+        {"name": "OVERSAMPLE",   "default_value": 16,       "description": "Oversampling factor"}
+      ]
+    },
+    {
+      "module_name": "uart_tx",
+      "description": "UART transmitter — parallel-to-serial converter with FSM for start/data/stop",
+      "module_type": "interface",
+      "hierarchy_level": 1,
+      "parent": "uart_top",
+      "submodules": [],
+      "clock_domains": [
+        {
+          "name": "clk_sys",
+          "clock_port": "clk",
+          "reset_port": "rst_n",
+          "frequency_mhz": 50,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk",      "direction": "input",  "width": 1, "protocol": "clock", "description": "System clock 50MHz"},
+        {"name": "rst_n",    "direction": "input",  "width": 1, "protocol": "reset", "description": "Synchronized async reset, active-low"},
+        {"name": "tick_16x", "direction": "input",  "width": 1, "protocol": "valid", "description": "16x baud rate tick"},
+        {"name": "tx_data",  "direction": "input",  "width": 8, "protocol": "data",  "description": "Data byte to send"},
+        {"name": "tx_en",    "direction": "input",  "width": 1, "protocol": "valid", "description": "Transmit enable pulse"},
+        {"name": "uart_txd", "direction": "output", "width": 1, "protocol": "data",  "description": "Serial transmit output"},
+        {"name": "tx_busy",  "direction": "output", "width": 1, "protocol": "flag",  "description": "Transmitter busy"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "uart_rx",
+      "description": "UART receiver with 16x oversampling, two-stage input synchronizer, FSM for start/data/stop detection and frame error",
+      "module_type": "interface",
+      "hierarchy_level": 1,
+      "parent": "uart_top",
+      "submodules": [],
+      "clock_domains": [
+        {
+          "name": "clk_sys",
+          "clock_port": "clk",
+          "reset_port": "rst_n",
+          "frequency_mhz": 50,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk",           "direction": "input",  "width": 1, "protocol": "clock", "description": "System clock 50MHz"},
+        {"name": "rst_n",         "direction": "input",  "width": 1, "protocol": "reset", "description": "Synchronized async reset, active-low"},
+        {"name": "tick_16x",      "direction": "input",  "width": 1, "protocol": "valid", "description": "16x baud rate tick"},
+        {"name": "uart_rxd",      "direction": "input",  "width": 1, "protocol": "data",  "description": "Serial receive input (external)"},
+        {"name": "rx_data",       "direction": "output", "width": 8, "protocol": "data",  "description": "Received data byte"},
+        {"name": "rx_done",       "direction": "output", "width": 1, "protocol": "valid", "description": "Receive complete pulse"},
+        {"name": "rx_frame_err",  "direction": "output", "width": 1, "protocol": "flag",  "description": "Frame error flag"}
+      ],
+      "parameters": []
+    }
+  ],
+  "module_connectivity": [
+    {
+      "source": "uart_top.clk",
+      "destination": "baud_gen.clk",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_top.rst_n_sync",
+      "destination": "baud_gen.rst_n",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "baud_gen.tick_16x",
+      "destination": "uart_tx.tick_16x",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "baud_gen.tick_16x",
+      "destination": "uart_rx.tick_16x",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_top.tx_data",
+      "destination": "uart_tx.tx_data",
+      "bus_width": 8,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_top.tx_en",
+      "destination": "uart_tx.tx_en",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_tx.uart_txd",
+      "destination": "uart_top.uart_txd",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_tx.tx_busy",
+      "destination": "uart_top.tx_busy",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_top.uart_rxd",
+      "destination": "uart_rx.uart_rxd",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_rx.rx_data",
+      "destination": "uart_top.rx_data",
+      "bus_width": 8,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_rx.rx_done",
+      "destination": "uart_top.rx_done",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "uart_rx.rx_frame_err",
+      "destination": "uart_top.rx_frame_err",
+      "bus_width": 1,
+      "connection_type": "direct"
+    }
+  ]
+}

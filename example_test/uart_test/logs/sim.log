@@ -1,0 +1,22 @@
+VCD info: dumpfile tb_uart_top.vcd opened for output.
+--- Scenario 1: Reset behavior ---
+[PASS] Test 1: Reset outputs correct
+--- Scenario 2: Loopback 0xA5 ---
+[PASS] Test 2: loopback 0xa5 OK, frame_err=0
+--- Scenario 3: Loopback 0x3C ---
+[PASS] Test 3: loopback 0x3c OK, frame_err=0
+--- Scenario 4: Loopback 0xFF ---
+[PASS] Test 4: loopback 0xff OK, frame_err=0
+--- Scenario 5: Loopback 0x00 ---
+[PASS] Test 5: loopback 0x00 OK, frame_err=0
+--- Scenario 6: tx_busy flag ---
+[PASS] Test 6: tx_busy asserted during TX
+[PASS] Test 6: tx_busy deasserted after TX complete
+--- Scenario 7: Multiple frames ---
+[PASS] Test 7: loopback 0xa5 OK, frame_err=0
+[PASS] Test 8: loopback 0x55 OK, frame_err=0
+
+========================================
+ALL TESTS PASSED (8 tests)
+========================================
+workspace/tb/tb_uart_top.v:229: $finish called at 622890000 (1ps)

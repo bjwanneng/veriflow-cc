@@ -1,0 +1,90 @@
+design: uart_top
+constants:
+  CLK_FREQ: 50000000
+  BAUD_RATE: 115200
+  OVERSAMPLE: 16
+  DIV: 27
+  FRAME_BITS: 10
+  FRAME_TICKS: 160       # FRAME_BITS * OVERSAMPLE
+  FRAME_SYS_CLK: 4320    # FRAME_TICKS * DIV
+scenarios:
+  - name: reset_behavior
+    description: "Verify all outputs are in correct state after reset deassertion"
+    assertions:
+      - "After rst_n deassertion + 2 sys_clk: uart_txd == 1"
+      - "After rst_n deassertion + 2 sys_clk: tx_busy == 0"
+      - "After rst_n deassertion + 2 sys_clk: rx_done == 0"
+      - "After rst_n deassertion + 2 sys_clk: rx_frame_err == 0"
+    stimulus:
+      - {cycle: 0, rst_n: 0}
+      - {cycle: 100, rst_n: 1}
+
+  - name: loopback_tx_rx
+    description: "Transmit 0xA5 via TX, loop back to RX, verify received data matches"
+    assertions:
+      - "After tx_en pulse + FRAME_SYS_CLK + margin: rx_done == 1"
+      - "rx_data == 0xA5 when rx_done pulses"
+      - "rx_frame_err == 0"
+    stimulus:
+      - {cycle: 0, rst_n: 0}
+      - {cycle: 100, rst_n: 1}
+      - {cycle: 200, tx_data: "0xA5", tx_en: 1}
+      - {cycle: 201, tx_en: 0}
+
+  - name: loopback_0x3C
+    description: "Transmit 0x3C via TX, loop back to RX, verify received data"
+    assertions:
+      - "After tx_en + FRAME_SYS_CLK + margin: rx_done == 1"
+      - "rx_data == 0x3C when rx_done pulses"
+      - "rx_frame_err == 0"
+    stimulus:
+      - {cycle: 0, rst_n: 0}
+      - {cycle: 100, rst_n: 1}
+      - {cycle: 200, tx_data: "0x3C", tx_en: 1}
+      - {cycle: 201, tx_en: 0}
+
+  - name: loopback_0xFF
+    description: "Transmit 0xFF (all ones) via loopback, verify reception"
+    assertions:
+      - "rx_data == 0xFF when rx_done pulses"
+      - "rx_frame_err == 0"
+    stimulus:
+      - {cycle: 0, rst_n: 0}
+      - {cycle: 100, rst_n: 1}
+      - {cycle: 200, tx_data: "0xFF", tx_en: 1}
+      - {cycle: 201, tx_en: 0}
+
+  - name: loopback_0x00
+    description: "Transmit 0x00 (all zeros) via loopback, verify reception"
+    assertions:
+      - "rx_data == 0x00 when rx_done pulses"
+      - "rx_frame_err == 0"
+    stimulus:
+      - {cycle: 0, rst_n: 0}
+      - {cycle: 100, rst_n: 1}
+      - {cycle: 200, tx_data: "0x00", tx_en: 1}
+      - {cycle: 201, tx_en: 0}
+
+  - name: tx_busy_flag
+    description: "Verify tx_busy is asserted during transmission and deasserted after"
+    assertions:
+      - "tx_busy == 1 within a few sys_clk after tx_en pulse"
+      - "tx_busy == 0 after FRAME_SYS_CLK + margin"
+    stimulus:
+      - {cycle: 0, rst_n: 0}
+      - {cycle: 100, rst_n: 1}
+      - {cycle: 200, tx_data: "0xA5", tx_en: 1}
+      - {cycle: 201, tx_en: 0}
+
+  - name: multiple_frames
+    description: "Transmit two frames back-to-back and verify both received correctly"
+    assertions:
+      - "First frame: rx_data == 0xA5, rx_frame_err == 0"
+      - "Second frame: rx_data == 0x55, rx_frame_err == 0"
+    stimulus:
+      - {cycle: 0, rst_n: 0}
+      - {cycle: 100, rst_n: 1}
+      - {cycle: 200, tx_data: "0xA5", tx_en: 1}
+      - {cycle: 201, tx_en: 0}
+      - {cycle: 5000, tx_data: "0x55", tx_en: 1}
+      - {cycle: 5001, tx_en: 0}

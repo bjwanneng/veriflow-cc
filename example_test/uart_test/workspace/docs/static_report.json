@@ -1,0 +1,44 @@
+{
+  "design": "uart_top",
+  "analyzed_files": ["baud_gen.v", "uart_tx.v", "uart_rx.v", "uart_top.v"],
+  "logic_depth_estimate": {
+    "max_levels": 6,
+    "budget": 200,
+    "status": "OK",
+    "worst_path": "uart_rx: tick_16x -> tick_cnt increment -> FSM state decode -> bit_cnt compare -> shift_reg index -> output mux"
+  },
+  "resource_estimate": {
+    "cells": 57,
+    "luts": 57,
+    "ffs": 55,
+    "brams": 0,
+    "status": "OK",
+    "budget": {"max_luts": null, "max_ffs": null, "max_cells": null}
+  },
+  "cdc_risks": [],
+  "latch_risks": [],
+  "constraint_violations": [],
+  "functional_gaps": [],
+  "checks_performed": {
+    "static": {
+      "initial_blocks": "PASS — no initial blocks in RTL",
+      "empty_files": "PASS — all files > 20 lines",
+      "missing_endmodule": "PASS — all files have endmodule",
+      "syntax": "PASS — no obvious syntax issues"
+    },
+    "deep_review": {
+      "latch_inference": "PASS — all combinational blocks have defaults at top",
+      "comb_loops": "PASS — no feedback paths in combinational logic",
+      "uninit_registers": "PASS — all registers initialized in reset and at declaration",
+      "nonsynthesizable": "PASS — no $display/#delay/initial in RTL",
+      "cdc_synchronizers": "PASS — uart_rxd has 2-stage synchronizer in uart_rx; rst_n has 2-stage synchronizer in uart_top"
+    },
+    "functional_completeness": {
+      "port_match": "PASS — all spec.json ports present in each module",
+      "no_stubs": "PASS — no TODO/FIXME/placeholder/simplified comments found",
+      "fsm_present": "PASS — uart_tx has 4-state FSM (TX_IDLE/TX_START/TX_DATA/TX_STOP), uart_rx has 4-state FSM (RX_STATE_IDLE/START/DATA/STOP)",
+      "algorithm_complexity": "PASS — FSM and datapath complexity matches micro_arch.md description"
+    }
+  },
+  "recommendation": "Design is clean and well-structured. No issues found. Ready for lint and simulation."
+}

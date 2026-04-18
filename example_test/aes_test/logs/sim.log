@@ -1,0 +1,12 @@
+VCD info: dumpfile tb_aes_128_core.vcd opened for output.
+PASS: Reset behavior correct - valid=0, data_out=0
+PASS [Test 1]: NIST Appendix B vector 1 - latency=12 cycles
+PASS [Test 2]: All-zero PT, all-zero key - latency=12 cycles
+PASS [Test 3]: NIST vector repeat check - latency=12 cycles
+PASS: Back-to-back - first encryption done, ct=0x3925841d02dc09fbdc118597196a0b32
+PASS: Back-to-back - second encryption correct
+PASS [Test 4]: NIST Table B.2 vector - latency=12 cycles
+========================================
+ALL TESTS PASSED
+========================================
+workspace/tb/tb_aes_128_core.v:241: $finish called at 1305000 (1ps)
