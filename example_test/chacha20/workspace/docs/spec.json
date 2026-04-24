@@ -1,0 +1,225 @@
+{
+  "design_name": "chacha20",
+  "description": "ChaCha20 stream cipher core compliant with RFC 8439. Generates keystream from 256-bit key and 96-bit nonce, XORs with data for encrypt/decrypt.",
+  "target_frequency_mhz": 100,
+  "data_width": 32,
+  "byte_order": "LSB_FIRST",
+  "constraints": {
+    "timing": {
+      "target_frequency_mhz": 100,
+      "critical_path_ns": 10.0,
+      "jitter_ns": 0.2,
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "frequency_mhz": 100,
+          "source": "external"
+        }
+      ]
+    },
+    "area": {
+      "target_device": "generic_fpga",
+      "target_device_family": "generic",
+      "max_luts": 4000,
+      "max_ffs": 3000,
+      "max_brams": 0,
+      "max_cells": 4000
+    },
+    "power": {
+      "budget_mw": 300,
+      "clock_gating": false
+    },
+    "io": {
+      "standard": "LVCMOS33",
+      "external_interfaces": []
+    },
+    "verification": {
+      "coverage_target_pct": 95,
+      "formal_verification": false,
+      "test_vectors": "RFC 8439 Section 2.4.2 and Section 2.6.2"
+    }
+  },
+  "design_intent": {
+    "architecture_style": "iterative",
+    "pipeline_stages": 1,
+    "resource_strategy": "distributed_ram",
+    "interface_preferences": {
+      "internal": "valid/ready",
+      "external": "simple_handshake"
+    },
+    "ip_reuse": [],
+    "key_decisions": [
+      "Iterative architecture: 4 parallel quarter-round units, 2 cycles per double-round, 20 cycles total for 10 double-rounds",
+      "Combinational quarter-round: all additions, XORs, and rotations done combinationally in one cycle",
+      "No BRAM usage: state matrix stored in distributed registers for single-cycle access",
+      "Auto-incrementing counter for multi-block streaming",
+      "Encrypt and decrypt are identical operations (XOR with keystream)"
+    ]
+  },
+  "critical_path_budget": 100,
+  "modules": [
+    {
+      "module_name": "chacha20_top",
+      "description": "Top-level ChaCha20 wrapper. Handles reset synchronization, key/nonce/counter loading via parallel inputs, FSM for block generation, data streaming interface with XOR.",
+      "module_type": "top",
+      "hierarchy_level": 0,
+      "parent": null,
+      "submodules": ["chacha20_core"],
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "clock_port": "clk_i",
+          "reset_port": "rst_n_i",
+          "frequency_mhz": 100,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk_i", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock"},
+        {"name": "rst_n_i", "direction": "input", "width": 1, "protocol": "reset", "description": "Asynchronous active-low reset"},
+        {"name": "key_i", "direction": "input", "width": 256, "protocol": "data", "description": "256-bit key [255:0]"},
+        {"name": "nonce_i", "direction": "input", "width": 96, "protocol": "data", "description": "96-bit nonce [95:0]"},
+        {"name": "counter_i", "direction": "input", "width": 32, "protocol": "data", "description": "32-bit initial block counter"},
+        {"name": "start_i", "direction": "input", "width": 1, "protocol": "flag", "description": "Start encryption/decryption block"},
+        {"name": "din_valid_i", "direction": "input", "width": 1, "protocol": "valid", "description": "Input data valid"},
+        {"name": "din_data_i", "direction": "input", "width": 32, "protocol": "data", "description": "Input plaintext/ciphertext word"},
+        {"name": "din_ready_o", "direction": "output", "width": 1, "protocol": "ready", "description": "Ready to accept input data"},
+        {"name": "dout_valid_o", "direction": "output", "width": 1, "protocol": "valid", "description": "Output data valid"},
+        {"name": "dout_data_o", "direction": "output", "width": 32, "protocol": "data", "description": "Output ciphertext/plaintext word"},
+        {"name": "dout_ready_i", "direction": "input", "width": 1, "protocol": "ready", "description": "Downstream ready to accept output"},
+        {"name": "ready_o", "direction": "output", "width": 1, "protocol": "flag", "description": "Core ready for new start command"},
+        {"name": "block_done_o", "direction": "output", "width": 1, "protocol": "flag", "description": "Pulse: one 512-bit block completed"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "chacha20_core",
+      "description": "ChaCha20 block computation core. Maintains 4x4 state matrix, performs 10 double-rounds using 4 parallel quarter-round units, adds initial state for final output.",
+      "module_type": "processing",
+      "hierarchy_level": 1,
+      "parent": "chacha20_top",
+      "submodules": ["chacha20_qr"],
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "clock_port": "clk_i",
+          "reset_port": "rst_n_i",
+          "frequency_mhz": 100,
+          "reset_type": "async_active_low"
+        }
+      ],
+      "ports": [
+        {"name": "clk_i", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock"},
+        {"name": "rst_n_i", "direction": "input", "width": 1, "protocol": "reset", "description": "Synchronous release async active-low reset"},
+        {"name": "key_i", "direction": "input", "width": 256, "protocol": "data", "description": "256-bit key"},
+        {"name": "nonce_i", "direction": "input", "width": 96, "protocol": "data", "description": "96-bit nonce"},
+        {"name": "counter_i", "direction": "input", "width": 32, "protocol": "data", "description": "32-bit block counter"},
+        {"name": "start_i", "direction": "input", "width": 1, "protocol": "flag", "description": "Start block computation"},
+        {"name": "state_o", "direction": "output", "width": 512, "protocol": "data", "description": "512-bit output state (16 x 32-bit keystream block)"},
+        {"name": "done_o", "direction": "output", "width": 1, "protocol": "flag", "description": "Computation complete pulse"},
+        {"name": "busy_o", "direction": "output", "width": 1, "protocol": "flag", "description": "Core is computing"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "chacha20_qr",
+      "description": "ChaCha20 quarter-round function. Combinational module performing 4 additions, 4 XORs, and 4 rotations on four 32-bit state words.",
+      "module_type": "processing",
+      "hierarchy_level": 2,
+      "parent": "chacha20_core",
+      "submodules": [],
+      "clock_domains": [],
+      "ports": [
+        {"name": "a_i", "direction": "input", "width": 32, "protocol": "data", "description": "State word a"},
+        {"name": "b_i", "direction": "input", "width": 32, "protocol": "data", "description": "State word b"},
+        {"name": "c_i", "direction": "input", "width": 32, "protocol": "data", "description": "State word c"},
+        {"name": "d_i", "direction": "input", "width": 32, "protocol": "data", "description": "State word d"},
+        {"name": "a_o", "direction": "output", "width": 32, "protocol": "data", "description": "Updated state word a"},
+        {"name": "b_o", "direction": "output", "width": 32, "protocol": "data", "description": "Updated state word b"},
+        {"name": "c_o", "direction": "output", "width": 32, "protocol": "data", "description": "Updated state word c"},
+        {"name": "d_o", "direction": "output", "width": 32, "protocol": "data", "description": "Updated state word d"}
+      ],
+      "parameters": []
+    }
+  ],
+  "module_connectivity": [
+    {
+      "source": "chacha20_top.clk_i",
+      "destination": "chacha20_core.clk_i",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_top.rst_n_sync",
+      "destination": "chacha20_core.rst_n_i",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_top.key_i",
+      "destination": "chacha20_core.key_i",
+      "bus_width": 256,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_top.nonce_i",
+      "destination": "chacha20_core.nonce_i",
+      "bus_width": 96,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_top.counter_reg",
+      "destination": "chacha20_core.counter_i",
+      "bus_width": 32,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_top.start_pulse",
+      "destination": "chacha20_core.start_i",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_core.state_o",
+      "destination": "chacha20_top.keystream_reg",
+      "bus_width": 512,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_core.done_o",
+      "destination": "chacha20_top.block_done_o",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_core.busy_o",
+      "destination": "chacha20_top.core_busy",
+      "bus_width": 1,
+      "connection_type": "direct"
+    },
+    {
+      "source": "chacha20_core.qr_inst_0",
+      "destination": "chacha20_qr[0]",
+      "bus_width": 128,
+      "connection_type": "instance"
+    },
+    {
+      "source": "chacha20_core.qr_inst_1",
+      "destination": "chacha20_qr[1]",
+      "bus_width": 128,
+      "connection_type": "instance"
+    },
+    {
+      "source": "chacha20_core.qr_inst_2",
+      "destination": "chacha20_qr[2]",
+      "bus_width": 128,
+      "connection_type": "instance"
+    },
+    {
+      "source": "chacha20_core.qr_inst_3",
+      "destination": "chacha20_qr[3]",
+      "bus_width": 128,
+      "connection_type": "instance"
+    }
+  ]
+}

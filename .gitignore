@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .veriflow/
 veriflow-video/
+*.vcd
+logs/
+workspace/sim/
+workspace/synth/

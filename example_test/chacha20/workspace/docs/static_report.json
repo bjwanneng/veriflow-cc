@@ -1,0 +1,53 @@
+{
+  "design": "chacha20",
+  "analyzed_files": ["chacha20_qr.v", "chacha20_core.v", "chacha20_top.v"],
+  "logic_depth_estimate": {
+    "max_levels": 22,
+    "budget": 100,
+    "status": "OK",
+    "worst_path": "QR combinational (3 chained 32-bit adds + XOR + rotate) + finalize addition = ~18 LUT levels for QR + 4 for add = 22 levels"
+  },
+  "resource_estimate": {
+    "cells": 1740,
+    "luts": 630,
+    "ffs": 1110,
+    "brams": 0,
+    "status": "OK",
+    "budget": {
+      "max_luts": 4000,
+      "max_ffs": 3000,
+      "max_brams": 0,
+      "max_cells": 4000
+    }
+  },
+  "cdc_risks": [],
+  "latch_risks": [],
+  "constraint_violations": [],
+  "functional_gaps": [],
+  "checks": {
+    "static": {
+      "initial_blocks_in_rtl": "none found",
+      "empty_files": "none",
+      "missing_endmodule": "none",
+      "syntax_issues": "none detected"
+    },
+    "deep_review": {
+      "latch_inference": "OK - all combinational blocks have complete defaults",
+      "combinational_loops": "none - QR is purely feed-forward",
+      "uninitialized_registers": "OK - all regs have reset values and initial declarations",
+      "non_synthesizable": "none found (reg initialization in declarations is FPGA-synthesizable)",
+      "cdc": "single clock domain - no CDC risk"
+    },
+    "port_completeness": {
+      "chacha20_qr": "all 8 ports match spec.json",
+      "chacha20_core": "all 8 ports match spec.json",
+      "chacha20_top": "all 14 ports match spec.json"
+    },
+    "functional_completeness": {
+      "chacha20_qr": "implements full RFC 8439 quarter-round with 4 add/XOR/rot steps",
+      "chacha20_core": "FSM with 3 states (IDLE/ROUND/FINALIZE), 4 parallel QR instances, column/diagonal muxing, init state save, final addition",
+      "chacha20_top": "reset synchronizer, 3-state FSM (IDLE/COMPUTE/OUTPUT), valid/ready handshake, backpressure support, auto counter increment"
+    }
+  },
+  "recommendation": "RTL is well-structured and consistent with spec. Proceed to lint and simulation."
+}
