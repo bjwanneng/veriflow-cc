@@ -418,7 +418,33 @@ always @(*) begin ... end
 
 - Combinational blocks (`always @*`): **blocking** (`=`) only
 - Sequential blocks (`always @(posedge clk)`): **non-blocking** (`<=`) only
-- **MUST NOT** mix `=` and `<=` in the same `always` block
+- **MUST NOT** mix `=` and `<=` for the same signal in the same `always` block
+
+### iverilog memory array write rule
+
+Memory array writes (`ram[idx] = val`) inside `always @(posedge clk)` **MUST** use blocking assignment (`=`), not NBA (`<=`).
+
+**Why**: iverilog evaluates the array index at NBA **application** time rather than **scheduling** time. When the index signal is a combinational `_next` or changes via NBA in the same cycle, NBA writes to the **wrong address**. Blocking assignment captures the index immediately in the active region.
+
+**MUST** add a comment on each such line: `// blocking: iverilog index race`
+
+This is a **targeted exception** to the "sequential = NBA only" rule. It applies ONLY to declared memory arrays (`reg [W:0] name [0:DEPTH-1]`), not to scalar or vector registers.
+
+```verilog
+// correct — memory array write uses blocking
+always @(posedge clk) begin
+    if (wr_en) begin
+        ram[addr] = wdata;  // blocking: iverilog index race
+    end
+end
+
+// incorrect — NBA causes wrong address in iverilog
+always @(posedge clk) begin
+    if (wr_en) begin
+        ram[addr] <= wdata;  // BUG: iverilog uses updated addr
+    end
+end
+```
 
 ---
 
@@ -615,6 +641,25 @@ reg [DATA_WIDTH-1:0] mem[(2**ADDR_WIDTH)-1:0];
 initial begin
     $readmemh("init_data.hex", mem);
 end
+```
+
+### 17a. Array Index Bounds Safety `[BASE]`
+
+**MUST** ensure every array index expression is provably within the declared range.
+
+Rules:
+- For loop counters that index arrays: the terminal condition **MUST** be `< DEPTH` or `<= DEPTH - 1`, never `<= DEPTH`
+- For expressions like `idx + offset`: verify `idx_max + offset <= DEPTH - 1`
+- Prefer index masking: `ram[cnt[ADDR_W-1:0]]` to guarantee bounds
+
+```verilog
+// WRONG: ram_t has indices [0:32], shift_cnt=32 reads ram_t[33] = X
+for (j = 0; j <= DEPTH; j = j + 1)  // j max = DEPTH
+    ram[j] = ram[j + 1];             // ram[DEPTH+1] = OUT OF BOUNDS!
+
+// CORRECT: only shift valid indices
+for (j = 0; j < DEPTH; j = j + 1)   // j max = DEPTH-1
+    ram[j] = ram[j + 1];             // ram[DEPTH] = valid
 ```
 
 ---

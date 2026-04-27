@@ -1,0 +1,253 @@
+{
+  "design_name": "rsa1024_modexp_accel",
+  "description": "RSA-1024 modular exponentiation accelerator using CIOS Montgomery multiplication with Square-and-Multiply exponentiation. Targets Xilinx Virtex UltraScale+ VU9P. Hardware handles 1024-bit modexp; software performs CRT split/merge for RSA-2048.",
+  "target_frequency_mhz": 250,
+  "data_width": 32,
+  "byte_order": "LSB_FIRST",
+  "constraints": {
+    "timing": {
+      "target_frequency_mhz": 250,
+      "critical_path_ns": 4.0,
+      "jitter_ns": 0.05,
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "frequency_mhz": 250,
+          "source": "external"
+        }
+      ]
+    },
+    "area": {
+      "target_device": "XCVU9P-2FLGA2104E",
+      "target_device_family": "Virtex UltraScale+",
+      "max_luts": 50000,
+      "max_ffs": 50000,
+      "max_brams": 100,
+      "max_dsps": 50
+    },
+    "power": {
+      "budget_mw": 2000,
+      "clock_gating": false
+    },
+    "io": {
+      "standard": "LVCMOS18",
+      "external_interfaces": [
+        {
+          "name": "axi_lite_slave",
+          "type": "AXI4-Lite",
+          "params": "32-bit data width, 16-bit address width"
+        },
+        {
+          "name": "axi_stream_in",
+          "type": "AXI4-Stream",
+          "params": "32-bit TDATA, sink role"
+        },
+        {
+          "name": "axi_stream_out",
+          "type": "AXI4-Stream",
+          "params": "32-bit TDATA, source role"
+        }
+      ]
+    },
+    "verification": {
+      "coverage_target_pct": 90,
+      "formal_verification": false
+    }
+  },
+  "design_intent": {
+    "architecture_style": "iterative",
+    "pipeline_stages": 2,
+    "resource_strategy": "block_ram",
+    "interface_preferences": {
+      "internal": "memory-mapped",
+      "register": "axi4-lite"
+    },
+    "ip_reuse": [
+      "DSP48E2 for 32x32 multiplication (behavioral * in RTL, yosys maps to DSP48E2)"
+    ],
+    "key_decisions": [
+      "CIOS Montgomery algorithm for modular multiplication",
+      "CRT optimization: software splits RSA-2048 into two RSA-1024 operations",
+      "Square-and-Multiply algorithm for modular exponentiation",
+      "32-bit word size, 32 words per 1024-bit operand",
+      "BRAM for operand storage, distributed RAM for t[] accumulator",
+      "Synchronous active-high reset per requirement spec (overrides pipeline default)",
+      "Behavioral * operator for 32x32 multiply; yosys infers DSP48E2 during synthesis",
+      "Verilog-2005 standard (compatible with Verilog-2001 features)"
+    ]
+  },
+  "critical_path_budget": 40,
+  "modules": [
+    {
+      "module_name": "rsa_modexp_top",
+      "description": "Top-level RSA modular exponentiation accelerator. Contains AXI4-Lite slave for register configuration, AXI4-Stream for data I/O, Square-and-Multiply FSM, and instantiates mont_mult_1024.",
+      "module_type": "top",
+      "hierarchy_level": 0,
+      "parent": null,
+      "submodules": ["mont_mult_1024"],
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "clock_port": "clk",
+          "reset_port": "rst",
+          "frequency_mhz": 250,
+          "reset_type": "sync_active_high"
+        }
+      ],
+      "ports": [
+        {"name": "clk", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock (250 MHz)"},
+        {"name": "rst", "direction": "input", "width": 1, "protocol": "reset", "description": "Synchronous active-high reset"},
+        {"name": "s_axi_awaddr", "direction": "input", "width": 16, "protocol": "data", "description": "AXI4-Lite write address"},
+        {"name": "s_axi_awvalid", "direction": "input", "width": 1, "protocol": "valid", "description": "AXI4-Lite write address valid"},
+        {"name": "s_axi_awready", "direction": "output", "width": 1, "protocol": "ready", "description": "AXI4-Lite write address ready"},
+        {"name": "s_axi_wdata", "direction": "input", "width": 32, "protocol": "data", "description": "AXI4-Lite write data"},
+        {"name": "s_axi_wvalid", "direction": "input", "width": 1, "protocol": "valid", "description": "AXI4-Lite write data valid"},
+        {"name": "s_axi_wready", "direction": "output", "width": 1, "protocol": "ready", "description": "AXI4-Lite write data ready"},
+        {"name": "s_axi_bresp", "direction": "output", "width": 2, "protocol": "data", "description": "AXI4-Lite write response"},
+        {"name": "s_axi_bvalid", "direction": "output", "width": 1, "protocol": "valid", "description": "AXI4-Lite write response valid"},
+        {"name": "s_axi_bready", "direction": "input", "width": 1, "protocol": "ready", "description": "AXI4-Lite write response ready"},
+        {"name": "s_axi_araddr", "direction": "input", "width": 16, "protocol": "data", "description": "AXI4-Lite read address"},
+        {"name": "s_axi_arvalid", "direction": "input", "width": 1, "protocol": "valid", "description": "AXI4-Lite read address valid"},
+        {"name": "s_axi_arready", "direction": "output", "width": 1, "protocol": "ready", "description": "AXI4-Lite read address ready"},
+        {"name": "s_axi_rdata", "direction": "output", "width": 32, "protocol": "data", "description": "AXI4-Lite read data"},
+        {"name": "s_axi_rresp", "direction": "output", "width": 2, "protocol": "data", "description": "AXI4-Lite read response"},
+        {"name": "s_axi_rvalid", "direction": "output", "width": 1, "protocol": "valid", "description": "AXI4-Lite read data valid"},
+        {"name": "s_axi_rready", "direction": "input", "width": 1, "protocol": "ready", "description": "AXI4-Lite read data ready"},
+        {"name": "s_axis_tdata", "direction": "input", "width": 32, "protocol": "data", "description": "AXI4-Stream input data (message M, 32 beats)"},
+        {"name": "s_axis_tvalid", "direction": "input", "width": 1, "protocol": "valid", "description": "AXI4-Stream input valid"},
+        {"name": "s_axis_tready", "direction": "output", "width": 1, "protocol": "ready", "description": "AXI4-Stream input ready"},
+        {"name": "s_axis_tlast", "direction": "input", "width": 1, "protocol": "flag", "description": "AXI4-Stream input last beat"},
+        {"name": "m_axis_tdata", "direction": "output", "width": 32, "protocol": "data", "description": "AXI4-Stream output data (result, 32 beats)"},
+        {"name": "m_axis_tvalid", "direction": "output", "width": 1, "protocol": "valid", "description": "AXI4-Stream output valid"},
+        {"name": "m_axis_tready", "direction": "input", "width": 1, "protocol": "ready", "description": "AXI4-Stream output ready"},
+        {"name": "m_axis_tlast", "direction": "output", "width": 1, "protocol": "flag", "description": "AXI4-Stream output last beat"}
+      ],
+      "parameters": []
+    },
+    {
+      "module_name": "mont_mult_1024",
+      "description": "1024-bit Montgomery modular multiplier using CIOS algorithm. Controls mont_word_engine through 32 outer loop iterations. Contains internal BRAMs for operands A, B, N and distributed RAM for t[] accumulator.",
+      "module_type": "control",
+      "hierarchy_level": 1,
+      "parent": "rsa_modexp_top",
+      "submodules": ["mont_word_engine"],
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "clock_port": "clk",
+          "reset_port": "rst",
+          "frequency_mhz": 250,
+          "reset_type": "sync_active_high"
+        }
+      ],
+      "ports": [
+        {"name": "clk", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock"},
+        {"name": "rst", "direction": "input", "width": 1, "protocol": "reset", "description": "Synchronous active-high reset"},
+        {"name": "start_i", "direction": "input", "width": 1, "protocol": "valid", "description": "Start Montgomery multiplication"},
+        {"name": "done_o", "direction": "output", "width": 1, "protocol": "flag", "description": "Multiplication complete, result available"},
+        {"name": "mem_wr_en_i", "direction": "input", "width": 1, "protocol": "valid", "description": "Write enable for operand loading"},
+        {"name": "mem_sel_i", "direction": "input", "width": 2, "protocol": "data", "description": "Memory select: 00=op_a, 01=op_b, 10=modulus_n"},
+        {"name": "mem_addr_i", "direction": "input", "width": 5, "protocol": "data", "description": "Memory write address (word index 0-31)"},
+        {"name": "mem_wdata_i", "direction": "input", "width": 32, "protocol": "data", "description": "Memory write data (32-bit word)"},
+        {"name": "n_prime_i", "direction": "input", "width": 32, "protocol": "data", "description": "Montgomery parameter N' = -N^(-1) mod 2^32"},
+        {"name": "result_addr_i", "direction": "input", "width": 5, "protocol": "data", "description": "Result read address (word index 0-31)"},
+        {"name": "result_data_o", "direction": "output", "width": 32, "protocol": "data", "description": "Result read data (32-bit word)"}
+      ],
+      "parameters": [
+        {"name": "WORD_WIDTH", "default_value": 32, "description": "Bit width of each word"},
+        {"name": "NUM_WORDS", "default_value": 32, "description": "Number of words per 1024-bit operand"}
+      ]
+    },
+    {
+      "module_name": "mont_word_engine",
+      "description": "CIOS algorithm inner loop engine. Handles multiply-accumulate (MULT_ACCUM) and reduce-accumulate (REDUCE_ACCUM) phases for 32 words per outer loop iteration. Computes reduction factor m = t[0] * N' internally. Instantiates dsp_mac_32.",
+      "module_type": "control",
+      "hierarchy_level": 2,
+      "parent": "mont_mult_1024",
+      "submodules": ["dsp_mac_32"],
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "clock_port": "clk",
+          "reset_port": "rst",
+          "frequency_mhz": 250,
+          "reset_type": "sync_active_high"
+        }
+      ],
+      "ports": [
+        {"name": "clk", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock"},
+        {"name": "rst", "direction": "input", "width": 1, "protocol": "reset", "description": "Synchronous active-high reset"},
+        {"name": "start_i", "direction": "input", "width": 1, "protocol": "valid", "description": "Start CIOS inner loop for one outer iteration"},
+        {"name": "done_o", "direction": "output", "width": 1, "protocol": "flag", "description": "Inner loop complete (including shift)"},
+        {"name": "b_i", "direction": "input", "width": 32, "protocol": "data", "description": "Fixed outer loop multiplier B[i]"},
+        {"name": "n_prime_i", "direction": "input", "width": 32, "protocol": "data", "description": "Montgomery parameter N' for reduction factor m = t[0] * N' mod 2^32"},
+        {"name": "addr_rd_o", "direction": "output", "width": 5, "protocol": "data", "description": "Read address for A and N operand arrays (j index)"},
+        {"name": "a_j_i", "direction": "input", "width": 32, "protocol": "data", "description": "A array read data at addr_rd"},
+        {"name": "n_j_i", "direction": "input", "width": 32, "protocol": "data", "description": "N array read data at addr_rd"},
+        {"name": "t_rd_addr_o", "direction": "output", "width": 6, "protocol": "data", "description": "T accumulator read address (0-32)"},
+        {"name": "t_rd_data_i", "direction": "input", "width": 32, "protocol": "data", "description": "T accumulator read data"},
+        {"name": "t_wr_addr_o", "direction": "output", "width": 6, "protocol": "data", "description": "T accumulator write address (0-32)"},
+        {"name": "t_wr_data_o", "direction": "output", "width": 32, "protocol": "data", "description": "T accumulator write data"},
+        {"name": "t_wr_en_o", "direction": "output", "width": 1, "protocol": "flag", "description": "T accumulator write enable"}
+      ],
+      "parameters": [
+        {"name": "WORD_WIDTH", "default_value": 32, "description": "Bit width of each word"},
+        {"name": "NUM_WORDS", "default_value": 32, "description": "Number of words per operand"}
+      ]
+    },
+    {
+      "module_name": "dsp_mac_32",
+      "description": "Pipeline 32x32 multiply-accumulate unit. Computes P = (a * b) + c_in + t_in, outputs result word and carry. 2-stage pipeline with 2-cycle latency. Behavioral * maps to DSP48E2 during synthesis.",
+      "module_type": "processing",
+      "hierarchy_level": 3,
+      "parent": "mont_word_engine",
+      "submodules": [],
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "clock_port": "clk",
+          "reset_port": "rst",
+          "frequency_mhz": 250,
+          "reset_type": "sync_active_high"
+        }
+      ],
+      "ports": [
+        {"name": "clk", "direction": "input", "width": 1, "protocol": "clock", "description": "System clock"},
+        {"name": "rst", "direction": "input", "width": 1, "protocol": "reset", "description": "Synchronous active-high reset"},
+        {"name": "a_i", "direction": "input", "width": 32, "protocol": "data", "description": "Multiplicand input"},
+        {"name": "b_i", "direction": "input", "width": 32, "protocol": "data", "description": "Multiplier input"},
+        {"name": "c_in_i", "direction": "input", "width": 32, "protocol": "data", "description": "Carry-in from previous word accumulation"},
+        {"name": "t_in_i", "direction": "input", "width": 32, "protocol": "data", "description": "Previous accumulated value from t array"},
+        {"name": "res_out_o", "direction": "output", "width": 32, "protocol": "data", "description": "Result word (lower 32 bits of a*b + c_in + t_in)"},
+        {"name": "c_out_o", "direction": "output", "width": 32, "protocol": "data", "description": "Carry-out (upper 32 bits of a*b + c_in + t_in)"}
+      ],
+      "parameters": []
+    }
+  ],
+  "module_connectivity": [
+    {"source": "rsa_modexp_top.mont_start", "destination": "mont_mult_1024.start_i", "bus_width": 1, "connection_type": "direct"},
+    {"source": "rsa_modexp_top.mem_wr_en", "destination": "mont_mult_1024.mem_wr_en_i", "bus_width": 1, "connection_type": "direct"},
+    {"source": "rsa_modexp_top.mem_sel", "destination": "mont_mult_1024.mem_sel_i", "bus_width": 2, "connection_type": "direct"},
+    {"source": "rsa_modexp_top.mem_addr", "destination": "mont_mult_1024.mem_addr_i", "bus_width": 5, "connection_type": "direct"},
+    {"source": "rsa_modexp_top.mem_wdata", "destination": "mont_mult_1024.mem_wdata_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "rsa_modexp_top.n_prime_reg", "destination": "mont_mult_1024.n_prime_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "mont_mult_1024.result_data_o", "destination": "rsa_modexp_top.result_data", "bus_width": 32, "connection_type": "direct"},
+    {"source": "mont_mult_1024.engine_start", "destination": "mont_word_engine.start_i", "bus_width": 1, "connection_type": "direct"},
+    {"source": "mont_mult_1024.b_word", "destination": "mont_word_engine.b_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "mont_mult_1024.n_prime", "destination": "mont_word_engine.n_prime_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "mont_word_engine.addr_rd_o", "destination": "mont_mult_1024.ram_a_n_rd_addr", "bus_width": 5, "connection_type": "ram"},
+    {"source": "mont_mult_1024.ram_a_rd_data", "destination": "mont_word_engine.a_j_i", "bus_width": 32, "connection_type": "ram"},
+    {"source": "mont_mult_1024.ram_n_rd_data", "destination": "mont_word_engine.n_j_i", "bus_width": 32, "connection_type": "ram"},
+    {"source": "mont_word_engine.t_rd_addr_o", "destination": "mont_mult_1024.t_ram_rd_addr", "bus_width": 6, "connection_type": "ram"},
+    {"source": "mont_mult_1024.t_ram_rd_data", "destination": "mont_word_engine.t_rd_data_i", "bus_width": 32, "connection_type": "ram"},
+    {"source": "mont_word_engine.t_wr_addr_o", "destination": "mont_mult_1024.t_ram_wr_addr", "bus_width": 6, "connection_type": "ram"},
+    {"source": "mont_word_engine.t_wr_data_o", "destination": "mont_mult_1024.t_ram_wr_data", "bus_width": 32, "connection_type": "ram"},
+    {"source": "mont_word_engine.t_wr_en_o", "destination": "mont_mult_1024.t_ram_wr_en", "bus_width": 1, "connection_type": "ram"},
+    {"source": "mont_word_engine.mac_a", "destination": "dsp_mac_32.a_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "mont_word_engine.mac_b", "destination": "dsp_mac_32.b_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "mont_word_engine.mac_c_in", "destination": "dsp_mac_32.c_in_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "mont_word_engine.mac_t_in", "destination": "dsp_mac_32.t_in_i", "bus_width": 32, "connection_type": "direct"},
+    {"source": "dsp_mac_32.res_out_o", "destination": "mont_word_engine.mac_result", "bus_width": 32, "connection_type": "direct"},
+    {"source": "dsp_mac_32.c_out_o", "destination": "mont_word_engine.mac_carry", "bus_width": 32, "connection_type": "direct"}
+  ]
+}

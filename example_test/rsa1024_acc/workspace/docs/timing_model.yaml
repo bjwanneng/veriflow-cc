@@ -1,0 +1,69 @@
+design: rsa1024_modexp_accel
+scenarios:
+  - name: reset_behavior
+    description: "Verify all outputs are zero after synchronous reset and STAT_REG reads 0"
+    assertions:
+      - "rst=1 |-> ##1 s_axi_awready=0 && s_axi_arready=0 && s_axis_tready=0 && m_axis_tvalid=0"
+      - "rst deasserted |-> ##1 STAT_REG=0x0 (BUSY=0, DONE=0)"
+    stimulus:
+      - {cycle: 0, rst: 1}
+      - {cycle: 10, rst: 0}
+      - {cycle: 11, action: "read STAT_REG at 0x0004, expect 0x00000000"}
+
+  - name: axi_lite_register_access
+    description: "Write to PARAM_N_PRIME, MEM_MODULUS_N, MEM_EXPONENT_E, MEM_R_SQUARE via AXI4-Lite, read back and verify"
+    assertions:
+      - "write 0x3B13B13B to 0x0010 |-> ##2 read 0x0010 == 0x3B13B13B"
+      - "write 0x0000000D to 0x0100 |-> ##2 read 0x0100 == 0x0000000D"
+      - "write 0x00000001 to 0x0200 |-> ##2 read 0x0200 == 0x00000001"
+      - "write 0x00000009 to 0x0300 |-> ##2 read 0x0300 == 0x00000009"
+    stimulus:
+      - {cycle: 0, rst: 1}
+      - {cycle: 5, rst: 0}
+      - {cycle: 10, action: "axi_write 0x0010 = 0x3B13B13B"}
+      - {cycle: 15, action: "axi_write 0x0100 = 0x0000000D"}
+      - {cycle: 20, action: "axi_write 0x0200 = 0x00000001"}
+      - {cycle: 25, action: "axi_write 0x0300 = 0x00000009"}
+      - {cycle: 30, action: "axi_read 0x0010, expect 0x3B13B13B"}
+      - {cycle: 35, action: "axi_read 0x0100, expect 0x0000000D"}
+      - {cycle: 40, action: "axi_read 0x0200, expect 0x00000001"}
+      - {cycle: 45, action: "axi_read 0x0300, expect 0x00000009"}
+
+  - name: axi_stream_message_load
+    description: "Load 32-word message M via AXI4-Stream, verify tlast handling"
+    assertions:
+      - "s_axis_tvalid && s_axis_tready |-> data accepted"
+      - "beat 32 with tlast |-> all 32 words stored in M buffer"
+    stimulus:
+      - {cycle: 0, rst: 1}
+      - {cycle: 5, rst: 0}
+      - {cycle: 10, action: "send 32 beats via AXI-Stream, M[0]=0x00000002, M[1..31]=0, tlast on beat 31"}
+
+  - name: dsp_mac_32_pipeline
+    description: "Verify dsp_mac_32 computes res = (a*b + c_in + t_in) with 2-cycle latency"
+    assertions:
+      - "a=5, b=7, c_in=0, t_in=0 |-> ##2 res_out=35, c_out=0"
+      - "a=0xFFFFFFFF, b=0x00000002, c_in=0, t_in=0 |-> ##2 res_out=0xFFFFFFFE, c_out=1"
+    stimulus:
+      - {cycle: 0, rst: 1}
+      - {cycle: 2, rst: 0}
+      - {cycle: 5, a: "0x00000005", b: "0x00000007", c_in: "0x00000000", t_in: "0x00000000"}
+      - {cycle: 7, expect_res: "0x00000023", expect_c: "0x00000000"}
+      - {cycle: 10, a: "0xFFFFFFFF", b: "0x00000002", c_in: "0x00000000", t_in: "0x00000000"}
+      - {cycle: 12, expect_res: "0xFFFFFFFE", expect_c: "0x00000001"}
+
+  - name: modexp_e1_identity
+    description: "Full modexp with E=1: M^1 mod N = M. N=13, N'=0x3B13B13B, R2=9, M=2, expected result=2"
+    assertions:
+      - "start via CTRL_REG |-> BUSY=1 within 10 cycles"
+      - "modexp complete |-> DONE=1, result via AXI-Stream = 0x00000002"
+    stimulus:
+      - {cycle: 0, rst: 1}
+      - {cycle: 5, rst: 0}
+      - {cycle: 10, action: "axi_write 0x0010 = 0x3B13B13B (N_prime)"}
+      - {cycle: 15, action: "axi_write 0x0100 = 0x0000000D (N[0]=13)"}
+      - {cycle: 20, action: "axi_write 0x0200 = 0x00000001 (E[0]=1)"}
+      - {cycle: 25, action: "axi_write 0x0300 = 0x00000009 (R2[0]=9)"}
+      - {cycle: 30, action: "send M via AXI-Stream: M[0]=0x00000002, M[1..31]=0"}
+      - {cycle: 100, action: "axi_write 0x0000 = 0x00000001 (start)"}
+      - {cycle: 5000000, action: "wait for DONE, receive result via AXI-Stream"}

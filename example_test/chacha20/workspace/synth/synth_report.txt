@@ -1,0 +1,1971 @@
+
+ /----------------------------------------------------------------------------\
+ |  yosys -- Yosys Open SYnthesis Suite                                       |
+ |  Copyright (C) 2012 - 2026  Claire Xenia Wolf <claire@yosyshq.com>         |
+ |  Distributed under an ISC-like license, type "license" to see terms        |
+ \----------------------------------------------------------------------------/
+ Yosys 0.63+89 (git sha1 de99d67bb-dirty, x86_64-w64-mingw32-g++ 13.2.1 -O3)
+
+-- Running command `read_verilog workspace/rtl/chacha20_core.v; read_verilog workspace/rtl/chacha20_qr.v; read_verilog workspace/rtl/chacha20_top.v;  synth -top chacha20_top; stat' --
+
+1. Executing Verilog-2005 frontend: workspace/rtl/chacha20_core.v
+Parsing Verilog input from `workspace/rtl/chacha20_core.v' to AST representation.
+Generating RTLIL representation for module `\chacha20_core'.
+Successfully finished Verilog frontend.
+
+2. Executing Verilog-2005 frontend: workspace/rtl/chacha20_qr.v
+Parsing Verilog input from `workspace/rtl/chacha20_qr.v' to AST representation.
+Generating RTLIL representation for module `\chacha20_qr'.
+Successfully finished Verilog frontend.
+
+3. Executing Verilog-2005 frontend: workspace/rtl/chacha20_top.v
+Parsing Verilog input from `workspace/rtl/chacha20_top.v' to AST representation.
+Generating RTLIL representation for module `\chacha20_top'.
+Successfully finished Verilog frontend.
+
+4. Executing SYNTH pass.
+
+4.1. Executing HIERARCHY pass (managing design hierarchy).
+
+4.1.1. Analyzing design hierarchy..
+Top module:  \chacha20_top
+Used module:     \chacha20_core
+Used module:         \chacha20_qr
+
+4.1.2. Analyzing design hierarchy..
+Top module:  \chacha20_top
+Used module:     \chacha20_core
+Used module:         \chacha20_qr
+Removed 0 unused modules.
+
+4.2. Executing PROC pass (convert processes to netlists).
+
+4.2.1. Executing PROC_CLEAN pass (remove empty switches from decision trees).
+Cleaned up 0 empty switches.
+
+4.2.2. Executing PROC_RMDEAD pass (remove dead branches from decision trees).
+Marked 1 switch rules as full_case in process $proc$workspace/rtl/chacha20_top.v:189$264 in module chacha20_top.
+Marked 5 switch rules as full_case in process $proc$workspace/rtl/chacha20_top.v:135$260 in module chacha20_top.
+Removed 1 dead cases from process $proc$workspace/rtl/chacha20_top.v:106$256 in module chacha20_top.
+Marked 1 switch rules as full_case in process $proc$workspace/rtl/chacha20_top.v:106$256 in module chacha20_top.
+Marked 1 switch rules as full_case in process $proc$workspace/rtl/chacha20_top.v:44$254 in module chacha20_top.
+Marked 2 switch rules as full_case in process $proc$workspace/rtl/chacha20_core.v:327$120 in module chacha20_core.
+Marked 3 switch rules as full_case in process $proc$workspace/rtl/chacha20_core.v:238$51 in module chacha20_core.
+Removed a total of 1 dead cases.
+
+4.2.3. Executing PROC_PRUNE pass (remove redundant assignments in processes).
+Removed 30 redundant assignments.
+Promoted 120 assignments to connections.
+
+4.2.4. Executing PROC_INIT pass (extract init attributes).
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:89$276'.
+  Set init value: \dout_valid_o_reg = 1'0
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:88$275'.
+  Set init value: \din_ready_o_reg = 1'0
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:87$274'.
+  Set init value: \ready_o_reg = 1'0
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:73$273'.
+  Set init value: \block_done_reg = 1'0
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:72$272'.
+  Set init value: \start_pulse_reg = 1'0
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:71$271'.
+  Set init value: \word_cnt_reg = 4'0000
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:70$270'.
+  Set init value: \keystream_reg = 512'00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:69$269'.
+  Set init value: \counter_reg = 0
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:63$268'.
+  Set init value: \top_state_reg = 2'00
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:42$267'.
+  Set init value: \rst_n_sync = 1'0
+Found init rule in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:41$266'.
+  Set init value: \rst_n_meta = 1'0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:107$245'.
+  Set init value: \state_out_reg = 512'00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:104$244'.
+  Set init value: \done_reg = 1'0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:101$243'.
+  Set init value: \core_fsm_reg = 2'00
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:98$242'.
+  Set init value: \round_cnt_reg = 5'00000
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:95$241'.
+  Set init value: \init_15_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:94$240'.
+  Set init value: \init_14_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:93$239'.
+  Set init value: \init_13_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:92$238'.
+  Set init value: \init_12_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:91$237'.
+  Set init value: \init_11_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:90$236'.
+  Set init value: \init_10_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:89$235'.
+  Set init value: \init_09_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:88$234'.
+  Set init value: \init_08_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:87$233'.
+  Set init value: \init_07_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:86$232'.
+  Set init value: \init_06_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:85$231'.
+  Set init value: \init_05_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:84$230'.
+  Set init value: \init_04_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:83$229'.
+  Set init value: \init_03_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:82$228'.
+  Set init value: \init_02_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:81$227'.
+  Set init value: \init_01_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:80$226'.
+  Set init value: \init_00_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:77$225'.
+  Set init value: \state_15_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:76$224'.
+  Set init value: \state_14_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:75$223'.
+  Set init value: \state_13_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:74$222'.
+  Set init value: \state_12_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:73$221'.
+  Set init value: \state_11_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:72$220'.
+  Set init value: \state_10_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:71$219'.
+  Set init value: \state_09_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:70$218'.
+  Set init value: \state_08_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:69$217'.
+  Set init value: \state_07_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:68$216'.
+  Set init value: \state_06_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:67$215'.
+  Set init value: \state_05_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:66$214'.
+  Set init value: \state_04_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:65$213'.
+  Set init value: \state_03_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:64$212'.
+  Set init value: \state_02_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:63$211'.
+  Set init value: \state_01_reg = 0
+Found init rule in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:62$210'.
+  Set init value: \state_00_reg = 0
+
+4.2.5. Executing PROC_ARST pass (detect async resets in processes).
+Found async reset \rst_n_sync in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+Found async reset \rst_n_i in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:44$254'.
+Found async reset \rst_n_i in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+
+4.2.6. Executing PROC_ROM pass (convert switches to ROMs).
+Converted 0 switches.
+<suppressed ~11 debug messages>
+
+4.2.7. Executing PROC_MUX pass (convert decision trees to multiplexers).
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:89$276'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:88$275'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:87$274'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:73$273'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:72$272'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:71$271'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:70$270'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:69$269'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:63$268'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:42$267'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:41$266'.
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+     1/9: $0\dout_valid_o_reg[0:0]
+     2/9: $0\din_ready_o_reg[0:0]
+     3/9: $0\ready_o_reg[0:0]
+     4/9: $0\block_done_reg[0:0]
+     5/9: $0\start_pulse_reg[0:0]
+     6/9: $0\word_cnt_reg[3:0]
+     7/9: $0\keystream_reg[511:0]
+     8/9: $0\counter_reg[31:0]
+     9/9: $0\top_state_reg[1:0]
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+     1/23: $5\top_state_next[1:0]
+     2/23: $3\block_done_next[0:0]
+     3/23: $4\counter_next[31:0]
+     4/23: $4\word_cnt_next[3:0]
+     5/23: $2\block_done_next[0:0]
+     6/23: $3\word_cnt_next[3:0]
+     7/23: $3\counter_next[31:0]
+     8/23: $4\top_state_next[1:0]
+     9/23: $3\top_state_next[1:0]
+    10/23: $2\word_cnt_next[3:0]
+    11/23: $2\keystream_next[511:0]
+    12/23: $2\top_state_next[1:0]
+    13/23: $2\start_pulse_next[0:0]
+    14/23: $2\counter_next[31:0]
+    15/23: $1\start_pulse_next[0:0]
+    16/23: $1\counter_next[31:0]
+    17/23: $1\top_state_next[1:0]
+    18/23: $1\ready_o_next[0:0]
+    19/23: $1\dout_valid_o_next[0:0]
+    20/23: $1\din_ready_o_next[0:0]
+    21/23: $1\block_done_next[0:0]
+    22/23: $1\word_cnt_next[3:0]
+    23/23: $1\keystream_next[511:0]
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:106$256'.
+     1/1: $1\keystream_word[31:0]
+Creating decoders for process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:44$254'.
+     1/2: $0\rst_n_sync[0:0]
+     2/2: $0\rst_n_meta[0:0]
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:107$245'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:104$244'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:101$243'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:98$242'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:95$241'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:94$240'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:93$239'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:92$238'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:91$237'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:90$236'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:89$235'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:88$234'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:87$233'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:86$232'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:85$231'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:84$230'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:83$229'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:82$228'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:81$227'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:80$226'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:77$225'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:76$224'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:75$223'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:74$222'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:73$221'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:72$220'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:71$219'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:70$218'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:69$217'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:68$216'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:67$215'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:66$214'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:65$213'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:64$212'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:63$211'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:62$210'.
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+     1/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:387$22.$result[31:0]$189
+     2/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:387$22.val[31:0]$190
+     3/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:386$21.$result[31:0]$187
+     4/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:386$21.val[31:0]$188
+     5/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:385$20.$result[31:0]$185
+     6/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:385$20.val[31:0]$186
+     7/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:383$19.$result[31:0]$183
+     8/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:383$19.val[31:0]$184
+     9/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:382$18.$result[31:0]$181
+    10/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:382$18.val[31:0]$182
+    11/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:381$17.$result[31:0]$179
+    12/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:381$17.val[31:0]$180
+    13/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:380$16.$result[31:0]$177
+    14/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:380$16.val[31:0]$178
+    15/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:379$15.$result[31:0]$175
+    16/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:379$15.val[31:0]$176
+    17/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:378$14.$result[31:0]$173
+    18/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:378$14.val[31:0]$174
+    19/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:377$13.$result[31:0]$171
+    20/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:377$13.val[31:0]$172
+    21/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:376$12.$result[31:0]$169
+    22/80: $2\bswap32$func$workspace/rtl/chacha20_core.v:376$12.val[31:0]$170
+    23/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:387$22.val[31:0]$165
+    24/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:387$22.$result[31:0]$164
+    25/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:386$21.val[31:0]$163
+    26/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:386$21.$result[31:0]$162
+    27/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:385$20.val[31:0]$161
+    28/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:385$20.$result[31:0]$160
+    29/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:383$19.val[31:0]$159
+    30/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:383$19.$result[31:0]$158
+    31/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:382$18.val[31:0]$157
+    32/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:382$18.$result[31:0]$156
+    33/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:381$17.val[31:0]$155
+    34/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:381$17.$result[31:0]$154
+    35/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:380$16.val[31:0]$153
+    36/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:380$16.$result[31:0]$152
+    37/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:379$15.val[31:0]$151
+    38/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:379$15.$result[31:0]$150
+    39/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:378$14.val[31:0]$149
+    40/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:378$14.$result[31:0]$148
+    41/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:377$13.val[31:0]$147
+    42/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:377$13.$result[31:0]$146
+    43/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:376$12.val[31:0]$145
+    44/80: $1\bswap32$func$workspace/rtl/chacha20_core.v:376$12.$result[31:0]$144
+    45/80: $0\state_15_reg[31:0]
+    46/80: $0\state_14_reg[31:0]
+    47/80: $0\state_13_reg[31:0]
+    48/80: $0\state_12_reg[31:0]
+    49/80: $0\state_11_reg[31:0]
+    50/80: $0\state_10_reg[31:0]
+    51/80: $0\state_09_reg[31:0]
+    52/80: $0\state_08_reg[31:0]
+    53/80: $0\state_07_reg[31:0]
+    54/80: $0\state_06_reg[31:0]
+    55/80: $0\state_05_reg[31:0]
+    56/80: $0\state_04_reg[31:0]
+    57/80: $0\state_03_reg[31:0]
+    58/80: $0\state_02_reg[31:0]
+    59/80: $0\state_01_reg[31:0]
+    60/80: $0\state_00_reg[31:0]
+    61/80: $0\done_reg[0:0]
+    62/80: $0\round_cnt_reg[4:0]
+    63/80: $0\core_fsm_reg[1:0]
+    64/80: $0\state_out_reg[511:0]
+    65/80: $0\init_15_reg[31:0]
+    66/80: $0\init_14_reg[31:0]
+    67/80: $0\init_13_reg[31:0]
+    68/80: $0\init_12_reg[31:0]
+    69/80: $0\init_11_reg[31:0]
+    70/80: $0\init_10_reg[31:0]
+    71/80: $0\init_09_reg[31:0]
+    72/80: $0\init_08_reg[31:0]
+    73/80: $0\init_07_reg[31:0]
+    74/80: $0\init_06_reg[31:0]
+    75/80: $0\init_05_reg[31:0]
+    76/80: $0\init_04_reg[31:0]
+    77/80: $0\init_03_reg[31:0]
+    78/80: $0\init_02_reg[31:0]
+    79/80: $0\init_01_reg[31:0]
+    80/80: $0\init_00_reg[31:0]
+Creating decoders for process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+     1/83: $3\core_fsm_next[1:0]
+     2/83: $3\round_cnt_next[4:0]
+     3/83: $2\core_fsm_next[1:0]
+     4/83: $2\round_cnt_next[4:0]
+     5/83: $2\state_15_next[31:0]
+     6/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:280$11.$result[31:0]$116
+     7/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:280$11.val[31:0]$117
+     8/83: $2\state_14_next[31:0]
+     9/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:279$10.$result[31:0]$114
+    10/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:279$10.val[31:0]$115
+    11/83: $2\state_13_next[31:0]
+    12/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:278$9.$result[31:0]$112
+    13/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:278$9.val[31:0]$113
+    14/83: $2\state_12_next[31:0]
+    15/83: $2\state_11_next[31:0]
+    16/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:276$8.$result[31:0]$110
+    17/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:276$8.val[31:0]$111
+    18/83: $2\state_10_next[31:0]
+    19/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:275$7.$result[31:0]$108
+    20/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:275$7.val[31:0]$109
+    21/83: $2\state_09_next[31:0]
+    22/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:274$6.$result[31:0]$106
+    23/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:274$6.val[31:0]$107
+    24/83: $2\state_08_next[31:0]
+    25/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:273$5.$result[31:0]$104
+    26/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:273$5.val[31:0]$105
+    27/83: $2\state_07_next[31:0]
+    28/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:272$4.$result[31:0]$102
+    29/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:272$4.val[31:0]$103
+    30/83: $2\state_06_next[31:0]
+    31/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:271$3.$result[31:0]$100
+    32/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:271$3.val[31:0]$101
+    33/83: $2\state_05_next[31:0]
+    34/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:270$2.$result[31:0]$98
+    35/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:270$2.val[31:0]$99
+    36/83: $2\state_04_next[31:0]
+    37/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:269$1.$result[31:0]$96
+    38/83: $2\bswap32$func$workspace/rtl/chacha20_core.v:269$1.val[31:0]$97
+    39/83: $2\state_03_next[31:0]
+    40/83: $2\state_02_next[31:0]
+    41/83: $2\state_01_next[31:0]
+    42/83: $2\state_00_next[31:0]
+    43/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:280$11.val[31:0]$95
+    44/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:280$11.$result[31:0]$94
+    45/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:279$10.val[31:0]$93
+    46/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:279$10.$result[31:0]$92
+    47/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:278$9.val[31:0]$91
+    48/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:278$9.$result[31:0]$90
+    49/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:276$8.val[31:0]$89
+    50/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:276$8.$result[31:0]$88
+    51/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:275$7.val[31:0]$87
+    52/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:275$7.$result[31:0]$86
+    53/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:274$6.val[31:0]$85
+    54/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:274$6.$result[31:0]$84
+    55/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:273$5.val[31:0]$83
+    56/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:273$5.$result[31:0]$82
+    57/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:272$4.val[31:0]$81
+    58/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:272$4.$result[31:0]$80
+    59/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:271$3.val[31:0]$79
+    60/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:271$3.$result[31:0]$78
+    61/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:270$2.val[31:0]$77
+    62/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:270$2.$result[31:0]$76
+    63/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:269$1.val[31:0]$75
+    64/83: $1\bswap32$func$workspace/rtl/chacha20_core.v:269$1.$result[31:0]$74
+    65/83: $1\core_fsm_next[1:0]
+    66/83: $1\round_cnt_next[4:0]
+    67/83: $1\state_15_next[31:0]
+    68/83: $1\state_14_next[31:0]
+    69/83: $1\state_13_next[31:0]
+    70/83: $1\state_12_next[31:0]
+    71/83: $1\state_11_next[31:0]
+    72/83: $1\state_10_next[31:0]
+    73/83: $1\state_09_next[31:0]
+    74/83: $1\state_08_next[31:0]
+    75/83: $1\state_07_next[31:0]
+    76/83: $1\state_06_next[31:0]
+    77/83: $1\state_05_next[31:0]
+    78/83: $1\state_04_next[31:0]
+    79/83: $1\state_03_next[31:0]
+    80/83: $1\state_02_next[31:0]
+    81/83: $1\state_01_next[31:0]
+    82/83: $1\state_00_next[31:0]
+    83/83: $1\done_next[0:0]
+
+4.2.8. Executing PROC_DLATCH pass (convert process syncs to latches).
+No latch inferred for signal `\chacha20_top.\top_state_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\counter_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\keystream_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\word_cnt_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\start_pulse_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\block_done_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\ready_o_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\din_ready_o_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\dout_valid_o_next' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+No latch inferred for signal `\chacha20_top.\keystream_word' from process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:106$256'.
+No latch inferred for signal `\chacha20_core.\state_00_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_01_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_02_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_03_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_04_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_05_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_06_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_07_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_08_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_09_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_10_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_11_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_12_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_13_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_14_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\state_15_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\round_cnt_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\core_fsm_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\done_next' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:269$1.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:269$1.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:270$2.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:270$2.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:271$3.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:271$3.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:272$4.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:272$4.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:273$5.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:273$5.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:274$6.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:274$6.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:275$7.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:275$7.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:276$8.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:276$8.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:278$9.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:278$9.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:279$10.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:279$10.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:280$11.$result' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+No latch inferred for signal `\chacha20_core.\bswap32$func$workspace/rtl/chacha20_core.v:280$11.val' from process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+
+4.2.9. Executing PROC_DFF pass (convert process syncs to FFs).
+Creating register for signal `\chacha20_top.\top_state_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1092' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\counter_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1097' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\keystream_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1102' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\word_cnt_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1107' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\start_pulse_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1112' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\block_done_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1117' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\ready_o_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1122' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\din_ready_o_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1127' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\dout_valid_o_reg' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+  created $adff cell `$procdff$1132' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\rst_n_meta' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:44$254'.
+  created $adff cell `$procdff$1137' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_top.\rst_n_sync' using process `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:44$254'.
+  created $adff cell `$procdff$1142' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_00_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1147' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_01_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1152' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_02_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1157' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_03_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1162' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_04_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1167' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_05_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1172' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_06_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1177' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_07_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1182' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_08_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1187' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_09_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1192' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_10_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1197' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_11_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1202' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_12_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1207' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_13_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1212' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_14_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1217' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_15_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1222' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\init_00_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1229' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_01_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1236' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_02_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1243' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_03_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1250' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_04_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1257' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_05_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1264' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_06_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1271' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_07_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1278' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_08_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1285' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_09_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1292' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_10_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1299' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_11_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1306' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_12_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1313' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_13_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1320' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_14_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1327' with positive edge clock.
+Creating register for signal `\chacha20_core.\init_15_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $dff cell `$procdff$1334' with positive edge clock.
+Creating register for signal `\chacha20_core.\round_cnt_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1339' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\core_fsm_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1344' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\done_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1349' with positive edge clock and positive level reset.
+Creating register for signal `\chacha20_core.\state_out_reg' using process `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+  created $adff cell `$procdff$1354' with positive edge clock and positive level reset.
+
+4.2.10. Executing PROC_MEMWR pass (convert process memory writes to cells).
+
+4.2.11. Executing PROC_CLEAN pass (remove empty switches from decision trees).
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:89$276'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:88$275'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:87$274'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:73$273'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:72$272'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:71$271'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:70$270'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:69$269'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:63$268'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:42$267'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:41$266'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:189$264'.
+Found and cleaned up 5 empty switches in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:135$260'.
+Found and cleaned up 1 empty switch in `\chacha20_top.$proc$workspace/rtl/chacha20_top.v:106$256'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:106$256'.
+Removing empty process `chacha20_top.$proc$workspace/rtl/chacha20_top.v:44$254'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:107$245'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:104$244'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:101$243'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:98$242'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:95$241'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:94$240'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:93$239'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:92$238'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:91$237'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:90$236'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:89$235'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:88$234'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:87$233'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:86$232'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:85$231'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:84$230'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:83$229'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:82$228'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:81$227'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:80$226'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:77$225'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:76$224'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:75$223'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:74$222'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:73$221'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:72$220'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:71$219'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:70$218'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:69$217'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:68$216'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:67$215'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:66$214'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:65$213'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:64$212'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:63$211'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:62$210'.
+Found and cleaned up 2 empty switches in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:327$120'.
+Found and cleaned up 3 empty switches in `\chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+Removing empty process `chacha20_core.$proc$workspace/rtl/chacha20_core.v:238$51'.
+Cleaned up 11 empty switches.
+
+4.2.12. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+<suppressed ~30 debug messages>
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+<suppressed ~158 debug messages>
+
+4.3. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.4. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 182 unused cells and 746 unused wires.
+<suppressed ~196 debug messages>
+
+4.5. Executing CHECK pass (checking for obvious problems).
+Checking module chacha20_top...
+Checking module chacha20_qr...
+Checking module chacha20_core...
+Found and reported 0 problems.
+
+4.6. Executing OPT pass (performing simple optimizations).
+
+4.6.1. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.6.2. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 103 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Computing hashes of 77 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+<suppressed ~78 debug messages>
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 237 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Computing hashes of 182 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+<suppressed ~165 debug messages>
+Removed a total of 81 cells.
+
+4.6.3. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+    dead port 2/2 on $mux $procmux$380.
+    dead port 2/2 on $mux $procmux$372.
+    dead port 2/2 on $mux $procmux$364.
+    dead port 2/2 on $mux $procmux$356.
+    dead port 2/2 on $mux $procmux$349.
+    dead port 2/2 on $mux $procmux$342.
+    dead port 2/2 on $mux $procmux$335.
+    dead port 2/2 on $mux $procmux$329.
+    dead port 2/2 on $mux $procmux$323.
+    dead port 2/2 on $mux $procmux$317.
+    dead port 2/2 on $mux $procmux$311.
+    dead port 2/2 on $mux $procmux$309.
+    dead port 2/2 on $mux $procmux$302.
+    dead port 2/2 on $mux $procmux$300.
+    dead port 2/2 on $mux $procmux$293.
+    dead port 2/2 on $mux $procmux$291.
+    dead port 2/2 on $mux $procmux$284.
+    dead port 2/2 on $mux $procmux$282.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+    dead port 2/2 on $mux $procmux$763.
+    dead port 2/2 on $mux $procmux$883.
+    dead port 2/2 on $mux $procmux$835.
+    dead port 2/2 on $mux $procmux$739.
+    dead port 2/2 on $mux $procmux$875.
+    dead port 2/2 on $mux $procmux$715.
+    dead port 2/2 on $mux $procmux$811.
+    dead port 2/2 on $mux $procmux$867.
+    dead port 2/2 on $mux $procmux$691.
+    dead port 2/2 on $mux $procmux$667.
+    dead port 2/2 on $mux $procmux$659.
+    dead port 2/2 on $mux $procmux$635.
+    dead port 2/2 on $mux $procmux$611.
+    dead port 2/2 on $mux $procmux$859.
+    dead port 2/2 on $mux $procmux$587.
+    dead port 2/2 on $mux $procmux$579.
+    dead port 2/2 on $mux $procmux$571.
+    dead port 2/2 on $mux $procmux$787.
+    dead port 2/2 on $mux $procmux$563.
+    dead port 2/2 on $mux $procmux$556.
+Removed 38 multiplexer ports.
+<suppressed ~220 debug messages>
+
+4.6.4. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 0 changes.
+
+4.6.5. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 59 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 162 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.6.6. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.6.7. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 0 unused cells and 119 unused wires.
+<suppressed ~2 debug messages>
+
+4.6.8. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.6.9. Rerunning OPT passes. (Maybe there is more to do..)
+
+4.6.10. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Removed 0 multiplexer ports.
+<suppressed ~182 debug messages>
+
+4.6.11. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 0 changes.
+
+4.6.12. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 59 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 162 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.6.13. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.6.14. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.6.15. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.6.16. Finished fast OPT passes. (There is nothing left to do.)
+
+4.7. Executing FSM pass (extract and optimize FSM).
+
+4.7.1. Executing FSM_DETECT pass (finding FSMs in design).
+Not marking chacha20_top.top_state_reg as FSM state register:
+    Register has an initialization value.
+Not marking chacha20_core.core_fsm_reg as FSM state register:
+    Users of register don't seem to benefit from recoding.
+    Register has an initialization value.
+Not marking chacha20_core.init_03_reg as FSM state register:
+    Users of register don't seem to benefit from recoding.
+    Register has an initialization value.
+Not marking chacha20_core.init_02_reg as FSM state register:
+    Users of register don't seem to benefit from recoding.
+    Register has an initialization value.
+Not marking chacha20_core.init_01_reg as FSM state register:
+    Users of register don't seem to benefit from recoding.
+    Register has an initialization value.
+Not marking chacha20_core.init_00_reg as FSM state register:
+    Users of register don't seem to benefit from recoding.
+    Register has an initialization value.
+
+4.7.2. Executing FSM_EXTRACT pass (extracting FSM from design).
+
+4.7.3. Executing FSM_OPT pass (simple optimizations of FSMs).
+
+4.7.4. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.7.5. Executing FSM_OPT pass (simple optimizations of FSMs).
+
+4.7.6. Executing FSM_RECODE pass (re-assigning FSM state encoding).
+
+4.7.7. Executing FSM_INFO pass (dumping all available information on FSM cells).
+
+4.7.8. Executing FSM_MAP pass (mapping FSMs to basic logic).
+
+4.8. Executing OPT pass (performing simple optimizations).
+
+4.8.1. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.8.2. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 59 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 162 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.8.3. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Removed 0 multiplexer ports.
+<suppressed ~182 debug messages>
+
+4.8.4. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 0 changes.
+
+4.8.5. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 59 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 162 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.8.6. Executing OPT_DFF pass (perform DFF optimizations).
+Adding EN signal on $procdff$1092 ($adff) from module chacha20_top (D = \top_state_next, Q = \top_state_reg).
+Adding EN signal on $procdff$1097 ($adff) from module chacha20_top (D = \counter_next, Q = \counter_reg).
+Adding EN signal on $procdff$1102 ($adff) from module chacha20_top (D = \core_state_o, Q = \keystream_reg).
+Adding EN signal on $procdff$1107 ($adff) from module chacha20_top (D = \word_cnt_next, Q = \word_cnt_reg).
+Adding EN signal on $procdff$1292 ($dff) from module chacha20_core (D = { \key_i [71:64] \key_i [79:72] \key_i [87:80] \key_i [95:88] }, Q = \init_09_reg).
+Adding EN signal on $procdff$1320 ($dff) from module chacha20_core (D = { \nonce_i [71:64] \nonce_i [79:72] \nonce_i [87:80] \nonce_i [95:88] }, Q = \init_13_reg).
+Adding EN signal on $procdff$1250 ($dff) from module chacha20_core (D = 1797285236, Q = \init_03_reg).
+Adding EN signal on $procdff$1327 ($dff) from module chacha20_core (D = { \nonce_i [39:32] \nonce_i [47:40] \nonce_i [55:48] \nonce_i [63:56] }, Q = \init_14_reg).
+Adding EN signal on $procdff$1334 ($dff) from module chacha20_core (D = { \nonce_i [7:0] \nonce_i [15:8] \nonce_i [23:16] \nonce_i [31:24] }, Q = \init_15_reg).
+Adding EN signal on $procdff$1257 ($dff) from module chacha20_core (D = { \key_i [231:224] \key_i [239:232] \key_i [247:240] \key_i [255:248] }, Q = \init_04_reg).
+Adding EN signal on $procdff$1313 ($dff) from module chacha20_core (D = \counter_i, Q = \init_12_reg).
+Adding EN signal on $procdff$1243 ($dff) from module chacha20_core (D = 2036477234, Q = \init_02_reg).
+Adding EN signal on $procdff$1285 ($dff) from module chacha20_core (D = { \key_i [103:96] \key_i [111:104] \key_i [119:112] \key_i [127:120] }, Q = \init_08_reg).
+Adding EN signal on $procdff$1264 ($dff) from module chacha20_core (D = { \key_i [199:192] \key_i [207:200] \key_i [215:208] \key_i [223:216] }, Q = \init_05_reg).
+Adding EN signal on $procdff$1306 ($dff) from module chacha20_core (D = { \key_i [7:0] \key_i [15:8] \key_i [23:16] \key_i [31:24] }, Q = \init_11_reg).
+Adding EN signal on $procdff$1236 ($dff) from module chacha20_core (D = 857760878, Q = \init_01_reg).
+Adding EN signal on $procdff$1271 ($dff) from module chacha20_core (D = { \key_i [167:160] \key_i [175:168] \key_i [183:176] \key_i [191:184] }, Q = \init_06_reg).
+Adding EN signal on $procdff$1278 ($dff) from module chacha20_core (D = { \key_i [135:128] \key_i [143:136] \key_i [151:144] \key_i [159:152] }, Q = \init_07_reg).
+Adding EN signal on $procdff$1299 ($dff) from module chacha20_core (D = { \key_i [39:32] \key_i [47:40] \key_i [55:48] \key_i [63:56] }, Q = \init_10_reg).
+Adding EN signal on $procdff$1229 ($dff) from module chacha20_core (D = 1634760805, Q = \init_00_reg).
+Adding EN signal on $procdff$1339 ($adff) from module chacha20_core (D = \round_cnt_next, Q = \round_cnt_reg).
+Adding EN signal on $procdff$1354 ($adff) from module chacha20_core (D = { $add$workspace/rtl/chacha20_core.v:393$207_Y $add$workspace/rtl/chacha20_core.v:394$206_Y $add$workspace/rtl/chacha20_core.v:395$205_Y $add$workspace/rtl/chacha20_core.v:396$204_Y $add$workspace/rtl/chacha20_core.v:397$203_Y $add$workspace/rtl/chacha20_core.v:398$202_Y $add$workspace/rtl/chacha20_core.v:399$201_Y $add$workspace/rtl/chacha20_core.v:400$200_Y $add$workspace/rtl/chacha20_core.v:401$199_Y $add$workspace/rtl/chacha20_core.v:402$198_Y $add$workspace/rtl/chacha20_core.v:403$197_Y $add$workspace/rtl/chacha20_core.v:404$196_Y $add$workspace/rtl/chacha20_core.v:405$195_Y $add$workspace/rtl/chacha20_core.v:406$194_Y $add$workspace/rtl/chacha20_core.v:407$193_Y $add$workspace/rtl/chacha20_core.v:408$192_Y }, Q = \state_out_reg).
+Setting constant 0-bit at position 1 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 3 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 4 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 7 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 8 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 9 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 10 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 15 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 16 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 17 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 18 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 19 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 23 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 25 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 26 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 27 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 28 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 31 on $auto$ff.cc:337:slice$1436 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 0 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 4 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 7 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 8 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 9 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 11 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 12 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 15 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 16 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 17 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 18 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 19 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 20 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 22 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 23 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 26 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 27 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 30 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 31 on $auto$ff.cc:337:slice$1424 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 0 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 2 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 3 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 6 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 7 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 9 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 12 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 14 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 15 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 16 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 18 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 19 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 20 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 23 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 25 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 26 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 31 on $auto$ff.cc:337:slice$1412 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 0 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 1 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 3 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 7 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 9 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 11 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 12 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 15 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 16 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 17 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 18 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 19 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 20 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 22 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 23 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 26 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 28 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+Setting constant 0-bit at position 31 on $auto$ff.cc:337:slice$1397 ($dffe) from module chacha20_core.
+
+4.8.7. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 35 unused cells and 35 unused wires.
+<suppressed ~38 debug messages>
+
+4.8.8. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+<suppressed ~2 debug messages>
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+<suppressed ~1 debug messages>
+
+4.8.9. Rerunning OPT passes. (Maybe there is more to do..)
+
+4.8.10. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Removed 0 multiplexer ports.
+<suppressed ~129 debug messages>
+
+4.8.11. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 0 changes.
+
+4.8.12. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 73 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Computing hashes of 68 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+<suppressed ~15 debug messages>
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 149 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Computing hashes of 134 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Computing hashes of 133 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+<suppressed ~48 debug messages>
+Removed a total of 21 cells.
+
+4.8.13. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.8.14. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 0 unused cells and 20 unused wires.
+<suppressed ~2 debug messages>
+
+4.8.15. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.8.16. Rerunning OPT passes. (Maybe there is more to do..)
+
+4.8.17. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Removed 0 multiplexer ports.
+<suppressed ~129 debug messages>
+
+4.8.18. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 0 changes.
+
+4.8.19. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 68 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 133 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.8.20. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.8.21. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.8.22. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.8.23. Finished fast OPT passes. (There is nothing left to do.)
+
+4.9. Executing WREDUCE pass (reducing word size of cells).
+Removed top 1 bits (of 2) from port B of cell chacha20_top.$auto$opt_dff.cc:235:make_patterns_logic$1374 ($ne).
+Removed top 31 bits (of 32) from port B of cell chacha20_top.$add$workspace/rtl/chacha20_top.v:170$262 ($add).
+Removed top 3 bits (of 4) from port B of cell chacha20_top.$add$workspace/rtl/chacha20_top.v:174$263 ($add).
+Removed top 1 bits (of 2) from port B of cell chacha20_top.$procmux$417_CMP0 ($eq).
+Removed top 1 bits (of 4) from port B of cell chacha20_top.$procmux$427_CMP0 ($eq).
+Removed top 1 bits (of 4) from port B of cell chacha20_top.$procmux$428_CMP0 ($eq).
+Removed top 1 bits (of 4) from port B of cell chacha20_top.$procmux$429_CMP0 ($eq).
+Removed top 1 bits (of 4) from port B of cell chacha20_top.$procmux$430_CMP0 ($eq).
+Removed top 2 bits (of 4) from port B of cell chacha20_top.$procmux$431_CMP0 ($eq).
+Removed top 2 bits (of 4) from port B of cell chacha20_top.$procmux$432_CMP0 ($eq).
+Removed top 3 bits (of 4) from port B of cell chacha20_top.$procmux$433_CMP0 ($eq).
+Removed top 14 bits (of 15) from FF cell chacha20_core.$auto$ff.cc:337:slice$1451 ($dffe).
+Removed top 12 bits (of 13) from FF cell chacha20_core.$auto$ff.cc:337:slice$1450 ($dffe).
+Removed top 13 bits (of 14) from FF cell chacha20_core.$auto$ff.cc:337:slice$1449 ($dffe).
+Removed top 4 bits (of 5) from port B of cell chacha20_core.$add$workspace/rtl/chacha20_core.v:309$119 ($add).
+Removed top 1 bits (of 2) from port B of cell chacha20_core.$eq$workspace/rtl/chacha20_core.v:371$167 ($eq).
+Removed top 1 bits (of 32) from port B of cell chacha20_core.$add$workspace/rtl/chacha20_core.v:408$192 ($add).
+Removed top 2 bits (of 32) from port B of cell chacha20_core.$add$workspace/rtl/chacha20_core.v:407$193 ($add).
+Removed top 1 bits (of 32) from port B of cell chacha20_core.$add$workspace/rtl/chacha20_core.v:406$194 ($add).
+Removed top 1 bits (of 32) from port B of cell chacha20_core.$add$workspace/rtl/chacha20_core.v:405$195 ($add).
+Removed top 1 bits (of 2) from port B of cell chacha20_core.$procmux$998_CMP0 ($eq).
+Removed top 1 bits (of 32) from wire chacha20_core.init_03_reg.
+
+4.10. Executing PEEPOPT pass (run peephole optimizers).
+
+4.11. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 0 unused cells and 1 unused wires.
+<suppressed ~1 debug messages>
+
+4.12. Executing ALUMACC pass (create $alu and $macc cells).
+Extracting $alu and $macc cells in module chacha20_top:
+  creating $macc model for $add$workspace/rtl/chacha20_top.v:174$263 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_top.v:170$262 ($add).
+  creating $alu model for $macc $add$workspace/rtl/chacha20_top.v:170$262.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_top.v:174$263.
+  creating $alu cell for $add$workspace/rtl/chacha20_top.v:174$263: $auto$alumacc.cc:512:replace_alu$1454
+  creating $alu cell for $add$workspace/rtl/chacha20_top.v:170$262: $auto$alumacc.cc:512:replace_alu$1457
+  created 2 $alu and 0 $macc cells.
+Extracting $alu and $macc cells in module chacha20_qr:
+  creating $macc model for $add$workspace/rtl/chacha20_qr.v:56$252 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_qr.v:49$250 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_qr.v:42$248 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_qr.v:35$246 ($add).
+  creating $alu model for $macc $add$workspace/rtl/chacha20_qr.v:35$246.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_qr.v:42$248.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_qr.v:49$250.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_qr.v:56$252.
+  creating $alu cell for $add$workspace/rtl/chacha20_qr.v:56$252: $auto$alumacc.cc:512:replace_alu$1460
+  creating $alu cell for $add$workspace/rtl/chacha20_qr.v:49$250: $auto$alumacc.cc:512:replace_alu$1463
+  creating $alu cell for $add$workspace/rtl/chacha20_qr.v:42$248: $auto$alumacc.cc:512:replace_alu$1466
+  creating $alu cell for $add$workspace/rtl/chacha20_qr.v:35$246: $auto$alumacc.cc:512:replace_alu$1469
+  created 4 $alu and 0 $macc cells.
+Extracting $alu and $macc cells in module chacha20_core:
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:393$207 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:394$206 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:395$205 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:396$204 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:397$203 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:398$202 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:399$201 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:400$200 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:401$199 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:402$198 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:403$197 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:404$196 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:405$195 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:406$194 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:407$193 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:408$192 ($add).
+  creating $macc model for $add$workspace/rtl/chacha20_core.v:309$119 ($add).
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:309$119.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:408$192.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:407$193.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:406$194.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:405$195.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:404$196.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:403$197.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:402$198.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:401$199.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:400$200.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:399$201.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:398$202.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:397$203.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:396$204.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:395$205.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:394$206.
+  creating $alu model for $macc $add$workspace/rtl/chacha20_core.v:393$207.
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:393$207: $auto$alumacc.cc:512:replace_alu$1472
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:394$206: $auto$alumacc.cc:512:replace_alu$1475
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:395$205: $auto$alumacc.cc:512:replace_alu$1478
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:396$204: $auto$alumacc.cc:512:replace_alu$1481
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:397$203: $auto$alumacc.cc:512:replace_alu$1484
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:398$202: $auto$alumacc.cc:512:replace_alu$1487
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:399$201: $auto$alumacc.cc:512:replace_alu$1490
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:400$200: $auto$alumacc.cc:512:replace_alu$1493
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:401$199: $auto$alumacc.cc:512:replace_alu$1496
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:402$198: $auto$alumacc.cc:512:replace_alu$1499
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:403$197: $auto$alumacc.cc:512:replace_alu$1502
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:404$196: $auto$alumacc.cc:512:replace_alu$1505
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:405$195: $auto$alumacc.cc:512:replace_alu$1508
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:406$194: $auto$alumacc.cc:512:replace_alu$1511
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:407$193: $auto$alumacc.cc:512:replace_alu$1514
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:408$192: $auto$alumacc.cc:512:replace_alu$1517
+  creating $alu cell for $add$workspace/rtl/chacha20_core.v:309$119: $auto$alumacc.cc:512:replace_alu$1520
+  created 17 $alu and 0 $macc cells.
+
+4.13. Executing SHARE pass (SAT-based resource sharing).
+
+4.14. Executing OPT pass (performing simple optimizations).
+
+4.14.1. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.14.2. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 68 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 133 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Computing hashes of 131 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+<suppressed ~6 debug messages>
+Removed a total of 2 cells.
+
+4.14.3. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Removed 0 multiplexer ports.
+<suppressed ~129 debug messages>
+
+4.14.4. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 0 changes.
+
+4.14.5. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 68 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 131 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.14.6. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.14.7. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.14.8. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.14.9. Finished fast OPT passes. (There is nothing left to do.)
+
+4.15. Executing MEMORY pass.
+
+4.15.1. Executing OPT_MEM pass (optimize memories).
+Performed a total of 0 transformations.
+
+4.15.2. Executing OPT_MEM_PRIORITY pass (removing unnecessary memory write priority relations).
+Performed a total of 0 transformations.
+
+4.15.3. Executing OPT_MEM_FEEDBACK pass (finding memory read-to-write feedback paths).
+
+4.15.4. Executing MEMORY_BMUX2ROM pass (converting muxes to ROMs).
+
+4.15.5. Executing MEMORY_DFF pass (merging $dff cells to $memrd).
+
+4.15.6. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.15.7. Executing MEMORY_SHARE pass (consolidating $memrd/$memwr cells).
+
+4.15.8. Executing OPT_MEM_WIDEN pass (optimize memories where all ports are wide).
+Performed a total of 0 transformations.
+
+4.15.9. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.15.10. Executing MEMORY_COLLECT pass (generating $mem cells).
+
+4.16. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.17. Executing OPT pass (performing simple optimizations).
+
+4.17.1. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+<suppressed ~21 debug messages>
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+<suppressed ~8 debug messages>
+
+4.17.2. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 54 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 127 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.17.3. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.17.4. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 1 unused cells and 19 unused wires.
+<suppressed ~3 debug messages>
+
+4.17.5. Finished fast OPT passes.
+
+4.18. Executing MEMORY_MAP pass (converting memories to logic and flip-flops).
+
+4.19. Executing OPT pass (performing simple optimizations).
+
+4.19.1. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.19.2. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 53 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 127 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.19.3. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Removed 0 multiplexer ports.
+<suppressed ~100 debug messages>
+
+4.19.4. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+    New ctrl vector for $pmux cell $procmux$392: { \ready_o_next $procmux$343_CMP }
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 1 changes.
+
+4.19.5. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 53 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 127 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.19.6. Executing OPT_SHARE pass.
+
+4.19.7. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.19.8. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.19.9. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.19.10. Rerunning OPT passes. (Maybe there is more to do..)
+
+4.19.11. Executing OPT_MUXTREE pass (detect dead branches in mux trees).
+Running muxtree optimizer on module \chacha20_top..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Running muxtree optimizer on module \chacha20_qr..
+  Creating internal representation of mux trees.
+  No muxes found in this module.
+Running muxtree optimizer on module \chacha20_core..
+  Creating internal representation of mux trees.
+  Evaluating internal representation of mux trees.
+  Analyzing evaluation results.
+Removed 0 multiplexer ports.
+<suppressed ~100 debug messages>
+
+4.19.12. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
+  Optimizing cells in module \chacha20_top.
+  Optimizing cells in module \chacha20_qr.
+  Optimizing cells in module \chacha20_core.
+Performed a total of 0 changes.
+
+4.19.13. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 53 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 8 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 127 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 0 cells.
+
+4.19.14. Executing OPT_SHARE pass.
+
+4.19.15. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.19.16. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+
+4.19.17. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.19.18. Finished fast OPT passes. (There is nothing left to do.)
+
+4.20. Executing TECHMAP pass (map to technology primitives).
+
+4.20.1. Executing Verilog-2005 frontend: C:\OSS-CA~1\bin\../share/yosys/techmap.v
+Parsing Verilog input from `C:\OSS-CA~1\bin\../share/yosys/techmap.v' to AST representation.
+Generating RTLIL representation for module `\_90_simplemap_bool_ops'.
+Generating RTLIL representation for module `\_90_simplemap_reduce_ops'.
+Generating RTLIL representation for module `\_90_simplemap_logic_ops'.
+Generating RTLIL representation for module `\_90_simplemap_compare_ops'.
+Generating RTLIL representation for module `\_90_simplemap_various'.
+Generating RTLIL representation for module `\_90_simplemap_registers'.
+Generating RTLIL representation for module `\_90_shift_ops_shr_shl_sshl_sshr'.
+Generating RTLIL representation for module `\_90_shift_shiftx'.
+Generating RTLIL representation for module `\_90_fa'.
+Generating RTLIL representation for module `\_90_lcu_brent_kung'.
+Generating RTLIL representation for module `\_90_alu'.
+Generating RTLIL representation for module `\_90_macc'.
+Generating RTLIL representation for module `\_90_alumacc'.
+Generating RTLIL representation for module `$__div_mod_u'.
+Generating RTLIL representation for module `$__div_mod_trunc'.
+Generating RTLIL representation for module `\_90_div'.
+Generating RTLIL representation for module `\_90_mod'.
+Generating RTLIL representation for module `$__div_mod_floor'.
+Generating RTLIL representation for module `\_90_divfloor'.
+Generating RTLIL representation for module `\_90_modfloor'.
+Generating RTLIL representation for module `\_90_pow'.
+Generating RTLIL representation for module `\_90_pmux'.
+Generating RTLIL representation for module `\_90_demux'.
+Generating RTLIL representation for module `\_90_lut'.
+Generating RTLIL representation for module `$connect'.
+Generating RTLIL representation for module `$input_port'.
+Successfully finished Verilog frontend.
+
+4.20.2. Continuing TECHMAP pass.
+Using template $paramod$672a140277c71df8314410f22acc08d55222c3c7\_90_alu for cells of type $alu.
+Using template $paramod$8fabc56b80a569262acfc42757a02ca0b8e91278\_90_pmux for cells of type $pmux.
+Using template $paramod$e891e6b399cf52748460a311fafe476815d24bd7\_90_alu for cells of type $alu.
+Using template $paramod$eb84f392e8dc6e3bae403a1ec3951df48b54d2e8\_90_alu for cells of type $alu.
+Using template $paramod$33932025bf4abd97855bed7b134b5a5105ed1f1b\_90_alu for cells of type $alu.
+Using template $paramod$723b23651574f0e7ee9d6af2596d5ec4353db843\_90_alu for cells of type $alu.
+Using template $paramod$fbc7873bff55778c0b3173955b7e4bce1d9d6834\_90_alu for cells of type $alu.
+Using extmapper simplemap for cells of type $dffe.
+Using extmapper simplemap for cells of type $adffe.
+Using extmapper simplemap for cells of type $reduce_and.
+Using extmapper simplemap for cells of type $reduce_bool.
+Using extmapper simplemap for cells of type $ne.
+Using extmapper simplemap for cells of type $mux.
+Using extmapper simplemap for cells of type $eq.
+Using extmapper simplemap for cells of type $logic_and.
+Using template $paramod$521ce43182eecb9f60c72393a788160d2c356bf5\_90_pmux for cells of type $pmux.
+Using extmapper simplemap for cells of type $logic_not.
+Using extmapper simplemap for cells of type $adff.
+Using extmapper simplemap for cells of type $reduce_or.
+Using extmapper simplemap for cells of type $and.
+Using extmapper simplemap for cells of type $not.
+Using extmapper simplemap for cells of type $pos.
+Using template $paramod\_90_fa\WIDTH=32'00000000000000000000000000100000 for cells of type $fa.
+Using template $paramod\_90_lcu_brent_kung\WIDTH=32'00000000000000000000000000100000 for cells of type $lcu.
+Using extmapper simplemap for cells of type $xor.
+Using template $paramod\_90_fa\WIDTH=32'00000000000000000000000000011110 for cells of type $fa.
+Using template $paramod\_90_lcu_brent_kung\WIDTH=32'00000000000000000000000000011110 for cells of type $lcu.
+Using template $paramod\_90_fa\WIDTH=32'00000000000000000000000000011111 for cells of type $fa.
+Using template $paramod\_90_lcu_brent_kung\WIDTH=32'00000000000000000000000000011111 for cells of type $lcu.
+Using template $paramod\_90_fa\WIDTH=32'00000000000000000000000000000101 for cells of type $fa.
+Using template $paramod\_90_lcu_brent_kung\WIDTH=32'00000000000000000000000000000101 for cells of type $lcu.
+Using extmapper simplemap for cells of type $or.
+Using template $paramod$6a42b6fefed750f8a1c58eab59479d960557103c\_90_alu for cells of type $alu.
+Using template $paramod$32a7b7b86c07519b7537abc18e96f0331f97914d\_90_alu for cells of type $alu.
+Using template $paramod$7f1d45a92d0221fa6c256845bf4513df30042923\_90_pmux for cells of type $pmux.
+Using template $paramod\_90_fa\WIDTH=32'00000000000000000000000000000100 for cells of type $fa.
+Using template $paramod\_90_lcu_brent_kung\WIDTH=32'00000000000000000000000000000100 for cells of type $lcu.
+No more expansions possible.
+<suppressed ~5018 debug messages>
+
+4.21. Executing OPT pass (performing simple optimizations).
+
+4.21.1. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+<suppressed ~466 debug messages>
+Optimizing module chacha20_qr.
+<suppressed ~528 debug messages>
+Optimizing module chacha20_core.
+<suppressed ~2441 debug messages>
+
+4.21.2. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 1889 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Computing hashes of 1850 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Computing hashes of 1832 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+<suppressed ~171 debug messages>
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 1196 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 8762 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Computing hashes of 8740 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+<suppressed ~66 debug messages>
+Removed a total of 79 cells.
+
+4.21.3. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.21.4. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 937 unused cells and 3328 unused wires.
+<suppressed ~940 debug messages>
+
+4.21.5. Finished fast OPT passes.
+
+4.22. Executing ABC pass (technology mapping using ABC).
+
+4.22.1. Extracting gate netlist of module `\chacha20_top' to `<abc-temp-dir>/input.blif'..
+
+4.22.1.1. Executed ABC.
+Extracted 1236 gates and 1854 wires to a netlist network with 617 inputs and 79 outputs.
+Running ABC script: <abc-temp-dir>/abc.script
+ABC: ======== ABC command line "source <abc-temp-dir>/abc.script"
+ABC: + read_blif <abc-temp-dir>/input.blif 
+ABC: + read_library <abc-temp-dir>/stdcells.genlib 
+ABC: + strash 
+ABC: + dretime 
+ABC: + map 
+ABC: + write_blif <abc-temp-dir>/output.blif 
+
+4.22.1.2. Re-integrating ABC results.
+ABC RESULTS:               AND cells:       11
+ABC RESULTS:            ANDNOT cells:      335
+ABC RESULTS:               MUX cells:       66
+ABC RESULTS:              NAND cells:       15
+ABC RESULTS:               NOR cells:      182
+ABC RESULTS:               NOT cells:        8
+ABC RESULTS:                OR cells:       41
+ABC RESULTS:             ORNOT cells:      492
+ABC RESULTS:              XNOR cells:       59
+ABC RESULTS:               XOR cells:        6
+ABC RESULTS:        internal signals:     1158
+ABC RESULTS:           input signals:      617
+ABC RESULTS:          output signals:       79
+Removing temp directory.
+
+4.22.2. Extracting gate netlist of module `\chacha20_qr' to `<abc-temp-dir>/input.blif'..
+
+4.22.2.1. Executed ABC.
+Extracted 1008 gates and 1136 wires to a netlist network with 128 inputs and 128 outputs.
+Running ABC script: <abc-temp-dir>/abc.script
+ABC: ======== ABC command line "source <abc-temp-dir>/abc.script"
+ABC: + read_blif <abc-temp-dir>/input.blif 
+ABC: + read_library <abc-temp-dir>/stdcells.genlib 
+ABC: + strash 
+ABC: + dretime 
+ABC: + map 
+ABC: + write_blif <abc-temp-dir>/output.blif 
+
+4.22.2.2. Re-integrating ABC results.
+ABC RESULTS:               AND cells:       15
+ABC RESULTS:            ANDNOT cells:      120
+ABC RESULTS:              NAND cells:       16
+ABC RESULTS:               NOR cells:      352
+ABC RESULTS:               NOT cells:      109
+ABC RESULTS:                OR cells:       57
+ABC RESULTS:             ORNOT cells:       68
+ABC RESULTS:              XNOR cells:      264
+ABC RESULTS:               XOR cells:      116
+ABC RESULTS:        internal signals:      880
+ABC RESULTS:           input signals:      128
+ABC RESULTS:          output signals:      128
+Removing temp directory.
+
+4.22.3. Extracting gate netlist of module `\chacha20_core' to `<abc-temp-dir>/input.blif'..
+
+4.22.3.1. Executed ABC.
+Extracted 6608 gates and 8412 wires to a netlist network with 1802 inputs and 1416 outputs.
+Running ABC script: <abc-temp-dir>/abc.script
+ABC: ======== ABC command line "source <abc-temp-dir>/abc.script"
+ABC: + read_blif <abc-temp-dir>/input.blif 
+ABC: + read_library <abc-temp-dir>/stdcells.genlib 
+ABC: + strash 
+ABC: + dretime 
+ABC: + map 
+ABC: + write_blif <abc-temp-dir>/output.blif 
+
+4.22.3.2. Re-integrating ABC results.
+ABC RESULTS:               AND cells:        9
+ABC RESULTS:            ANDNOT cells:     1308
+ABC RESULTS:               MUX cells:     1665
+ABC RESULTS:              NAND cells:        6
+ABC RESULTS:               NOR cells:     1780
+ABC RESULTS:               NOT cells:     1109
+ABC RESULTS:                OR cells:      170
+ABC RESULTS:             ORNOT cells:      720
+ABC RESULTS:              XNOR cells:      553
+ABC RESULTS:               XOR cells:      383
+ABC RESULTS:        internal signals:     5194
+ABC RESULTS:           input signals:     1802
+ABC RESULTS:          output signals:     1416
+Removing temp directory.
+Removing global temp directory.
+
+4.23. Executing OPT pass (performing simple optimizations).
+
+4.23.1. Executing OPT_EXPR pass (perform const folding).
+Optimizing module chacha20_top.
+Optimizing module chacha20_qr.
+Optimizing module chacha20_core.
+
+4.23.2. Executing OPT_MERGE pass (detect identical cells).
+Finding identical cells in module `\chacha20_top'.
+Computing hashes of 1773 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+Computing hashes of 1772 cells of `\chacha20_top'.
+Finding duplicate cells in `\chacha20_top'.
+<suppressed ~3 debug messages>
+Finding identical cells in module `\chacha20_qr'.
+Computing hashes of 1117 cells of `\chacha20_qr'.
+Finding duplicate cells in `\chacha20_qr'.
+Finding identical cells in module `\chacha20_core'.
+Computing hashes of 9124 cells of `\chacha20_core'.
+Finding duplicate cells in `\chacha20_core'.
+Removed a total of 1 cells.
+
+4.23.3. Executing OPT_DFF pass (perform DFF optimizations).
+
+4.23.4. Executing OPT_CLEAN pass (remove unused cells and wires).
+Finding unused cells or wires in module \chacha20_top..
+Finding unused cells or wires in module \chacha20_qr..
+Finding unused cells or wires in module \chacha20_core..
+Removed 0 unused cells and 6258 unused wires.
+<suppressed ~22 debug messages>
+
+4.23.5. Finished fast OPT passes.
+
+4.24. Executing HIERARCHY pass (managing design hierarchy).
+Attribute `top' found on module `chacha20_top'. Setting top module to chacha20_top.
+
+4.24.1. Analyzing design hierarchy..
+Top module:  \chacha20_top
+Used module:     \chacha20_core
+Used module:         \chacha20_qr
+
+4.24.2. Analyzing design hierarchy..
+Top module:  \chacha20_top
+Used module:     \chacha20_core
+Used module:         \chacha20_qr
+Removed 0 unused modules.
+
+4.25. Printing statistics.
+
+=== chacha20_top ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     1176 wires
+     2711 wire bits
+       36 public wires
+     1571 public wire bits
+       14 ports
+      457 port bits
+     1771 cells
+      335   $_ANDNOT_
+       11   $_AND_
+      550   $_DFFE_PN0P_
+        7   $_DFF_PN0_
+       66   $_MUX_
+       15   $_NAND_
+      181   $_NOR_
+        8   $_NOT_
+      492   $_ORNOT_
+       41   $_OR_
+       59   $_XNOR_
+        6   $_XOR_
+        1 submodules
+        1   chacha20_core
+
+=== chacha20_qr ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     1003 wires
+     1437 wire bits
+       14 public wires
+      448 public wire bits
+        8 ports
+      256 port bits
+     1117 cells
+      120   $_ANDNOT_
+       15   $_AND_
+       16   $_NAND_
+      352   $_NOR_
+      109   $_NOT_
+       68   $_ORNOT_
+       57   $_OR_
+      264   $_XNOR_
+      116   $_XOR_
+
+=== chacha20_core ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     6434 wires
+    11775 wire bits
+      112 public wires
+     4469 public wire bits
+        9 ports
+      901 port bits
+     9120 cells
+     1308   $_ANDNOT_
+        9   $_AND_
+      517   $_DFFE_PN0P_
+      385   $_DFFE_PP_
+      515   $_DFF_PN0_
+     1665   $_MUX_
+        6   $_NAND_
+     1780   $_NOR_
+     1109   $_NOT_
+      720   $_ORNOT_
+      170   $_OR_
+      553   $_XNOR_
+      383   $_XOR_
+        4 submodules
+        4   chacha20_qr
+
+=== design hierarchy ===
+
+        +----------Count including submodules.
+        | 
+    15359 chacha20_top
+     9120 chacha20_core
+     1117   chacha20_qr
+
+        +----------Count including submodules.
+        | 
+    11622 wires
+    20234 wire bits
+      204 public wires
+     7832 public wire bits
+       55 ports
+     2382 port bits
+        - memories
+        - memory bits
+        - processes
+    15359 cells
+     2123   $_ANDNOT_
+       80   $_AND_
+     1067   $_DFFE_PN0P_
+      385   $_DFFE_PP_
+      522   $_DFF_PN0_
+     1731   $_MUX_
+       85   $_NAND_
+     3369   $_NOR_
+     1553   $_NOT_
+     1484   $_ORNOT_
+      439   $_OR_
+     1668   $_XNOR_
+      853   $_XOR_
+        1 submodules
+        1   chacha20_core
+
+4.26. Executing CHECK pass (checking for obvious problems).
+Checking module chacha20_top...
+Checking module chacha20_qr...
+Checking module chacha20_core...
+Found and reported 0 problems.
+
+5. Printing statistics.
+
+=== chacha20_top ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     1176 wires
+     2711 wire bits
+       36 public wires
+     1571 public wire bits
+       14 ports
+      457 port bits
+     1771 cells
+      335   $_ANDNOT_
+       11   $_AND_
+      550   $_DFFE_PN0P_
+        7   $_DFF_PN0_
+       66   $_MUX_
+       15   $_NAND_
+      181   $_NOR_
+        8   $_NOT_
+      492   $_ORNOT_
+       41   $_OR_
+       59   $_XNOR_
+        6   $_XOR_
+        1 submodules
+        1   chacha20_core
+
+=== chacha20_qr ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     1003 wires
+     1437 wire bits
+       14 public wires
+      448 public wire bits
+        8 ports
+      256 port bits
+     1117 cells
+      120   $_ANDNOT_
+       15   $_AND_
+       16   $_NAND_
+      352   $_NOR_
+      109   $_NOT_
+       68   $_ORNOT_
+       57   $_OR_
+      264   $_XNOR_
+      116   $_XOR_
+
+=== chacha20_core ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     6434 wires
+    11775 wire bits
+      112 public wires
+     4469 public wire bits
+        9 ports
+      901 port bits
+     9120 cells
+     1308   $_ANDNOT_
+        9   $_AND_
+      517   $_DFFE_PN0P_
+      385   $_DFFE_PP_
+      515   $_DFF_PN0_
+     1665   $_MUX_
+        6   $_NAND_
+     1780   $_NOR_
+     1109   $_NOT_
+      720   $_ORNOT_
+      170   $_OR_
+      553   $_XNOR_
+      383   $_XOR_
+        4 submodules
+        4   chacha20_qr
+
+=== design hierarchy ===
+
+        +----------Count including submodules.
+        | 
+    15359 chacha20_top
+     9120 chacha20_core
+     1117   chacha20_qr
+
+        +----------Count including submodules.
+        | 
+    11622 wires
+    20234 wire bits
+      204 public wires
+     7832 public wire bits
+       55 ports
+     2382 port bits
+        - memories
+        - memory bits
+        - processes
+    15359 cells
+     2123   $_ANDNOT_
+       80   $_AND_
+     1067   $_DFFE_PN0P_
+      385   $_DFFE_PP_
+      522   $_DFF_PN0_
+     1731   $_MUX_
+       85   $_NAND_
+     3369   $_NOR_
+     1553   $_NOT_
+     1484   $_ORNOT_
+      439   $_OR_
+     1668   $_XNOR_
+      853   $_XOR_
+        1 submodules
+        1   chacha20_core
+
+End of script. Logfile hash: c4f78e9a08
+Yosys 0.63+89 (git sha1 de99d67bb-dirty, x86_64-w64-mingw32-g++ 13.2.1 -O3)
+Time spent: 2% 27x opt_expr (0 sec), 2% 22x opt_clean (0 sec), ...

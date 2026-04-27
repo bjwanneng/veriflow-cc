@@ -55,7 +55,18 @@ Check for (do NOT run EDA tools):
    - For algorithm-heavy modules: verify the module contains FSM or sequential logic proportional to the algorithm complexity described in micro_arch.md
 3. Flag any module where the implementation obviously doesn't match the spec description as **error-level**
 
-## 5c. Write static_report.json
+**G. Array Bounds Verification**:
+1. For each memory array declaration `reg [W:0] name [0:DEPTH-1]`:
+   - Find all index expressions used to access `name[...]` (both read and write)
+   - For each index expression, determine the maximum possible value
+     - Loop counters: check terminal condition (must be < DEPTH, not <= DEPTH)
+     - Offset patterns `name[cnt + K]`: verify cnt_max + K <= DEPTH - 1
+     - Arithmetic patterns `name[a + b]`: verify max(a) + max(b) <= DEPTH - 1
+   - Flag as **error** if any index can exceed DEPTH - 1
+2. Common violation patterns:
+   - Shift/copy loop: `for (j=0; j<=DEPTH; j++) name[j] = name[j+1]` — reads name[DEPTH+1]
+   - Off-by-one: terminal condition uses `<=` instead of `<`
+   - Width mismatch: counter width too wide for array depth
 
 Use **Write** tool to write `$PROJECT_DIR/workspace/docs/static_report.json`.
 
