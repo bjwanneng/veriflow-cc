@@ -4,6 +4,25 @@
 
 Mark Stage 5 task as **in_progress** using TaskUpdate.
 
+## 5a-0. Verify testbench integrity
+
+Confirm testbenches were not modified since Stage 3 locked them:
+
+```bash
+if [ -f "$PROJECT_DIR/.veriflow/tb_checksum" ]; then
+    cd "$PROJECT_DIR" && md5sum -c .veriflow/tb_checksum >/dev/null 2>&1 \
+        && echo "[INTEGRITY] Testbench checksum OK" \
+        || { echo "[INTEGRITY] FAIL — testbench file(s) modified after Stage 3!"; \
+             echo "[INTEGRITY] Differences:"; \
+             md5sum -c .veriflow/tb_checksum 2>/dev/null | grep FAILED; \
+             exit 1; }
+else
+    echo "[INTEGRITY] No checksum file found — skipping TB integrity check"
+fi
+```
+
+If checksum fails, DO NOT proceed. Investigate who modified the testbench and restore it from Stage 3 output.
+
 ## 5a. Read inputs
 
 Use **Read** tool to read every file in `$PROJECT_DIR/workspace/rtl/*.v` and `$PROJECT_DIR/workspace/docs/spec.json`.
@@ -32,6 +51,7 @@ Check for (do NOT run EDA tools):
 - Compare against `critical_path_budget` from spec.json
 
 **D. Resource Estimate**:
+> ⚠️ **Disclaimer**: These are rough order-of-magnitude estimates based on RTL structure, NOT synthesized netlist counts. Actual post-synthesis numbers from yosys (Stage 8) are authoritative. Use these estimates only to catch obviously oversized designs before committing to full synthesis.
 - Each flip-flop = 1 cell
 - Each 2-input logic gate = 0.5 cells
 - Each mux = 1 cell per bit

@@ -19,7 +19,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 # --- Skill ---
 SKILL_SRC_DIR = PROJECT_DIR / ".claude" / "skills" / "vf-pipeline"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
-SKILL_FILES = ["SKILL.md", "state.py"]
+SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py"]
 STAGES_DIR = "stages"
 
 # Source for coding_style.md is in claude_agents/, but installed to skill dir
@@ -153,7 +153,56 @@ def main():
     if missing:
         print(f"  Skipped: {missing} (source files missing)")
     print(f"{'='*50}")
-    print(f"\nUsage: /pipeline <project_dir>")
+
+    # 3. Post-install verification
+    print(f"\n[verify] Running post-install checks...")
+    verify_errors = []
+
+    # 3a. Check vf-coder.md tools field format (must be comma-separated, not YAML list)
+    vf_coder_dst = AGENTS_DST_DIR / "vf-coder.md"
+    if vf_coder_dst.exists():
+        content = vf_coder_dst.read_text(encoding="utf-8")
+        # Detect YAML list format (bad): "tools:\n  - read"
+        if "\ntools:\n  -" in content or "\ntools:\n- " in content:
+            verify_errors.append(
+                f"  [FAIL] vf-coder.md: 'tools' field uses YAML list format — "
+                f"must be comma-separated (e.g. 'tools: Read, Write, Glob, Grep, Bash'). "
+                f"See GitHub #12392."
+            )
+        elif "tools: Read, Write" in content or "tools: Read,Write" in content:
+            print(f"  [OK]   vf-coder.md: tools field format correct")
+        else:
+            verify_errors.append(
+                f"  [WARN] vf-coder.md: could not confirm 'tools' field format — "
+                f"verify manually that it is comma-separated"
+            )
+    else:
+        verify_errors.append(f"  [FAIL] vf-coder.md not found at {vf_coder_dst}")
+
+    # 3b. Check all 8 stage files are present
+    for i in range(1, 9):
+        stage_file = SKILL_DST_DIR / STAGES_DIR / f"stage_{i}.md"
+        if stage_file.exists():
+            print(f"  [OK]   stage_{i}.md present")
+        else:
+            verify_errors.append(f"  [FAIL] stage_{i}.md missing at {stage_file}")
+
+    # 3c. Check state.py is present
+    state_dst = SKILL_DST_DIR / "state.py"
+    if state_dst.exists():
+        print(f"  [OK]   state.py present")
+    else:
+        verify_errors.append(f"  [FAIL] state.py missing at {state_dst}")
+
+    if verify_errors:
+        print(f"\n[verify] Issues found:")
+        for err in verify_errors:
+            print(err)
+        print(f"\n[verify] Fix the above issues before running /vf-pipeline")
+    else:
+        print(f"\n[verify] All checks passed.")
+
+    print(f"\nUsage: /vf-pipeline <project_dir>")
     return 0
 
 

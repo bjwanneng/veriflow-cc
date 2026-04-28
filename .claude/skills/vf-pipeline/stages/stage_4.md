@@ -50,7 +50,14 @@ If a module's agent still fails after retry, generate that module inline:
 2. Read `$PROJECT_DIR/workspace/docs/spec.json`
 3. Read `$PROJECT_DIR/workspace/docs/behavior_spec.md`
 4. Read `$PROJECT_DIR/workspace/docs/micro_arch.md`
-5. Use **Write** to create the failed module's .v file
+5. **Step 3.5 Internal Verification** — Before writing the .v file, perform the 5-point self-check:
+   - **Timing table**: Does the module have a cycle-accurate timing table in comments?
+   - **Register delay**: Are all outputs driven by registers (not combinational from inputs)?
+   - **Control timing**: Do control signals (valid, ready, enable) align with data timing?
+   - **FSM sync**: Are FSM state transitions and outputs both registered?
+   - **Counter range**: Do counters cover the full required range (e.g., 0 to N-1 for N cycles)?
+   If any check fails, revise the design before proceeding.
+6. Use **Write** to create the failed module's .v file
 
 ## 4d. Hook
 

@@ -68,6 +68,7 @@ class PipelineState:
     retry_count: dict = field(default_factory=dict)
     error_history: dict = field(default_factory=dict)
     feedback_source: str = ""
+    max_retries_per_stage: int = 3
 
     # Persistent context summary — new sessions read this field to recover state
     stage_summaries: dict = field(default_factory=dict)
@@ -114,6 +115,13 @@ class PipelineState:
 
     def inc_retry(self, stage: str):
         self.retry_count[stage] = self.retry_count.get(stage, 0) + 1
+        if self.retry_count[stage] >= self.max_retries_per_stage:
+            import sys
+            print(f"[BUDGET] Stage '{stage}' exhausted {self.max_retries_per_stage} retries. Escalating to user.", file=sys.stderr)
+
+    def is_retry_exhausted(self, stage: str) -> bool:
+        """Check if the retry budget has been exhausted for a stage."""
+        return self.retry_count.get(stage, 0) >= self.max_retries_per_stage
 
     def get_output(self, stage: str) -> Optional[dict]:
         return getattr(self, f"{stage}_output", None)
@@ -171,6 +179,68 @@ class PipelineState:
 
         # 2. Check prerequisites
         return can_execute(stage, self.stages_completed)
+
+    def validate_spec_completeness(self, project_dir: str) -> tuple[bool, list[str]]:
+        """Validate spec.json and behavior_spec.md completeness after Stage 1.
+
+        Returns:
+            (is_complete, missing_items) — is_complete=True means ready to proceed
+        """
+        from pathlib import Path
+        import json
+
+        missing = []
+        spec_path = Path(project_dir) / "workspace/docs/spec.json"
+        behavior_path = Path(project_dir) / "workspace/docs/behavior_spec.md"
+
+        # Check spec.json
+        if not spec_path.exists():
+            missing.append("spec.json file missing")
+        else:
+            try:
+                spec = json.loads(spec_path.read_text(encoding="utf-8"))
+                if not spec.get("design_name"):
+                    missing.append("spec.json: design_name missing")
+                if not spec.get("modules"):
+                    missing.append("spec.json: modules array missing")
+                else:
+                    for m in spec["modules"]:
+                        if not m.get("module_name"):
+                            missing.append(f"spec.json: module missing module_name")
+                        if not m.get("ports"):
+                            missing.append(f"spec.json: module {m.get('module_name', '?')} missing ports")
+            except (json.JSONDecodeError, KeyError) as e:
+                missing.append(f"spec.json: parse error - {e}")
+
+        # Check behavior_spec.md
+        if not behavior_path.exists():
+            missing.append("behavior_spec.md file missing")
+        else:
+            content = behavior_path.read_text(encoding="utf-8")
+            required_sections = ["Domain Knowledge", "Cycle-Accurate Behavior", "Timing Contracts"]
+            for sec in required_sections:
+                if sec not in content:
+                    missing.append(f"behavior_spec.md: section '{sec}' missing")
+
+        return (len(missing) == 0, missing)
+
+    def detect_fix_loop(self, stage: str, error_signature: str) -> bool:
+        """Detect if error recovery is cycling on the same error.
+
+        Args:
+            stage: Current stage name
+            error_signature: A short string identifying the error (e.g., "lint:line42:syntax")
+
+        Returns:
+            True if this exact error has been seen 2+ times in recent history
+        """
+        if stage not in self.error_history:
+            return False
+
+        recent_errors = self.error_history[stage][-3:]  # Last 3 attempts
+        signature_count = sum(1 for e in recent_errors if error_signature in str(e.get("errors", [])))
+
+        return signature_count >= 2
 
 
 # -- CLI entry point (called by SKILL.md state update command) -----------------

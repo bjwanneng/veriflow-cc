@@ -4,6 +4,23 @@
 
 Mark Stage 6 task as **in_progress** using TaskUpdate.
 
+## 6a-0. Verify testbench integrity
+
+Confirm testbenches were not modified since Stage 3 locked them:
+
+```bash
+if [ -f "$PROJECT_DIR/.veriflow/tb_checksum" ]; then
+    cd "$PROJECT_DIR" && md5sum -c .veriflow/tb_checksum >/dev/null 2>&1 \
+        && echo "[INTEGRITY] Testbench checksum OK" \
+        || { echo "[INTEGRITY] FAIL — testbench file(s) modified after Stage 3!"; \
+             echo "[INTEGRITY] Differences:"; \
+             md5sum -c .veriflow/tb_checksum 2>/dev/null | grep FAILED; \
+             exit 1; }
+else
+    echo "[INTEGRITY] No checksum file found — skipping TB integrity check"
+fi
+```
+
 ## 6a. Confirm files
 
 ```bash

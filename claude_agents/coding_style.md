@@ -446,6 +446,48 @@ always @(posedge clk) begin
 end
 ```
 
+### 11.1 Anti-Pattern: Blocking Assignment in Sequential Blocks `[CRITICAL]`
+
+**PROHIBITED** — using blocking assignments (`=`) inside `always @(posedge clk)` blocks for register updates.
+
+**Incorrect (causes simulation/synthesis mismatch)**:
+```verilog
+always @(posedge clk) begin
+    data_reg[0] = data_reg[0] ^ input_a;  // blocking: takes effect immediately
+    data_reg[1] = data_reg[1] ^ input_b;  // reads the ALREADY-UPDATED data_reg[0]
+end
+```
+
+**Consequences**:
+1. Simulator executes sequentially — `data_reg[0]` update affects subsequent line reads
+2. Synthesis tool may infer different register structure than simulation shows
+3. Behavior differs across simulators (iverilog vs VCS vs ModelSim)
+4. This is the hardest bug to locate — simulation passes but silicon behavior is wrong
+
+**Correct approach A — named scalar registers + non-blocking**:
+```verilog
+always @(posedge clk) begin
+    D0_reg <= D0_reg ^ A_reg;  // non-blocking: takes effect NEXT clock edge
+    D1_reg <= D1_reg ^ B_reg;  // both read OLD values
+end
+```
+
+**Correct approach B — combinational next-state + sequential update**:
+```verilog
+always @(*) begin
+    next_data[0] = data_reg[0] ^ input_a;  // blocking in combinational is correct
+    next_data[1] = data_reg[1] ^ input_b;
+end
+always @(posedge clk) begin
+    data_reg[0] <= next_data[0];  // non-blocking in sequential
+    data_reg[1] <= next_data[1];
+end
+```
+
+**Only exception**: iverilog has a known issue with array index resolution in NBA context.
+In this specific case, use approach B (combinational + sequential separation) instead of
+directly operating on array elements inside the sequential block.
+
 ---
 
 ## 12. Latch Elimination — Default Values `[BASE]`
@@ -779,3 +821,30 @@ Applies when an AXI-Stream interface is present:
 | `_d` / `_q` register suffixes | `_next` / `_reg` |
 | `UpperCamelCase` parameters | `ALL_CAPS` |
 | Asynchronous active-low `rst_n` | Synchronous active-high `rst` |
+
+---
+
+## 23. Pipeline Timing Discipline `[IMPORTANT]`
+
+Before implementing any module with multi-cycle operations or pipeline stages, build a **cycle-accurate timing table** showing signal values per clock cycle. This prevents the most common class of RTL bugs: wrong data at the wrong cycle.
+
+**Template** (adapt column names to your design):
+
+```
+Cycle | FSM State | control_en | counter | data_source | output_valid
+------|-----------|------------|---------|-------------|-------------
+  0   | IDLE      |     0      |    -    |      -      |      0
+  1   | LOAD      |     0      |    0    |   input     |      0
+  2   | CALC      |     1      |    0    |  reg_file   |      0
+  3   | CALC      |     1      |    1    |  reg_file   |      0
+  ... | CALC      |     1      |   N-1   |  reg_file   |      0
+ N+1  | DONE      |     0      |    -    |      -      |      1
+```
+
+**Key rules**:
+1. Register values update at `posedge clk`. The new value is visible starting the **next** clock edge — never on the same cycle the assignment happens.
+2. A control signal (e.g., `calc_en`) asserted on cycle N produces its first effect on cycle N+1.
+3. FSM state transitions and control signal assertions MUST be in the same `always` block to avoid cycle skew.
+4. Counter range must be exactly N iterations: count from 0 to N-1, producing exactly N assertions of the enable signal.
+5. For `handshake: "hold_until_ack"` ports: valid MUST stay high across cycles until ack is received. Do NOT pulse valid for one cycle.
+6. For `handshake: "single_cycle"` ports: valid MUST be high for exactly one cycle, then auto-deassert on the next clock edge.
