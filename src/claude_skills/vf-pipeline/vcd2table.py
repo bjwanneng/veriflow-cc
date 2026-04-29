@@ -90,7 +90,7 @@ class VCDParser:
                 elif tok == "$dumpvars" or tok == "$dumpall":
                     tok = next(tokens)
                     while tok != "$end":
-                        self._parse_value_change(tok, current_time)
+                        self._parse_value_change(tok, current_time, tokens)
                         tok = next(tokens)
 
                 elif tok.startswith("#"):
@@ -118,14 +118,22 @@ class VCDParser:
         return self
 
 
-    def _parse_value_change(self, tok, time):
+    def _parse_value_change(self, tok, time, tokens=None):
         if tok[0] in "01xXzZ" and len(tok) > 1:
             val = tok[0].lower()
             var_id = tok[1:]
             if var_id in self.id_to_name:
                 self.changes[time][self.id_to_name[var_id]] = val
         elif tok[0] in "bBrR":
-            pass  # handled in main loop with next token
+            # Vector: b<value> <id> — need to read the id from the next token
+            val = tok[1:]
+            if tokens is not None:
+                try:
+                    var_id = next(tokens)
+                    if var_id in self.id_to_name:
+                        self.changes[time][self.id_to_name[var_id]] = val
+                except StopIteration:
+                    pass
 
 
 # ─── Signal Selection ─────────────────────────────────────────────────────────
@@ -253,18 +261,19 @@ def build_cycle_table(
     window_cycles: list[tuple[int, int]],  # [(start_cycle, end_cycle), ...]
     annotations: dict[int, list[str]],     # cycle → [annotation strings]
     clk_name: str,
-) -> str:
+) -> tuple[str, list[tuple[int, dict[str, str]]]]:
     """Build a text cycle table from VCD data.
 
-    Returns formatted string.
+    Returns (formatted_string, cycle_snapshots) where cycle_snapshots is
+    [(cycle_num, {signal_name: value})] for all cycles (not just the window).
     """
     if not include_signals:
-        return "(no signals to display)\n"
+        return "(no signals to display)\n", []
 
     # Build timeline: sort all timestamps, find posedge clk
     all_times = sorted(vcd.changes.keys())
     if not all_times:
-        return "(VCD has no signal changes)\n"
+        return "(VCD has no signal changes)\n", []
 
     # Reconstruct signal state across all time steps
     current_state: dict[str, str] = {}
@@ -281,7 +290,7 @@ def build_cycle_table(
             cycle_snapshots.append((cycle_num, dict(current_state)))
 
     if not cycle_snapshots:
-        return "(No clock edges found in VCD)\n"
+        return "(No clock edges found in VCD)\n", []
 
     # Determine which cycles to show based on window
     if window_cycles:
@@ -293,7 +302,7 @@ def build_cycle_table(
         show_cycles = set(range(len(cycle_snapshots)))
 
     if not show_cycles:
-        return "(No cycles in display window)\n"
+        return "(No cycles in display window)\n", cycle_snapshots
 
     # Shorten signal names — strip common scope prefix
     def short_name(name: str) -> str:
@@ -338,7 +347,140 @@ def build_cycle_table(
         lines.append("|" + "|".join(padded) + "|")
     lines.append(sep)
 
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", cycle_snapshots
+
+
+# ─── Golden Model Comparison ──────────────────────────────────────────────────
+
+def run_golden_model_comparison(
+    golden_path: str,
+    cycle_snapshots: list[tuple[int, dict[str, str]]],
+    include_signals: list[str],
+) -> str | None:
+    """Run a golden model and compare outputs with RTL cycle-by-cycle.
+
+    The golden model script can use either of two interfaces:
+      Strategy 1: Run as standalone script producing stdout lines like:
+          "cycle N: signal_name=0xVALUE signal2=0xVALUE"
+      Strategy 2: Define a run() function returning list[dict] where each dict
+          maps signal_name (short, no scope) -> integer value.
+
+    Returns a diff report string, or None if the golden model cannot be loaded.
+    """
+    import subprocess
+    import importlib.util
+
+    golden_path = str(Path(golden_path).resolve())
+    if not Path(golden_path).exists():
+        return f"ERROR: Golden model not found: {golden_path}\n"
+
+    golden_cycles: dict[int, dict[str, str]] = {}
+
+    # Strategy 1: Run as standalone script and parse stdout
+    try:
+        result = subprocess.run(
+            [sys.executable, golden_path],
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace"
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.splitlines():
+                m = re.match(r'cycle\s+(\d+)\s*:\s+(.+)', line, re.IGNORECASE)
+                if m:
+                    cycle = int(m.group(1))
+                    assignments = m.group(2)
+                    golden_cycles[cycle] = {}
+                    for assignment in re.finditer(
+                        r'(\w+)\s*=\s*(0x[0-9a-fA-F_]+|\d+)', assignments
+                    ):
+                        golden_cycles[cycle][assignment.group(1)] = assignment.group(2)
+    except (subprocess.TimeoutExpired, Exception):
+        pass
+
+    # Strategy 2: Import and call run() function
+    if not golden_cycles:
+        try:
+            spec = importlib.util.spec_from_file_location("golden_model", golden_path)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                if hasattr(mod, "run"):
+                    golden_data = mod.run()
+                    if isinstance(golden_data, list):
+                        for i, entry in enumerate(golden_data):
+                            if isinstance(entry, dict):
+                                golden_cycles[i] = {
+                                    k: hex(v) if isinstance(v, int) else str(v)
+                                    for k, v in entry.items()
+                                }
+        except Exception as e:
+            if not golden_cycles:
+                return f"[GOLDEN] Could not load golden model: {e}\n"
+
+    if not golden_cycles:
+        return "[GOLDEN] Golden model produced no parseable cycle data.\n" \
+               "[GOLDEN] Expected format: 'cycle N: signal_name=0xVALUE' on each line, " \
+               "or a run() function returning list[dict].\n"
+
+    # Build diff report
+    lines = []
+    lines.append("=" * 72)
+    lines.append("GOLDEN MODEL DIFF REPORT")
+    lines.append("=" * 72)
+    lines.append("")
+
+    short_names = {s: s.split(".")[-1] for s in include_signals}
+    first_divergence = None
+    divergence_count = 0
+
+    for cycle_num, state in cycle_snapshots:
+        if cycle_num not in golden_cycles:
+            continue
+        golden = golden_cycles[cycle_num]
+
+        for sig in include_signals:
+            short = short_names[sig]
+            if short not in golden:
+                continue
+
+            rtl_val = state.get(sig, "?")
+            # Normalize RTL value to hex for comparison
+            if len(rtl_val) > 4 and all(c in "01xzXZ" for c in rtl_val):
+                try:
+                    rtl_val = hex(int(rtl_val.replace("x", "0").replace("z", "0"), 2))
+                except ValueError:
+                    pass
+
+            golden_val = golden[short]
+            # Normalize for comparison
+            rtl_norm = str(rtl_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
+            golden_norm = str(golden_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
+
+            if rtl_norm != golden_norm and rtl_norm and golden_norm not in ("0",):
+                if first_divergence is None:
+                    first_divergence = cycle_num
+                divergence_count += 1
+                lines.append(
+                    f"  CYCLE {cycle_num}: {short} — golden={golden_val} rtl={rtl_val}"
+                )
+
+    lines.append("")
+    if first_divergence is not None:
+        lines.append(f"FIRST DIVERGENCE: cycle {first_divergence}")
+        lines.append(f"TOTAL MISMATCHES: {divergence_count}")
+        lines.append("")
+        lines.append("DIAGNOSIS:")
+        lines.append(f"  1. The first divergence at cycle {first_divergence} is the root cause.")
+        lines.append("  2. Check if the divergence is a timing offset (value correct but")
+        lines.append("     arrives 1 cycle early/late) or a computation error (value is wrong).")
+        lines.append("  3. For timing offset: check shift register alignment and control")
+        lines.append("     signal co-assertion between FSM and consumer modules.")
+        lines.append("  4. For computation error: trace the exact formula producing the wrong value.")
+    else:
+        lines.append("NO DIVERGENCES FOUND — golden model matches RTL for the compared cycles.")
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -352,6 +494,7 @@ def main():
     parser.add_argument("--window", type=int, default=15, help="Cycles around each failure (default 15)")
     parser.add_argument("--module", help="Filter signals to this module scope")
     parser.add_argument("--output", help="Write output to file instead of stdout")
+    parser.add_argument("--golden-model", help="Python golden model — compare RTL outputs cycle-by-cycle")
     args = parser.parse_args()
 
     if not Path(args.vcd_file).exists():
@@ -448,7 +591,7 @@ def main():
         window_cycles = [(0, 49)]
 
     # 7. Build table
-    table = build_cycle_table(vcd, include_signals, window_cycles, annotations, clk_name)
+    table, cycle_snapshots = build_cycle_table(vcd, include_signals, window_cycles, annotations, clk_name)
 
     # 8. Build header summary
     output_parts = []
@@ -476,7 +619,18 @@ def main():
 
     output_parts.append(table)
 
-    # 9. Guidance for LLM
+    # 9. Golden model comparison (if available)
+    if args.golden_model and Path(args.golden_model).exists():
+        golden_diff = run_golden_model_comparison(
+            args.golden_model, cycle_snapshots, include_signals
+        )
+        if golden_diff:
+            output_parts.append("")
+            output_parts.append(golden_diff)
+    elif args.golden_model:
+        output_parts.append(f"\n[GOLDEN] Golden model not found: {args.golden_model}\n")
+
+    # 10. Guidance for LLM
     if fail_cycles:
         output_parts.append("")
         output_parts.append("DIAGNOSIS HINTS:")

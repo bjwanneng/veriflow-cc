@@ -12,16 +12,18 @@ import re
 import tempfile
 from pathlib import Path
 
-# Add skills dir to path for state.py imports
+# Resolve directories relative to this test file
+_PROJECT_DIR = Path(__file__).parent.parent
+_SKILLS_DIR = _PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / ".claude" / "skills" / "vf-pipeline"))
+sys.path.insert(0, str(_SKILLS_DIR))
 
 
 # ---------------------------------------------------------------------------
 # Helpers: read stage files (content was moved from SKILL.md during refactor)
 # ---------------------------------------------------------------------------
 
-SKILLS_DIR = Path(__file__).parent.parent / ".claude" / "skills" / "vf-pipeline"
+SKILLS_DIR = _SKILLS_DIR
 STAGE1_PATH = SKILLS_DIR / "stages" / "stage_1.md"
 STAGE2_PATH = SKILLS_DIR / "stages" / "stage_2.md"
 STAGE4_PATH = SKILLS_DIR / "stages" / "stage_4.md"
@@ -33,6 +35,10 @@ def _read_stage1_md():
 
 def _read_stage2_md():
     return STAGE2_PATH.read_text(encoding="utf-8")
+
+
+def _read_stage3_md():
+    return (SKILLS_DIR / "stages" / "stage_3.md").read_text(encoding="utf-8")
 
 
 def _read_stage4_md():
@@ -157,7 +163,7 @@ def test_skill_has_new_hook():
 
 def test_coder_has_behavior_spec():
     """vf-coder agent must accept BEHAVIOR_SPEC parameter."""
-    coder_path = Path(__file__).parent.parent / "claude_agents" / "vf-coder.md"
+    coder_path = _PROJECT_DIR / "src" / "claude_agents" / "vf-coder.md"
     coder = coder_path.read_text(encoding="utf-8")
     assert "BEHAVIOR_SPEC" in coder, (
         "vf-coder agent must accept BEHAVIOR_SPEC parameter"
@@ -229,6 +235,126 @@ def test_journal_includes_behavior_spec():
     journal_block = stage1[journal_start:]  # journal is the last section, read to EOF
     assert "behavior_spec.md" in journal_block, (
         "Stage 1 journal should list behavior_spec.md in outputs"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Interface Truth Table sections in behavior_spec.md template
+# ---------------------------------------------------------------------------
+
+def test_template_has_signal_groups():
+    """Section 2.6.1 (Signal Groups) must exist in the template."""
+    stage1 = _read_stage1_md()
+    assert "2.6.1 Signal Groups" in stage1, (
+        "behavior_spec.md template must have Section 2.6.1 Signal Groups"
+    )
+
+
+def test_template_has_control_truth_table():
+    """Section 2.6.2 (Control Truth Table) must exist in the template."""
+    stage1 = _read_stage1_md()
+    assert "2.6.2 Control Truth Table" in stage1, (
+        "behavior_spec.md template must have Section 2.6.2 Control Truth Table"
+    )
+    # Must have the truth table header row with state + signal columns
+    assert "State" in stage1 and "Notes" in stage1, (
+        "Control Truth Table must have State and Notes columns"
+    )
+
+
+def test_template_has_signal_conflicts():
+    """Section 2.6.3 (Signal Conflicts) must exist in the template."""
+    stage1 = _read_stage1_md()
+    assert "2.6.3 Signal Conflicts" in stage1, (
+        "behavior_spec.md template must have Section 2.6.3 Signal Conflicts"
+    )
+    # Must have Signal A, Signal B, Rule, Violation Behavior columns
+    assert "Signal A" in stage1 and "Violation Behavior" in stage1, (
+        "Signal Conflicts table must have Signal A and Violation Behavior columns"
+    )
+
+
+def test_readiness_check_validates_truth_table():
+    """Readiness check (1c3) must validate Control Truth Table completeness."""
+    stage1 = _read_stage1_md()
+    check_start = stage1.find("## 1c3. Readiness Check")
+    check_end = stage1.find("## 1c4.", check_start)
+    check_block = stage1[check_start:check_end]
+    assert "2.6.2" in check_block or "Control Truth Table" in check_block, (
+        "Readiness check must validate Control Truth Table (Section 2.6.2)"
+    )
+
+
+def test_readiness_check_validates_signal_conflicts():
+    """Readiness check (1c3) must validate Signal Conflicts."""
+    stage1 = _read_stage1_md()
+    check_start = stage1.find("## 1c3. Readiness Check")
+    check_end = stage1.find("## 1c4.", check_start)
+    check_block = stage1[check_start:check_end]
+    assert "2.6.3" in check_block or "Signal Conflicts" in check_block, (
+        "Readiness check must validate Signal Conflicts (Section 2.6.3)"
+    )
+
+
+def test_coder_references_truth_table():
+    """vf-coder must reference Control Truth Table for RTL implementation."""
+    coder_path = _PROJECT_DIR / "src" / "claude_agents" / "vf-coder.md"
+    coder = coder_path.read_text(encoding="utf-8")
+    assert "Control Truth Table" in coder or "2.6.2" in coder, (
+        "vf-coder must reference Control Truth Table (Section 2.6.2) for RTL implementation"
+    )
+    assert "Signal Conflicts" in coder or "2.6.3" in coder, (
+        "vf-coder must reference Signal Conflicts (Section 2.6.3)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Merged payload-unique content
+# ---------------------------------------------------------------------------
+
+def test_skill_has_pattern_f():
+    """SKILL.md must have Pattern F diagnostics for algorithm errors."""
+    skill_path = _SKILLS_DIR / "SKILL.md"
+    skill = skill_path.read_text(encoding="utf-8")
+    assert "Pattern F" in skill, (
+        "SKILL.md must include Pattern F (Data value mismatch) diagnostics"
+    )
+    assert "shift register" in skill.lower() or "Shift register" in skill, (
+        "Pattern F must mention shift register alignment"
+    )
+
+
+def test_skill_has_spec_level_rollback():
+    """SKILL.md must have spec-level rollback rule."""
+    skill_path = _SKILLS_DIR / "SKILL.md"
+    skill = skill_path.read_text(encoding="utf-8")
+    assert "Spec-level rollback" in skill, (
+        "SKILL.md must include spec-level rollback rule"
+    )
+    assert "contradiction" in skill.lower(), (
+        "Spec-level rollback must mention contradictions"
+    )
+
+
+def test_stage1_has_cross_module_timing_check():
+    """Stage 1 must have section 1c2b for Cross-Module Timing Consistency."""
+    stage1 = _read_stage1_md()
+    assert "1c2b" in stage1, (
+        "Stage 1 must have section 1c2b (Cross-Module Timing Consistency Check)"
+    )
+    assert "Check A" in stage1 or "Co-assertion" in stage1, (
+        "Section 1c2b must include Check A (Control Signal Co-assertion)"
+    )
+
+
+def test_stage3_has_interface_contract_tests():
+    """Stage 3 must have section 3c-ii-bis for Interface Contract Tests."""
+    stage3 = _read_stage3_md()
+    assert "3c-ii-bis" in stage3, (
+        "Stage 3 must have section 3c-ii-bis (Interface Contract Tests)"
+    )
+    assert "Interface Contract Test" in stage3, (
+        "Section 3c-ii-bis must describe Interface Contract Test structure"
     )
 
 

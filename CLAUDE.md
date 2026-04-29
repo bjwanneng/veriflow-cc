@@ -38,16 +38,20 @@ All non-trivial changes must follow this cycle:
 ## Architecture Notes
 
 - `state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER` and `STAGE_PREREQUISITES` enforce strict execution order.
-- `.claude/skills/vf-pipeline/SKILL.md` — Pipeline orchestrator (project source). Contains Step 0, Design Rules, State Management, Stage Dispatch Loop, and Error Recovery. Installed to `~/.claude/skills/vf-pipeline/`. Invoked via `/vf-pipeline <project_dir>`.
-- `.claude/skills/vf-pipeline/stages/stage_1.md` through `stage_8.md` — Per-stage instruction files loaded on demand during pipeline execution. Each stage is self-contained.
-- `.claude/skills/vf-pipeline/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
-- `claude_agents/vf-coder.md` — Only sub-agent (project source). Installed to `~/.claude/agents/`. Handles RTL code generation.
+- `src/claude_skills/vf-pipeline/SKILL.md` — Pipeline orchestrator (project source). Contains Step 0, Design Rules, State Management, Stage Dispatch Loop, and Error Recovery. Installed to `~/.claude/skills/vf-pipeline/`. Invoked via `/vf-pipeline <project_dir>`.
+- `src/claude_skills/vf-pipeline/stages/stage_1.md` through `stage_8.md` — Per-stage instruction files loaded on demand during pipeline execution. Each stage is self-contained.
+- `src/claude_skills/vf-pipeline/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
+- `src/claude_agents/vf-coder.md` — Sub-agent for RTL code generation (Stage 4).
+- `src/claude_agents/vf-reviewer.md` — Sub-agent for static analysis (Stage 5).
+- `src/claude_agents/vf-linter.md` — Sub-agent for lint (Stage 6).
+- `src/claude_agents/vf-simulator.md` — Sub-agent for simulation (Stage 7).
+- `src/claude_agents/vf-synthesizer.md` — Sub-agent for synthesis (Stage 8).
   - **CRITICAL**: Agent `tools` field MUST be comma-separated capitalized names: `tools: Read, Write, Glob, Grep, Bash`. YAML list syntax causes silent tool permission failure (see GitHub #12392).
-- `install.py` — Installs 1 skill (SKILL.md + state.py + coding_style.md + 8 stage files) + 1 agent to `~/.claude/`.
+- `install.py` — Installs 1 skill (SKILL.md + state.py + coding_style.md + 8 stage files) + 5 agents to `~/.claude/`. Reads from `src/`.
 - **Multi-file input**: Projects accept `requirement.md` (required), `constraints.md` (optional), `design_intent.md` (optional), `context/*.md` (optional). Missing optional files trigger targeted clarification questions in Stage 1.
 - Stage 1 now produces TWO artifacts: spec.json (interface contract) + behavior_spec.md (behavioral requirements). behavior_spec.md contains cycle-accurate behavior, FSM, timing contracts, domain knowledge, and algorithm pseudocode.
 - spec.json contains: ports, parameters, module connectivity, constraints (timing/area/power/io/verification), and design_intent (architecture style, pipeline stages, resource strategy, interface preferences, IP reuse, key decisions).
-- Pipeline flow: Main Claude executes stages 1-3, 5-8 inline. Only Stage 4 (coder) calls vf-coder sub-agent.
+- Pipeline flow: Main Claude executes stages 1-3 inline. Stages 4-8 use sub-agents (vf-coder, vf-reviewer, vf-linter, vf-simulator, vf-synthesizer).
 - Error recovery: Main Claude reads errors, fixes RTL, re-runs. 3-retry budget, then asks user.
 - EDA environment: Discovered once in Step 0, saved to `.veriflow/eda_env.sh`, sourced before every EDA command.
 - Logs: `logs/lint.log`, `logs/compile.log`, `logs/sim.log`, `workspace/synth/synth_report.txt`.

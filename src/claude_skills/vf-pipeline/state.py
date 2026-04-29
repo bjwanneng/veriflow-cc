@@ -1,6 +1,7 @@
 """Pipeline state management - zero external dependencies."""
 
 import json
+import sys
 import time
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -86,7 +87,6 @@ class PipelineState:
         if stage in STAGE_PREREQUISITES:
             ok, reason = can_execute(stage, self.stages_completed)
             if not ok:
-                import sys
                 print(f"[WARNING] Stage '{stage}' prerequisites not met: {reason}", file=sys.stderr)
         if stage not in self.stages_completed:
             self.stages_completed.append(stage)
@@ -116,7 +116,6 @@ class PipelineState:
     def inc_retry(self, stage: str):
         self.retry_count[stage] = self.retry_count.get(stage, 0) + 1
         if self.retry_count[stage] >= self.max_retries_per_stage:
-            import sys
             print(f"[BUDGET] Stage '{stage}' exhausted {self.max_retries_per_stage} retries. Escalating to user.", file=sys.stderr)
 
     def is_retry_exhausted(self, stage: str) -> bool:
@@ -151,20 +150,18 @@ class PipelineState:
             return cls(**data)
         return cls(project_dir=project_dir)
 
-    @classmethod
-    def reset_stage(cls, state: "PipelineState", stage: str) -> "PipelineState":
+    def reset_stage(self, stage: str):
         """Clear a stage and all subsequent completion records, for rollback."""
         if stage not in STAGE_ORDER:
-            return state
+            return
         idx = STAGE_ORDER.index(stage)
         to_remove = STAGE_ORDER[idx:]
-        state.stages_completed = [s for s in state.stages_completed if s not in to_remove]
-        state.stages_failed = [s for s in state.stages_failed if s not in to_remove]
+        self.stages_completed = [s for s in self.stages_completed if s not in to_remove]
+        self.stages_failed = [s for s in self.stages_failed if s not in to_remove]
         for s in to_remove:
-            setattr(state, f"{s}_output", None)
-            state.stage_summaries.pop(s, None)
-        state.save()
-        return state
+            setattr(self, f"{s}_output", None)
+            self.stage_summaries.pop(s, None)
+        self.save()
 
     def next_stage(self) -> str | None:
         """Return the next stage to execute (strict order, no skipping)."""
@@ -186,9 +183,6 @@ class PipelineState:
         Returns:
             (is_complete, missing_items) — is_complete=True means ready to proceed
         """
-        from pathlib import Path
-        import json
-
         missing = []
         spec_path = Path(project_dir) / "workspace/docs/spec.json"
         behavior_path = Path(project_dir) / "workspace/docs/behavior_spec.md"
@@ -238,6 +232,36 @@ class PipelineState:
             return False
 
         recent_errors = self.error_history[stage][-3:]  # Last 3 attempts
+
+    def validate_golden_model(self, project_dir: str) -> tuple[bool, list[str]]:
+        """Validate golden_model.py after Stage 1 generation.
+
+        Returns:
+            (is_valid, issues) — is_valid=True means golden model is usable.
+            Returns (True, []) if golden_model.py does not exist (it is optional).
+        """
+        import py_compile
+
+        issues = []
+        gm_path = Path(project_dir) / "workspace/docs" / "golden_model.py"
+
+        if not gm_path.exists():
+            return (True, [])  # golden model is optional
+
+        # Check syntax
+        try:
+            py_compile.compile(str(gm_path), doraise=True)
+        except py_compile.PyCompileError as e:
+            issues.append(f"golden_model.py syntax error: {e}")
+            return (False, issues)
+
+        # Check it defines run()
+        content = gm_path.read_text(encoding="utf-8")
+        if "def run(" not in content:
+            issues.append("golden_model.py missing run() function")
+            return (False, issues)
+
+        return (True, [])
         signature_count = sum(1 for e in recent_errors if error_signature in str(e.get("errors", [])))
 
         return signature_count >= 2
@@ -246,15 +270,18 @@ class PipelineState:
 # -- CLI entry point (called by SKILL.md state update command) -----------------
 
 if __name__ == "__main__":
-    import sys as _sys
-
-    if len(_sys.argv) < 3:
+    if len(sys.argv) < 3:
         print("Usage: python state.py <project_dir> <stage_name> [--fail]")
-        _sys.exit(1)
+        sys.exit(1)
 
-    _project_dir = _sys.argv[1]
-    _stage = _sys.argv[2]
-    _is_fail = "--fail" in _sys.argv
+    _project_dir = sys.argv[1]
+    _stage = sys.argv[2]
+
+    if _stage not in STAGE_ORDER:
+        print(f"ERROR: Unknown stage '{_stage}'. Valid stages: {STAGE_ORDER}", file=sys.stderr)
+        sys.exit(1)
+
+    _is_fail = "--fail" in sys.argv
 
     _state = PipelineState.load(_project_dir)
 

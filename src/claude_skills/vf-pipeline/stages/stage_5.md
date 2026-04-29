@@ -1,4 +1,4 @@
-# Stage 5: skill_d (inline)
+# Stage 5: skill_d (sub-agent)
 
 **Goal**: Read RTL files, perform quality checks, write static_report.json.
 
@@ -23,13 +23,34 @@ fi
 
 If checksum fails, DO NOT proceed. Investigate who modified the testbench and restore it from Stage 3 output.
 
-## 5a. Read inputs
+## 5a. Read spec for design_name
+
+```bash
+DESIGN_NAME=$($PYTHON_EXE -c "import json; print(json.load(open('$PROJECT_DIR/workspace/docs/spec.json'))['design_name'])" 2>/dev/null || echo "")
+echo "[skill_d] Design: $DESIGN_NAME"
+```
+
+## 5b. Call vf-reviewer agent
+
+Call the **Agent** tool with `subagent_type: "vf-reviewer"` and the following prompt (replace placeholders with absolute paths):
+
+```
+PROJECT_DIR={PROJECT_DIR} SPEC={PROJECT_DIR}/workspace/docs/spec.json OUTPUT={PROJECT_DIR}/workspace/docs/static_report.json. Glob workspace/rtl/*.v, Read each .v file, Read SPEC, perform 7-category static analysis (A: static checks, B: deep code review, C: logic depth, D: resource estimate, E: constraint compliance, F: functional completeness, G: array bounds), Write OUTPUT with static_report.json.
+```
+
+Replace `{PROJECT_DIR}` with the absolute path to the project directory.
+
+## 5b-retry. If agent returns 0 tool uses
+
+If the agent made **0 tool calls** (empty response), retry once with the exact same prompt.
+
+## 5b-fallback. Inline fallback
+
+If the retry also returns 0 tool uses, perform the analysis inline:
 
 Use **Read** tool to read every file in `$PROJECT_DIR/workspace/rtl/*.v` and `$PROJECT_DIR/workspace/docs/spec.json`.
 
-## 5b. Perform checks
-
-Check for (do NOT run EDA tools):
+Perform the following checks (do NOT run EDA tools):
 
 **A. Static Checks**:
 1. `initial` blocks in RTL files

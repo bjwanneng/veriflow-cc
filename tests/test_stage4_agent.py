@@ -11,8 +11,8 @@ import re
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent.parent
-STAGE4_PATH = PROJECT_DIR / ".claude/skills/vf-pipeline/stages/stage_4.md"
-VF_CODER_PATH = PROJECT_DIR / "claude_agents/vf-coder.md"
+STAGE4_PATH = PROJECT_DIR / "src/claude_skills/vf-pipeline/stages/stage_4.md"
+VF_CODER_PATH = PROJECT_DIR / "src/claude_agents/vf-coder.md"
 
 
 def read_file(path):

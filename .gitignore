@@ -7,3 +7,7 @@ logs/
 workspace/sim/
 workspace/synth/
 articles/
+docs/
+node_modules/
+*.tgz
+.claude/

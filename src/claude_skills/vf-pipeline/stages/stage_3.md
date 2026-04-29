@@ -36,6 +36,43 @@ ls "$PROJECT_DIR/context/"*.md 2>/dev/null && echo "[GOLDEN] Found context/*.md 
 
 Use the golden model outputs from `logs/golden_*.log` (if any) as the **authoritative source** for expected values in test scenarios. Never use self-computed or approximate values.
 
+## 3a2. Run pipeline-generated golden model (if available)
+
+```bash
+# Priority 1: Pipeline-generated golden model from Stage 1
+if [ -f "$PROJECT_DIR/workspace/docs/golden_model.py" ]; then
+    echo "[GOLDEN] Found pipeline-generated golden model: workspace/docs/golden_model.py"
+    echo "[GOLDEN] Running golden model to generate expected_vectors.json..."
+    cd "$PROJECT_DIR" && python3 -c "
+import json, sys
+sys.path.insert(0, 'workspace/docs')
+from golden_model import run
+results = run()
+with open('workspace/docs/expected_vectors.json', 'w') as f:
+    json.dump(results, f, indent=2)
+print(f'[GOLDEN] Generated expected_vectors.json with {len(results)} cycles')
+" 2>&1
+    if [ $? -eq 0 ]; then
+        echo "[GOLDEN] expected_vectors.json generated successfully"
+        echo "[GOLDEN] Use values from workspace/docs/expected_vectors.json as highest priority expected values"
+    else
+        echo "[GOLDEN] WARNING: golden model execution failed — expected values from spec/standards only"
+    fi
+else
+    echo "[GOLDEN] No workspace/docs/golden_model.py found"
+    echo "[GOLDEN] Checking context/*.py for user-provided golden models..."
+    # Fall through to existing context/*.py detection above
+fi
+```
+
+**Expected value priority order (highest to lowest)**:
+1. `workspace/docs/expected_vectors.json` — auto-generated from `golden_model.py`
+2. `logs/golden_*.log` — from user-provided `context/*.py` golden models
+3. Standard document test vectors (from `requirement.md` or `context/*.md`)
+4. Manual computation documented in `behavior_spec.md`
+
+When `expected_vectors.json` exists: **Read it** using the Read tool, then use its values EXACTLY in testbench assertions. Do not recompute. Add a comment in the testbench: `// Expected values from: workspace/docs/expected_vectors.json`
+
 ## 3b. Write timing_model.yaml
 
 Use **Write** tool to write `$PROJECT_DIR/workspace/docs/timing_model.yaml`.
@@ -205,6 +242,32 @@ If `context/*.py` contains a Python reference implementation:
 - If the golden model can output intermediate computation steps, use those values as additional check points in submodule testbenches (e.g., verify internal register values at specific cycles)
 - Document which golden model was used and how expected values were derived in a testbench comment block
 
+### 3c-ii-bis. Interface Contract Tests (multi-module designs ONLY)
+
+For designs with 3+ modules connected via control signals from a control/FSM module, generate
+an additional testbench: `workspace/tb/tb_<design_name>_interface.v`.
+
+Skip this step if the design has only 2 modules (top + one submodule) — the top-level testbench already covers the interface.
+
+This testbench verifies that the control signal sequences produced by the FSM module are correctly handled by consumer modules. It is specifically designed to catch the class of bugs where:
+- The FSM co-asserts multiple control signals (e.g., load_en + calc_en)
+- Consumer modules use if/else-if priority that silently ignores one signal during co-assertion
+- Shift register alignment is off by one round due to load/shift timing mismatch (algorithmic designs)
+
+**Interface Contract Test structure**:
+1. Instantiate the FSM/control module AND one or more consumer datapath modules
+2. Drive the FSM inputs as in the integration testbench, but also probe internal control signals
+3. For each control signal pair identified in behavior_spec.md Cross-Module Timing:
+   - Verify co-asserted signals are both active on the expected cycle
+   - Verify the consumer module produces correct output when co-asserted signals arrive simultaneously
+4. Specifically test these edge cases:
+   - **First cycle after reset**: Do all enables behave correctly? Are initial values loaded?
+   - **Transition cycle**: Where load_en de-asserts and calc_en continues — does the consumer see the correct data?
+   - **Back-to-back operations**: Second msg_valid immediately after first completes
+   - **Counter alignment**: At each round, does the consumer see the correct round_cnt value?
+5. Use `$display` with `cycle=%0d` format and check against expected values from behavior_spec.md cycle tables
+6. If a golden model exists in `context/*.py`, use its intermediate values as expected outputs for each round
+
 ## 3d. Hook
 
 ```bash
@@ -244,5 +307,5 @@ This checksum will be verified in Stage 7 to detect unauthorized testbench modif
 ## 3f. Journal
 
 ```bash
-printf "\n## Stage: timing\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/timing_model.yaml, workspace/tb/tb_*.v\n**Notes**: Timing model and testbench generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+printf "\n## Stage: timing\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/timing_model.yaml, workspace/tb/tb_*.v$(test -f "$PROJECT_DIR/workspace/docs/expected_vectors.json" && echo ', workspace/docs/expected_vectors.json')\n**Notes**: Timing model and testbench generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
 ```

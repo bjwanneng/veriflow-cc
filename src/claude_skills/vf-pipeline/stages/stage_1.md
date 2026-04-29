@@ -163,6 +163,9 @@ Must follow this exact structure:
           "direction": "input|output",
           "width": 1,
           "protocol": "clock|reset|data|valid|ready|flag",
+          "reset_polarity": "active_high",
+          "handshake": "single_cycle",
+          "ack_port": "",
           "description": "Port description"
         }
       ],
@@ -194,6 +197,11 @@ Constraints:
 - `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1)
 - `resource_strategy` must be `"distributed_ram"` or `"block_ram"`
 - Do NOT generate any Verilog files
+- **Port semantic fields (interface lock)**:
+  - Ports with `protocol: "reset"` MUST declare `reset_polarity`: `"active_high"` or `"active_low"`
+  - Ports with `protocol: "valid"` MUST declare `handshake`: `"hold_until_ack"` | `"single_cycle"` | `"pulse"`
+  - If `handshake: "hold_until_ack"`, MUST also declare `ack_port` with the name of the corresponding ack input port
+  - These fields are locked after Stage 1 and MUST NOT be changed by subsequent stages
 
 ## 1c2. Write behavior_spec.md
 
@@ -287,6 +295,44 @@ Step 2: ...
 Step N: [final output]
 
 ### 2.6 Protocol Details
+
+#### 2.6.1 Signal Groups
+{Group related signals by function. Every port in spec.json must appear in exactly one group.}
+
+| Group | Signals | Relationship |
+|-------|---------|--------------|
+| Clock/Reset | clk, rst | Synchronous active-high reset |
+| Data Input | data_i[N:0], valid_i, ready_o | valid/ready handshake on input |
+| Data Output | data_o[M:0], valid_o, ready_i | valid/ready handshake on output |
+| Control | start_i, done_o | Single-pulse start, done flag |
+| Status | busy_o, error_o | Status flags |
+
+#### 2.6.2 Control Truth Table
+{For each module with control/status/handshake signals, enumerate every valid input combination
+and the resulting output behavior. Use '-' for "don't care". This table is the authoritative
+reference for RTL implementation — every row must be implemented exactly.}
+
+| State | start_i | din_valid | dout_ready | → ready_o | dout_valid | busy_o | done_o | Notes |
+|-------|---------|-----------|------------|-----------|------------|--------|--------|-------|
+| RESET | - | - | - | 0 | 0 | 0 | 0 | All outputs quiescent |
+| IDLE | 0 | - | - | 1 | 0 | 0 | 0 | Ready for new input |
+| IDLE | 1 | - | - | 0 | 0 | 1 | 0 | Start processing |
+| PROCESS | - | - | - | 0 | 0 | 1 | 0 | Computation in progress |
+| PROCESS | - | - | - | 0 | 1 | 0 | 1 | Computation complete, output valid |
+| WAIT | - | - | 0 | 0 | 1 | 0 | 0 | Output held until ack |
+| WAIT | - | - | 1 | 0 | 1 | 0 | 0 | Output consumed |
+| IDLE | - | - | - | 1 | 0 | 0 | 0 | Return to idle |
+
+#### 2.6.3 Signal Conflicts
+{Declare which signals MUST NOT be co-asserted, and what the RTL must do if they are.}
+
+| Signal A | Signal B | Rule | Violation Behavior |
+|----------|----------|------|-------------------|
+| start_i | busy_o | MUST NOT co-assert | Ignore start_i while busy |
+| valid_o | rst | valid_o MUST be 0 during reset | Hardware enforced |
+| done_o | start_i | done_o takes priority | Acknowledge done before new start |
+
+#### 2.6.4 Protocol Timing
 {For each interface protocol (SPI, UART, AXI-Stream, custom handshake):
 - Signal sequence diagram (text-based cycle-by-cycle)
 - Setup/hold requirements
@@ -316,6 +362,57 @@ Constraints:
 - **Algorithm Pseudocode must be reproduced verbatim** if user provided it in Stage 1D — no paraphrasing
 - **Cross-Module Timing (Section 3) is mandatory for multi-module designs** — skip only for single-module designs
 
+## 1c2b. Cross-Module Timing Consistency Check (multi-module designs ONLY)
+
+Skip this step for single-module designs (only one module in spec.json with `module_type: "top"` and no submodules).
+
+After writing behavior_spec.md, perform the following consistency analysis. This check catches contradictions between the FSM module's control signal timing and consumer modules' expected timing — before any RTL is generated.
+
+Read behavior_spec.md and spec.json. For each pair of connected modules (from spec.json `module_connectivity`), extract and verify:
+
+### Check A: Control Signal Co-assertion Consistency
+
+1. From the FSM/control module's behavior spec (Section 2.X), list all control signals (load_en, calc_en, update_en, valid, ready, enable, etc.) and note which are asserted simultaneously (co-asserted) on the same clock cycle
+2. For each consumer module that receives these control signals, check: does the consumer's behavior spec handle co-assertion correctly? Specifically:
+   - If the FSM asserts `load_en=1 AND calc_en=1` on the same cycle, does the consumer's pseudocode use `if/else if` (which ignores calc_en when load_en is active) or `if/if` (which processes both)?
+   - Is the consumer's cycle-accurate behavior table consistent with the FSM's actual assertion pattern?
+   - Does the consumer's algorithm pseudocode explicitly state what happens when multiple control signals are active simultaneously?
+3. Flag any mismatch with the exact section numbers and cycle numbers from behavior_spec.md
+
+### Check B: Signal Latency Consistency
+
+1. From Cross-Module Timing Section 3.2, extract each signal's stated latency
+2. For registered outputs driven by `always @(posedge clk)`, verify latency=1 is stated; for combinational passthrough driven by `assign`, verify latency=0
+3. Cross-check: if Module A outputs a registered signal and Module B expects it on the same cycle (latency 0), flag the contradiction
+
+### Check C: Counter/State Range Overlap
+
+1. If the FSM has a round/step counter (round_cnt, step_cnt, iter_cnt, etc.), verify all consumer modules reference the same range (e.g., 0-63 vs 1-64)
+2. Check for off-by-one: does the FSM count from 0 to N-1 or 1 to N? Do consumers expect the same?
+3. Verify the total number of iterations matches: FSM says 64 rounds, consumer expects 64 processing cycles
+
+### Check D: Shift Register / Window Alignment
+
+1. If any consumer module uses a shift register, sliding window, or circular buffer, verify:
+   - At what cycle does the first valid element appear at the output position?
+   - Is there an off-by-one between when the FSM asserts `load_en` / `calc_en` and when the shift register output aligns with the consumer's expected round?
+2. Specifically check: does the shift register output element W[j] at round j, or W[j-1] or W[j+1]?
+3. Flag if the load cycle loads data without simultaneously shifting, which would cause a one-round offset in subsequent cycles
+
+**If ANY check flags a contradiction:**
+
+1. List the contradiction with exact section/cycle references
+2. Ask the user via AskUserQuestion: "Cross-Module Timing Consistency Check found a potential issue: [details]. How should the timing be aligned? Options: (a) Signals should be co-asserted — all consumers must handle simultaneous assertion, (b) Signals should be sequential — add a separate load cycle before calc, (c) This is intentional — no change needed"
+3. Update behavior_spec.md with the user's answer
+4. Re-run this check (1c2b only)
+5. Repeat until all checks pass
+
+**Example of what this check catches (from real failure):**
+- FSM Section 3.5 pseudocode: `load_en <- 1, calc_en <- 1` (co-asserted on IDLE->CALC transition)
+- W-gen Section 4.1 table: Cycle 1 = `load_en=1` only, Cycle 2 = `calc_en=1` (treated as sequential)
+- W-gen Section 4.5 pseudocode: `if load_en: load; else if calc_en: shift` (else-if means calc_en ignored during load)
+- Result: W shift register is one round behind from round 1 onwards, causing hash mismatch
+
 ## 1c3. Readiness Check (gate — MUST pass before proceeding)
 
 After writing both spec.json and behavior_spec.md, verify completeness. If ANY check fails, STOP and ask the user using AskUserQuestion.
@@ -334,6 +431,8 @@ After writing both spec.json and behavior_spec.md, verify completeness. If ANY c
 - [ ] Every sequential module (has clock port) has Section 2.1 (Cycle-Accurate Behavior) with at least 2 cycle rows
 - [ ] Every module with FSM has Section 2.2 filled (States + Transitions + Initial State)
 - [ ] Every sequential module has Section 2.4 (Timing Contracts) with latency and throughput specified
+- [ ] Every module with control/handshake ports has Section 2.6.2 (Control Truth Table) with at least 3 rows covering reset, idle, and active states
+- [ ] Section 2.6.3 (Signal Conflicts) lists all conflicting signal pairs from spec.json ports
 - [ ] Section 3 (Cross-Module Timing) exists for multi-module designs
 
 **If readiness_check fails:**
@@ -342,6 +441,88 @@ After writing both spec.json and behavior_spec.md, verify completeness. If ANY c
 3. Update the relevant file(s) with the user's answer
 4. Re-run readiness_check
 5. Repeat until all checks pass (or user explicitly says "I can't provide this — proceed anyway")
+
+## 1c4. Write golden_model.py (conditional — only for modules with algorithm pseudocode)
+
+Read each module's Section 2.5 (Algorithm Pseudocode) from `behavior_spec.md`.
+
+**Decision**: Check if ANY module has substantive algorithm pseudocode (not "No complex algorithm — direct datapath" or equivalent). If none, print `[GOLDEN] No algorithm pseudocode found — golden model not applicable` and skip to 1c-math.
+
+If at least one module has pseudocode, use **Write** to create `$PROJECT_DIR/workspace/docs/golden_model.py`.
+
+### Golden model template structure:
+
+```python
+"""golden_model.py — Auto-generated from behavior_spec.md Section 2.5
+
+Pure Python reference implementation. No external dependencies.
+Standard interface: run() -> list[dict] for cycle-by-cycle expected values.
+"""
+
+# --- Module: <module_name_with_pseudocode> ---
+
+def _module_<module_name>(inputs: dict) -> list[dict]:
+    """Execute the algorithm for <module_name>.
+    
+    Args:
+        inputs: dict mapping input port names to integer values.
+    
+    Returns:
+        list of dicts, one per clock cycle. Each dict maps signal_name -> int.
+        For combinational modules, returns a single-element list.
+    """
+    results = []
+    # --- Translated from behavior_spec.md Section X.5 Algorithm Pseudocode ---
+    # ... literal translation of pseudocode to Python ...
+    return results
+
+
+# --- Module: <other_module_with_pseudocode> ---
+# ... repeat per module ...
+
+
+# --- Standard Interface ---
+
+def run() -> list[dict]:
+    """Run all module algorithms with standard test vectors.
+    
+    Returns:
+        list indexed by cycle number, each entry is {signal_name: value}.
+        For multi-module designs, keys are '<module_name>.<signal_name>'.
+    """
+    all_results = {}
+    # Run each module that has pseudocode
+    # for module_name, module_fn in MODULE_FUNCTIONS.items():
+    #     module_results = module_fn(TEST_INPUTS[module_name])
+    #     for i, entry in enumerate(module_results):
+    #         if i not in all_results:
+    #             all_results[i] = {}
+    #         for sig, val in entry.items():
+    #             all_results[i][f"{module_name}.{sig}"] = val
+    # Convert dict to sorted list
+    if not all_results:
+        return []
+    max_cycle = max(all_results.keys())
+    return [all_results.get(i, {}) for i in range(max_cycle + 1)]
+
+
+if __name__ == "__main__":
+    import json
+    results = run()
+    for i, entry in enumerate(results):
+        if entry:
+            parts = [f"{k}={hex(v) if isinstance(v, int) else v}" for k, v in entry.items()]
+            print(f"cycle {i}: {' '.join(parts)}")
+```
+
+### Rules:
+- **Literal translation**: Translate pseudocode exactly as written — do not optimize or reinterpret
+- **Standard test vectors**: Use vectors from Section 1.3 References when available (e.g., NIST KAT vectors, RFC test vectors)
+- **Combinational modules**: Return a single-element list `[{output_signals}]`
+- **Sequential modules**: Return one entry per clock cycle, tracking register states
+- **Pure Python**: No external dependencies (no numpy, no cryptography libraries)
+- **Deterministic**: Same inputs must always produce same outputs
+- **Modules without pseudocode**: Skip them — they don't get a helper function in the golden model
 
 ## 1c-math. Validate spec (math checks)
 
@@ -362,7 +543,15 @@ If any check fails, fix spec.json or behavior_spec.md immediately.
 ## 1d. Hook
 
 ```bash
-test -f "$PROJECT_DIR/workspace/docs/spec.json" && grep -q "module_name" "$PROJECT_DIR/workspace/docs/spec.json" && test -f "$PROJECT_DIR/workspace/docs/behavior_spec.md" && grep -q "Domain Knowledge" "$PROJECT_DIR/workspace/docs/behavior_spec.md" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
+# Mandatory checks
+test -f "$PROJECT_DIR/workspace/docs/spec.json" && grep -q "module_name" "$PROJECT_DIR/workspace/docs/spec.json" && test -f "$PROJECT_DIR/workspace/docs/behavior_spec.md" && grep -q "Domain Knowledge" "$PROJECT_DIR/workspace/docs/behavior_spec.md" || { echo "[HOOK] FAIL"; exit 1; }
+
+# Optional golden model check (only if file was generated)
+if [ -f "$PROJECT_DIR/workspace/docs/golden_model.py" ]; then
+    python3 -c "import py_compile; py_compile.compile('$PROJECT_DIR/workspace/docs/golden_model.py', doraise=True)" 2>/dev/null && echo "[HOOK] golden_model.py: syntax OK" || echo "[HOOK] WARN: golden_model.py has syntax errors"
+fi
+
+echo "[HOOK] PASS"
 ```
 
 If FAIL → fix and rewrite the failing file(s) immediately.
@@ -378,5 +567,9 @@ Mark Stage 1 task as **completed** using TaskUpdate.
 ## 1f. Journal
 
 ```bash
-printf "\n## Stage: architect\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/spec.json, workspace/docs/behavior_spec.md\n**Notes**: Specification and behavior spec generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+GOLDEN_NOTE=""
+if [ -f "$PROJECT_DIR/workspace/docs/golden_model.py" ]; then
+    GOLDEN_NOTE=", workspace/docs/golden_model.py"
+fi
+printf "\n## Stage: architect\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/spec.json, workspace/docs/behavior_spec.md${GOLDEN_NOTE}\n**Notes**: Specification and behavior spec generated.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
 ```

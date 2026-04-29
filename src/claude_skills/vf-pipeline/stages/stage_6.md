@@ -1,4 +1,4 @@
-# Stage 6: lint
+# Stage 6: lint (sub-agent)
 
 **Goal**: Run iverilog syntax check on RTL files.
 
@@ -27,13 +27,39 @@ fi
 ls -la "$PROJECT_DIR/workspace/rtl/"*.v
 ```
 
-## 6b. Run lint
+## 6b. Call vf-linter agent
+
+Call the **Agent** tool with `subagent_type: "vf-linter"` and the following prompt (replace placeholders with absolute paths):
+
+```
+PROJECT_DIR={PROJECT_DIR} EDA_ENV={PROJECT_DIR}/.veriflow/eda_env.sh PYTHON_EXE={PYTHON_EXE} SKILL_DIR={CLAUDE_SKILL_DIR}. Source EDA_ENV, run iverilog -Wall -tnull on workspace/rtl/*.v, categorize errors, output LINT_RESULT summary.
+```
+
+Replace:
+- `{PROJECT_DIR}` with the absolute project directory path
+- `{PYTHON_EXE}` with the Python executable path
+- `{CLAUDE_SKILL_DIR}` with the installed skill directory path
+
+## 6b-diagnose. If agent reports failure
+
+The agent's text output contains a `LINT_RESULT:` line. Check it:
+
+- **`LINT_RESULT: PASS`** → proceed to **6d. Hook**
+- **`LINT_RESULT: FAIL`** → the agent has categorized the errors. Proceed to Error Recovery in SKILL.md:
+  1. Use **Read** tool to read `logs/lint.log` for full error details
+  2. Follow SKILL.md Error Recovery → fix RTL → re-dispatch vf-linter by going back to **6b**
+
+## 6b-retry. If agent returns 0 tool uses
+
+If the agent made **0 tool calls** (empty response), retry once with the exact same prompt.
+
+## 6b-fallback. Inline fallback
+
+If the retry also returns 0 tool uses, run lint inline:
 
 ```bash
 cd "$PROJECT_DIR" && source .veriflow/eda_env.sh && iverilog -Wall -tnull workspace/rtl/*.v 2>&1 | tee logs/lint.log; echo "EXIT_CODE: ${PIPESTATUS[0]}"
 ```
-
-## 6c. Analyze results
 
 Read `logs/lint.log`. Categorize errors:
 - **syntax error**: missing semicolons, typos

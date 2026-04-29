@@ -2,12 +2,14 @@
 
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
-# Add project root to path
+# Resolve the skills directory relative to this test file
+_SKILLS_DIR = Path(__file__).parent.parent / "src" / "claude_skills" / "vf-pipeline"
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / ".claude" / "skills" / "vf-pipeline"))
+sys.path.insert(0, str(_SKILLS_DIR))
 
 from state import (
     PipelineState, STAGE_ORDER, STAGE_PREREQUISITES,
@@ -121,18 +123,32 @@ def test_mark_failed_no_summary():
 
 def test_rollback_clears_summaries():
     """Rolling back should clear summaries of removed stages."""
-    s = PipelineState(project_dir="/tmp/test")
-    s.mark_complete("architect", {"success": True, "summary": "spec done"})
-    s.mark_complete("microarch", {"success": True, "summary": "microarch done"})
-    s.mark_complete("timing", {"success": True, "summary": "timing done"})
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.mark_complete("architect", {"success": True, "summary": "spec done"})
+        s.mark_complete("microarch", {"success": True, "summary": "microarch done"})
+        s.mark_complete("timing", {"success": True, "summary": "timing done"})
 
-    PipelineState.reset_stage(s, "microarch")
+        s.reset_stage("microarch")
 
-    assert "architect" in s.stage_summaries
-    assert "microarch" not in s.stage_summaries
-    assert "timing" not in s.stage_summaries
-    assert s.stages_completed == ["architect"]
-    assert s.next_stage() == "microarch"
+        assert "architect" in s.stage_summaries
+        assert "microarch" not in s.stage_summaries
+        assert "timing" not in s.stage_summaries
+        assert s.stages_completed == ["architect"]
+        assert s.next_stage() == "microarch"
+
+
+# ── CLI validation ──────────────────────────────────────────────────────
+
+
+def test_cli_rejects_invalid_stage():
+    """CLI should reject unknown stage names."""
+    result = subprocess.run(
+        [sys.executable, str(_SKILLS_DIR / "state.py"), "/tmp/test", "invalid_stage"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "Unknown stage" in result.stderr
 
 
 if __name__ == "__main__":

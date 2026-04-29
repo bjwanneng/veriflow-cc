@@ -3,12 +3,17 @@
 VeriFlow-CC Installer
 
 Installs to ~/.claude/:
-  - skills/pipeline/SKILL.md   — Pipeline orchestration skill (/pipeline)
-  - agents/vf-coder.md         — RTL code generation sub-agent
+  - skills/pipeline/SKILL.md   — Pipeline orchestration skill (/vf-pipeline)
+  - agents/vf-coder.md         — RTL code generation sub-agent (Stage 4)
+  - agents/vf-reviewer.md      — Static analysis sub-agent (Stage 5)
+  - agents/vf-linter.md        — Lint sub-agent (Stage 6)
+  - agents/vf-simulator.md     — Simulation sub-agent (Stage 7)
+  - agents/vf-synthesizer.md   — Synthesis sub-agent (Stage 8)
 
-After installation, use /pipeline <project_dir> in Claude Code to drive the full RTL design pipeline.
+After installation, use /vf-pipeline <project_dir> in Claude Code to drive the full RTL design pipeline.
 """
 
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -17,21 +22,25 @@ PROJECT_DIR = Path(__file__).parent
 CLAUDE_DIR = Path.home() / ".claude"
 
 # --- Skill ---
-SKILL_SRC_DIR = PROJECT_DIR / ".claude" / "skills" / "vf-pipeline"
+SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
 SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py"]
 STAGES_DIR = "stages"
 
-# Source for coding_style.md is in claude_agents/, but installed to skill dir
-CODING_STYLE_SRC = PROJECT_DIR / "claude_agents" / "coding_style.md"
+# Source for coding_style.md is now in the skill directory itself
+CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline" / "coding_style.md"
 CODING_STYLE_DST_NAME = "coding_style.md"
 
 # --- Sub-agents ---
 AGENTS_DST_DIR = CLAUDE_DIR / "agents"
-AGENTS_SRC_DIR = PROJECT_DIR / "claude_agents"
+AGENTS_SRC_DIR = PROJECT_DIR / "src" / "claude_agents"
 
 AGENT_FILES = [
     "vf-coder.md",
+    "vf-reviewer.md",
+    "vf-simulator.md",
+    "vf-linter.md",
+    "vf-synthesizer.md",
 ]
 
 
@@ -158,26 +167,27 @@ def main():
     print(f"\n[verify] Running post-install checks...")
     verify_errors = []
 
-    # 3a. Check vf-coder.md tools field format (must be comma-separated, not YAML list)
-    vf_coder_dst = AGENTS_DST_DIR / "vf-coder.md"
-    if vf_coder_dst.exists():
-        content = vf_coder_dst.read_text(encoding="utf-8")
-        # Detect YAML list format (bad): "tools:\n  - read"
-        if "\ntools:\n  -" in content or "\ntools:\n- " in content:
-            verify_errors.append(
-                f"  [FAIL] vf-coder.md: 'tools' field uses YAML list format — "
-                f"must be comma-separated (e.g. 'tools: Read, Write, Glob, Grep, Bash'). "
-                f"See GitHub #12392."
-            )
-        elif "tools: Read, Write" in content or "tools: Read,Write" in content:
-            print(f"  [OK]   vf-coder.md: tools field format correct")
+    # 3a. Check agent tools field format (must be comma-separated, not YAML list)
+    for agent_name in AGENT_FILES:
+        agent_dst = AGENTS_DST_DIR / agent_name
+        if agent_dst.exists():
+            content = agent_dst.read_text(encoding="utf-8")
+            # Detect YAML list format (bad): "tools:\n  - read"
+            if "\ntools:\n  -" in content or "\ntools:\n- " in content:
+                verify_errors.append(
+                    f"  [FAIL] {agent_name}: 'tools' field uses YAML list format — "
+                    f"must be comma-separated (e.g. 'tools: Read, Write, Glob, Grep, Bash'). "
+                    f"See GitHub #12392."
+                )
+            elif re.search(r'tools:\s*\w+.*,\s*\w+', content):
+                print(f"  [OK]   {agent_name}: tools field format correct")
+            else:
+                verify_errors.append(
+                    f"  [WARN] {agent_name}: could not confirm 'tools' field format — "
+                    f"verify manually that it is comma-separated"
+                )
         else:
-            verify_errors.append(
-                f"  [WARN] vf-coder.md: could not confirm 'tools' field format — "
-                f"verify manually that it is comma-separated"
-            )
-    else:
-        verify_errors.append(f"  [FAIL] vf-coder.md not found at {vf_coder_dst}")
+            verify_errors.append(f"  [FAIL] {agent_name} not found at {agent_dst}")
 
     # 3b. Check all 8 stage files are present
     for i in range(1, 9):
@@ -193,6 +203,13 @@ def main():
         print(f"  [OK]   state.py present")
     else:
         verify_errors.append(f"  [FAIL] state.py missing at {state_dst}")
+
+    # 3d. Check vcd2table.py is present
+    vcd2table_dst = SKILL_DST_DIR / "vcd2table.py"
+    if vcd2table_dst.exists():
+        print(f"  [OK]   vcd2table.py present")
+    else:
+        verify_errors.append(f"  [FAIL] vcd2table.py missing at {vcd2table_dst}")
 
     if verify_errors:
         print(f"\n[verify] Issues found:")

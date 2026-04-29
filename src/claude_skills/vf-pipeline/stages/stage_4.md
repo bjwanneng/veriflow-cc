@@ -74,7 +74,7 @@ fi
 ## 4e. Save state
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "coder"
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "coder"
 ```
 
 Mark Stage 4 task as **completed** using TaskUpdate.

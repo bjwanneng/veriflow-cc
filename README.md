@@ -35,15 +35,35 @@ Main Claude (skill prompt injected)
 
 ### 1. Install
 
+**Option A: via npm (recommended)**
+
 ```bash
+npx veriflow-cc
+```
+
+Or install globally:
+
+```bash
+npm install -g veriflow-cc
+veriflow-cc
+```
+
+**Option B: from source**
+
+```bash
+git clone https://github.com/bjwanneng/veriflow-cc.git
+cd veriflow-cc
 python install.py
 ```
 
-Installs to `~/.claude/`:
+Both methods install to `~/.claude/`:
 - `skills/vf-pipeline/SKILL.md` — Pipeline orchestration skill
 - `skills/vf-pipeline/state.py` — State management
+- `skills/vf-pipeline/vcd2table.py` — VCD waveform analysis
 - `skills/vf-pipeline/coding_style.md` — Verilog coding style rules
 - `agents/vf-coder.md` — RTL code generation sub-agent
+
+Uninstall: `npx veriflow-cc uninstall`
 
 ### 2. Prepare Project Directory
 
@@ -214,30 +234,37 @@ my_project/
 
 ```
 veriflow-cc/
-├── .claude/
-│   └── skills/
-│       └── vf-pipeline/
-│           ├── SKILL.md          # Pipeline orchestration skill
-│           ├── state.py          # State machine (JSON persistence)
-│           ├── coding_style.md   # Verilog-2005 coding rules (22+ sections + timing discipline)
-│           └── stages/           # Per-stage instruction files
-│               ├── stage_1.md    # architect (spec.json + behavior_spec.md)
-│               ├── stage_2.md    # microarch (micro_arch.md)
-│               ├── stage_3.md    # timing (per-module testbenches)
-│               ├── stage_4.md    # coder (vf-coder sub-agent dispatch)
-│               ├── stage_5.md    # skill_d (static analysis)
-│               ├── stage_6.md    # lint (iverilog)
-│               ├── stage_7.md    # sim (two-phase bottom-up verification)
-│               └── stage_8.md    # synth (yosys)
-├── claude_agents/
-│   ├── vf-coder.md              # RTL code generation sub-agent
-│   └── coding_style.md          # Coding style reference (source, installed to skill dir)
-├── install.py                   # Install skill + agent to ~/.claude/
+├── src/
+│   ├── claude_skills/
+│   │   └── vf-pipeline/
+│   │       ├── SKILL.md          # Pipeline orchestration skill
+│   │       ├── state.py          # State machine (JSON persistence)
+│   │       ├── vcd2table.py      # VCD waveform to cycle table converter
+│   │       ├── coding_style.md   # Verilog-2005 coding rules (22+ sections + timing discipline)
+│   │       └── stages/           # Per-stage instruction files
+│   │           ├── stage_1.md    # architect (spec.json + behavior_spec.md)
+│   │           ├── stage_2.md    # microarch (micro_arch.md)
+│   │           ├── stage_3.md    # timing (per-module testbenches)
+│   │           ├── stage_4.md    # coder (vf-coder sub-agent dispatch)
+│   │           ├── stage_5.md    # skill_d (static analysis)
+│   │           ├── stage_6.md    # lint (iverilog)
+│   │           ├── stage_7.md    # sim (two-phase bottom-up verification)
+│   │           └── stage_8.md    # synth (yosys)
+│   └── claude_agents/
+│       └── vf-coder.md           # RTL code generation sub-agent
+├── bin/
+│   └── veriflow-cc.js            # npm CLI entry point
+├── lib/
+│   └── installer.js              # npm installer
+├── install.py                    # Python installer (installs skill + agent to ~/.claude/)
 ├── tests/
-│   ├── test_state.py            # State machine tests
-│   └── test_behavior_spec.py    # behavior_spec.md and readiness check tests
-├── CLAUDE.md                    # Claude Code project instructions
-└── README.md                    # This file
+│   ├── test_state.py             # State machine tests
+│   ├── test_behavior_spec.py     # behavior_spec.md and readiness check tests
+│   ├── test_golden_model.py      # Golden model integration tests
+│   ├── test_stage4_agent.py      # Stage 4 agent prompt tests
+│   └── test_sim_hook.py          # Sim hook verification tests
+├── CLAUDE.md                     # Claude Code project instructions
+└── README.md                     # This file
 ```
 
 ## Dependencies
