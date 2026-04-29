@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls claude_agents/vf-*.md)",
+      "Bash(ls src/claude_agents/vf-*.md)",
       "Bash(python install.py)",
       "Bash(python3 install.py)",
       "Read(//c/c/**)",
@@ -19,8 +19,8 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(/c/Users/wanneng.zhang/AppData/Local/Programs/Python/Python312/python.exe:*)",
-      "Bash(mkdir -p __TRACKED_VAR__/.claude/skills/vf-pipeline/stages)",
-      "Bash(cp '.claude/skills/vf-pipeline/stages/stage_*.md' __TRACKED_VAR__/.claude/skills/vf-pipeline/stages/)"
+      "Bash(mkdir -p __TRACKED_VAR__/src/claude_skills/vf-pipeline/stages)",
+      "Bash(cp 'src/claude_skills/vf-pipeline/stages/stage_*.md' __TRACKED_VAR__/src/claude_skills/vf-pipeline/stages/)"
     ]
   }
 }

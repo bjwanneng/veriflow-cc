@@ -179,6 +179,8 @@ reg [7:0] temp_m_axi_arlen_reg = 8'd0;
 **MUST** Use **synchronous active-high** reset named `rst`.
 **MUST NOT** use asynchronous active-low `rst_n`.
 
+**Target architecture note**: Synchronous active-high reset is optimal for modern FPGA architectures (Xilinx 7-Series/UltraScale, Intel/Altera) where the flop's synchronous set/reset maps efficiently to SLICE/ALM resources. For **ASIC** tapeouts, standard cell libraries and DFT (Design for Test) scan-chain insertion traditionally favor **asynchronous active-low** resets (`rst_n`). If porting to ASIC, evaluate the target foundry's standard cell characteristics and DFT flow — asynchronous reset may be preferable for testability and area.
+
 ```verilog
 // correct
 input wire rst,
@@ -422,29 +424,34 @@ always @(*) begin ... end
 
 ### iverilog memory array write rule
 
-Memory array writes (`ram[idx] = val`) inside `always @(posedge clk)` **MUST** use blocking assignment (`=`), not NBA (`<=`).
+Memory array writes MUST use **combinational address pre-computation** to avoid an iverilog-specific NBA address evaluation race. Do NOT use blocking assignment (`=`) inside sequential blocks — it causes simulation-synthesis mismatch across tools.
 
-**Why**: iverilog evaluates the array index at NBA **application** time rather than **scheduling** time. When the index signal is a combinational `_next` or changes via NBA in the same cycle, NBA writes to the **wrong address**. Blocking assignment captures the index immediately in the active region.
+**The problem**: iverilog evaluates the array index for `ram[addr] <= wdata` at NBA **application** time rather than **scheduling** time. If `addr` changes via NBA in the same cycle, the write targets the **new** address instead of the old one.
 
-**MUST** add a comment on each such line: `// blocking: iverilog index race`
-
-This is a **targeted exception** to the "sequential = NBA only" rule. It applies ONLY to declared memory arrays (`reg [W:0] name [0:DEPTH-1]`), not to scalar or vector registers.
+**The fix — combinational address pre-computation**:
 
 ```verilog
-// correct — memory array write uses blocking
-always @(posedge clk) begin
-    if (wr_en) begin
-        ram[addr] = wdata;  // blocking: iverilog index race
-    end
-end
+// Combinational wire — evaluated in active region, before any NBA
+wire [ADDR_W-1:0] write_addr;
+assign write_addr = addr_next;  // or: addr_reg + offset, etc.
 
-// incorrect — NBA causes wrong address in iverilog
 always @(posedge clk) begin
     if (wr_en) begin
-        ram[addr] <= wdata;  // BUG: iverilog uses updated addr
+        ram[write_addr] <= wdata;  // standard NBA, iverilog-safe, synthesis-safe
     end
+    addr_reg <= write_addr;
+    if (rst) addr_reg <= 'd0;
 end
 ```
+
+**Why this works**: `write_addr` is a wire — its value is computed in the active region, before any NBA updates. When `ram[write_addr] <= wdata` is scheduled in the NBA region, it captures the pre-NBA address. The `addr_reg <= write_addr` NBA update does not affect `write_addr` since it's a separate combinational signal.
+
+**Why NOT blocking assignment**: Using `=` inside `always @(posedge clk)` for memory or register writes:
+- Causes simulation-synthesis mismatch: commercial tools (Vivado, Design Compiler, Genus) may fail to infer block RAM (BRAM/SRAM), synthesizing inefficient flip-flop grids instead
+- Violates the fundamental Verilog rule: sequential blocks use `<=`
+- Behavior varies across simulators (VCS vs Xcelium vs iverilog)
+
+**This applies ONLY to declared memory arrays** (`reg [W:0] name [0:DEPTH-1]`). Scalar and vector registers always use standard NBA (`<=`) and do not require address pre-computation.
 
 ### 11.1 Anti-Pattern: Blocking Assignment in Sequential Blocks `[CRITICAL]`
 
@@ -484,9 +491,7 @@ always @(posedge clk) begin
 end
 ```
 
-**Only exception**: iverilog has a known issue with array index resolution in NBA context.
-In this specific case, use approach B (combinational + sequential separation) instead of
-directly operating on array elements inside the sequential block.
+**For memory arrays**: Use combinational address pre-computation (see "iverilog memory array write rule" above). Never use blocking assignment in sequential blocks — the wire pre-computation method is safe for all simulators AND all synthesis tools.
 
 ---
 
@@ -552,6 +557,16 @@ Three required components:
 1. `localparam` with explicitly-specified width for state encoding
 2. Combinational `always @*` block — next-state decode and all outputs, with defaults at top
 3. Sequential `always @(posedge clk)` block — state register only (+ reset at end)
+
+**Glitch warning**: Outputs produced in the combinational block (e.g., `mem_wr_en`) are inherently **glitch-prone**. As the state register transitions, the combinational logic may produce transient intermediate values before settling. If these signals drive **glitch-sensitive endpoints** — memory write enables, asynchronous FIFOs, clock gating cells, or any edge-sensitive receivers — they **MUST** be registered:
+
+```verilog
+// Inside sequential block: register the glitch-prone output
+mem_wr_en_reg <= mem_wr_en;  // Glitch-free registered output
+// Consumer uses mem_wr_en_reg, not mem_wr_en
+```
+
+**Rule of thumb**: Control signals that fan out to datapath modules (write enables, load strobes, calculation enables) should always be registered. Pure status indicators (ready, valid) are typically safe as direct combinational outputs.
 
 ### State encoding `[BASE]`
 
@@ -647,12 +662,13 @@ priority_encoder_inst (request, request_valid, request_index, request_mask);
 ## 16. Generate Constructs
 
 - **MUST** name every generated block (`lower_snake_case`)
-- **MUST** declare `genvar` inside the `generate` block `[BASE]`
+- **MUST** declare `genvar` outside the `generate` block (strict Verilog-2001; declaring `genvar` inside `generate` is a SystemVerilog relaxation)
 - **MUST** all `generate for` loop `begin` blocks have a named label
 
 ```verilog
+// genvar declared BEFORE generate (strict Verilog-2001)
+genvar ii;
 generate
-    genvar ii;
     for (ii = 0; ii < NUM_BUSES; ii = ii + 1) begin : my_buses
         my_bus #(.Index(ii)) my_bus_inst (.foo(foo), .bar(bar[ii]));
     end
@@ -722,8 +738,13 @@ reg [39:0] addr = 40'h00_1fc0_0000;
 - Widths of connected ports must match; use explicit padding:
 
 ```verilog
-.thirty_two_bit_input ({16'd0, sixteen_bit_word})  // correct
-.thirty_two_bit_input (sixteen_bit_word)            // incorrect
+// correct — explicit zero-padding with replication operator
+.thirty_two_bit_input ({ {16{1'b0}}, sixteen_bit_word })
+// also correct — hex literal
+.thirty_two_bit_input ({16'h0000, sixteen_bit_word})
+
+// incorrect — implicit width mismatch
+.thirty_two_bit_input (sixteen_bit_word)
 ```
 
 ### Arithmetic and carry `[BASE]`
@@ -848,3 +869,151 @@ Cycle | FSM State | control_en | counter | data_source | output_valid
 4. Counter range must be exactly N iterations: count from 0 to N-1, producing exactly N assertions of the enable signal.
 5. For `handshake: "hold_until_ack"` ports: valid MUST stay high across cycles until ack is received. Do NOT pulse valid for one cycle.
 6. For `handshake: "single_cycle"` ports: valid MUST be high for exactly one cycle, then auto-deassert on the next clock edge.
+
+---
+
+## 24. Cross-Module Timing Rules `[CRITICAL]`
+
+Rules for designs where a control module (FSM) drives control signals to consumer datapath modules, and signals must be aligned across module boundaries.
+
+### 24.1 Producer-Consumer Cycle Annotation
+
+Every signal crossing a module boundary must be annotated with its **producer cycle** and **consumer cycle**. This annotation lives in the module's behavior spec (Section 2.1 cycle table) and the cross-module timing (Section 3.2).
+
+**Template** (add to module header comments):
+
+```verilog
+// Signal:  load_en
+// Producer: sm3_fsm, always @(posedge clk), registered (load_en_reg)
+// Produced: cycle N   — FSM state=IDLE, msg_valid=1
+// Consumer: sm3_w_gen, always @(posedge clk)
+// Consumed: cycle N   — same posedge (NBA: consumer sees value from cycle N-1!)
+// Consumer: sm3_compress, always @(posedge clk)
+// Consumed: cycle N+1 — next posedge (NBA has applied, sees correct value)
+```
+
+**Key insight**: When a registered signal is produced at `posedge N` (NBA scheduled), it is STALE for any consumer running in the same `posedge N` active region. The consumer sees the OLD value. The new value is visible at `posedge N+1`.
+
+**Rule**: If a signal is produced AND consumed on the same `posedge`, the consumer sees the PRODUCER'S PREVIOUS value. This is the Verilog NBA cross-module race.
+
+### 24.2 Same-Cycle Produce-and-Consume: Combinational Bypass
+
+When a signal must be produced and consumed in the same clock cycle (e.g., a configuration flag latched on `msg_valid` must be stable before `load_en` fires at the same posedge), use a **combinational bypass** — expose the producer's next-state value as a wire. The consumer reads the wire (combinational), not the registered output.
+
+**Correct pattern — combinational bypass**:
+
+```verilog
+// Producer: expose next-state value as combinational wire
+wire flag_next;
+assign flag_next = (msg_valid && ready) ? input_flag : flag_reg;
+
+always @(posedge clk) begin
+    flag_reg <= flag_next;
+    if (rst) flag_reg <= 1'b0;
+end
+
+// Consumer: reads flag_next (combinational), not flag_reg
+// flag_next is valid in the SAME cycle msg_valid fires — no NBA delay
+sm3_compress u_compress (
+    .flag_i (flag_next)  // combinational — no NBA delay
+);
+```
+
+**Alternative — accept pipeline delay**: If one cycle of latency is acceptable, keep the producer on `@(posedge clk)` with registered output, and design the consumer to expect the signal one cycle later. This is simpler and always synthesizable.
+
+**Approach selection guide**:
+| Condition | Approach |
+|-----------|----------|
+| Consumer needs value in same cycle as producer asserts it | Combinational bypass (`assign _next` wire) |
+| Consumer can tolerate 1-cycle delay | Standard posedge register (simpler, lower fanout) |
+| Signal is hold_until_used, consumed far in the future | Standard posedge latch (Section 24.3) |
+
+**WARNING — DO NOT use `@(negedge clk)` in synthesizable RTL**:
+- Creates half-cycle timing paths — makes timing closure extremely difficult across PVT corners
+- Depends on clock duty cycle — fragile and non-portable
+- Synthesis tools may produce unexpected results (some ignore negedge sensitivity on data paths)
+- This is a simulation-only workaround that causes **simulation-synthesis mismatch**
+
+**When NOT to use combinational bypass**: Signals with high fanout (the combinational wire adds load), or when the producer's next-state logic is complex (adds combinational path length). In these cases, prefer accepting the one-cycle pipeline delay.
+
+### 24.3 Signal Lifetime: Pulse vs Hold-Until-Used
+
+Ports with `signal_lifetime: "hold_until_used"` in spec.json require special handling. These signals arrive as short pulses (1-2 cycles) but are consumed many cycles later by a downstream module.
+
+**Bug pattern**: `is_last` flag on multi-block hash/checksum designs:
+- `is_last` asserted with `msg_valid` on cycle 0 (1-cycle pulse)
+- FSM samples `is_last` in DONE state, 67 cycles later
+- Without latching, FSM sees 0 — last block treated as intermediate, no hash output
+
+**Required pattern** — Add a latch register in the connecting wrapper:
+
+```verilog
+reg is_last_latched_reg;
+
+// Standard posedge latch — by the time FSM reads is_last (tens of cycles later),
+// NBA has long since applied. No negedge needed.
+always @(posedge clk) begin
+    if (rst) begin
+        is_last_latched_reg <= 1'b0;
+    end else if (fsm_hash_valid) begin
+        is_last_latched_reg <= 1'b0;  // clear for next message
+    end else if (msg_valid && fsm_ready) begin
+        is_last_latched_reg <= is_last;  // capture the pulse at posedge
+    end
+end
+```
+
+**Why `@(posedge clk)` is correct**: The latched value is consumed far in the future (e.g., FSM DONE state at cycle 67). The NBA has long since applied. Standard posedge is sufficient.
+
+**If the consumer needs the value on the immediate next posedge**: Use combinational bypass (Section 24.2), not negedge clock.
+
+**Checklist for `hold_until_used` signals**:
+1. [ ] Latch register exists in the wrapper or consumer module
+2. [ ] Latch is set on the signal's assertion cycle (msg_valid pulse)
+3. [ ] Latch is cleared when the consumer has finished using it (fsm_hash_valid)
+4. [ ] Consumer reads the LATCHED register, not the raw input port
+5. [ ] If the consumer samples at the very next posedge, use a **Combinational Bypass** (Section 24.2) instead of a latch — standard `@(posedge clk)` latch is one cycle too slow for same-cycle produce-and-consume
+
+### 24.4 FSM Output Restriction
+
+FSM registered outputs (`_reg` + `assign`) can only be consumed starting the posedge AFTER they are produced. When a consumer module's combinational block evaluates at the same posedge the FSM updates its outputs, the consumer sees stale values.
+
+**Validation**: For each FSM output signal, verify in the timing table that no consumer reads it on the same cycle it's produced. If this is unavoidable, the FSM must produce it one cycle earlier (registered in the previous state).
+
+### 24.5 Counter Range Consistency
+
+All modules sharing a round/step counter must agree on the range:
+
+```
+FSM:       round_cnt = 0, 1, 2, ..., 63  (64 values, 0 to N-1)
+W_gen:     expects round_cnt = 0..63      (shift register output is W[round_cnt])
+Compress:  expects round_cnt = 0..63      (round constant T_j depends on j)
+
+Agreement: All use 0..63 → OK
+Mismatch:  FSM uses 0..63, W_gen expects W[63] at round=64 → W[63] never produced
+```
+
+**Rule**: Counter range must be verified in behavior_spec.md Cross-Module Timing check (Stage 1, Section 1c2b Check C). Document the agreed range in each module's Section 2.1 cycle table.
+
+### 24.6 Shift Register Alignment
+
+For shift-register-based data expansion (message schedules, sliding windows, FIR filters):
+
+**Critical alignment question**: At round j, is the output element W[j] or W[j-1]?
+
+This depends on whether the load cycle shifts simultaneously:
+
+```
+Pattern A — load without shift:
+  load_en=1: w_reg[0] ← W[0],    w_reg[1..15] unchanged
+  calc_en=1: w_reg[0] ← w_reg[1], shifts → W[1] at output
+  Result: at round=0, output = W[0] ✓ (but calc not yet asserted)
+
+Pattern B — load with simultaneous shift:
+  load_en=1 + calc_en=1: w_reg[0] ← W[1] (shifted BEFORE load!)
+  Result: at round=0, output = W[1] ✗ — one round ahead, W[0] lost
+```
+
+**Rule**: `load_en` and `calc_en` MUST NOT be co-asserted if the shift register uses `if/else-if` priority. The FSM must provide a dedicated load cycle (IDLE→LOAD→CALC, not IDLE→CALC with co-asserted enables).
+
+**Validation**: Check behavior_spec.md Section 2.6.3 (Signal Conflicts) for `load_en`/`calc_en` exclusion entry. Verify the FSM's transition table shows separate load and calc cycles.

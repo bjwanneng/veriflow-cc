@@ -166,6 +166,7 @@ Must follow this exact structure:
           "reset_polarity": "active_high",
           "handshake": "single_cycle",
           "ack_port": "",
+          "signal_lifetime": "pulse",
           "description": "Port description"
         }
       ],
@@ -201,6 +202,9 @@ Constraints:
   - Ports with `protocol: "reset"` MUST declare `reset_polarity`: `"active_high"` or `"active_low"`
   - Ports with `protocol: "valid"` MUST declare `handshake`: `"hold_until_ack"` | `"single_cycle"` | `"pulse"`
   - If `handshake: "hold_until_ack"`, MUST also declare `ack_port` with the name of the corresponding ack input port
+  - All ports MUST declare `signal_lifetime`: `"pulse"` or `"hold_until_used"`:
+    - `"pulse"` — signal is asserted for 1 cycle and consumed immediately by the receiver (default, most handshake/data signals)
+    - `"hold_until_used"` — signal is sampled at most once, arrives as a short pulse but is consumed many cycles later by a downstream module. The receiver MUST latch this signal. **Classic bug**: `is_last` flag on a multi-block hash/checksum — asserted with msg_valid on cycle 0, consumed by FSM at the last round 67 cycles later. Without latching, the signal is 0 when finally sampled.
   - These fields are locked after Stage 1 and MUST NOT be changed by subsequent stages
 
 ## 1c2. Write behavior_spec.md
@@ -391,7 +395,24 @@ Read behavior_spec.md and spec.json. For each pair of connected modules (from sp
 2. Check for off-by-one: does the FSM count from 0 to N-1 or 1 to N? Do consumers expect the same?
 3. Verify the total number of iterations matches: FSM says 64 rounds, consumer expects 64 processing cycles
 
-### Check D: Shift Register / Window Alignment
+### Check D: Signal Lifetime Mismatch
+
+1. From spec.json, identify all ports with `signal_lifetime: "hold_until_used"`
+2. For each such port:
+   - Which module produces this signal? (source module)
+   - Which module consumes it? (destination module, from `module_connectivity`)
+   - How many cycles elapse between signal assertion (source) and signal sampling (consumer)? (from behavior_spec.md cycle tables)
+3. If the latency from assertion to sampling exceeds 1 clock cycle, verify the consumer explicitly latches the signal. Flag any case where:
+   - `signal_lifetime: "hold_until_used"` but no latch register exists in the consumer
+   - The signal is connected directly to a consumer port without intermediate storage
+   - The consumer's cycle table shows sampling at a cycle far from assertion
+
+**Example of what this check catches**:
+- `is_last` port: `signal_lifetime: "hold_until_used"`, produced by testbench as a 1-cycle pulse with `msg_valid`, consumed by FSM 67 cycles later in DONE state
+- Without latching in the top wrapper, the FSM sees `is_last=0` when it finally samples
+- Fix: add `is_last_latched_reg` in the wrapper, set on msg_valid, read by FSM
+
+### Check E: Shift Register / Window Alignment
 
 1. If any consumer module uses a shift register, sliding window, or circular buffer, verify:
    - At what cycle does the first valid element appear at the output position?
@@ -421,6 +442,8 @@ After writing both spec.json and behavior_spec.md, verify completeness. If ANY c
 - [ ] `design_name` is non-empty
 - [ ] At least one module with `module_type: "top"` exists
 - [ ] Every module has at least one port
+- [ ] Every port has `signal_lifetime` declared (`"pulse"` or `"hold_until_used"`)
+- [ ] All ports with `signal_lifetime: "hold_until_used"` are documented in behavior_spec.md Section 2.6.1 with latch requirement
 - [ ] `constraints` block is populated (timing at minimum has `target_frequency_mhz`)
 - [ ] `design_intent` block is populated
 - [ ] `module_connectivity` has at least one entry for multi-module designs

@@ -1,10 +1,14 @@
 ---
 name: vf-simulator
-description: VeriFlow Simulator Agent - Compile and simulate RTL+testbenches, analyze results
+description: VeriFlow Simulator Agent - Compile and simulate RTL+testbenches, analyze results (DEPRECATED for vf-pipeline Stage 7 — now inline)
 tools: Read, Write, Glob, Grep, Bash
 ---
 
-You compile and simulate RTL + testbenches. Execute all phases sequentially. **You MUST output a final summary** — the caller (main session) relies on your text output to decide next steps.
+**Pipeline note**: As of 2026-04-29, Stage 7 (sim) in the vf-pipeline uses **inline execution** instead of sub-agent dispatch. This agent is kept as a standalone utility for ad-hoc simulation tasks but is no longer called by the pipeline orchestrator. See `stage_7.md` for the current inline simulation flow.
+
+---
+
+You compile and simulate RTL + testbenches. Execute all phases sequentially. **You MUST output a final summary** — the caller relies on your text output to decide next steps.
 
 ## What you receive from the caller
 

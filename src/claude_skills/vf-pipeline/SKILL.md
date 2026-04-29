@@ -19,7 +19,7 @@ Execute immediately:
 
 ```bash
 PROJECT_DIR="$ARGUMENTS"
-ls -la "$PROJECT_DIR/requirement.md" || { echo "ERROR: requirement.md not found"; exit 1; }
+ls -la "$PROJECT_DIR/requirement.md" || echo "[FATAL ERROR] requirement.md not found. STOP and ask the user for the file."
 cd "$PROJECT_DIR" && mkdir -p workspace/docs workspace/rtl workspace/tb workspace/sim workspace/synth .veriflow logs
 
 # Report available input files
@@ -29,7 +29,7 @@ echo "[INPUT] design_intent.md: $(test -f design_intent.md && echo YES || echo N
 echo "[INPUT] context/: $(ls context/*.md 2>/dev/null | wc -l) file(s)"
 ls context/*.md 2>/dev/null || true
 
-# Discover Python
+# Discover Python (cross-platform: PATH first, then Windows common locations)
 PYTHON_EXE=$(which python3 2>/dev/null || which python 2>/dev/null || true)
 if [ -z "$PYTHON_EXE" ]; then
     PYTHON_EXE=$(ls /c/Python*/python.exe /c/Users/*/AppData/Local/Programs/Python/*/python.exe 2>/dev/null | head -1)
@@ -43,26 +43,35 @@ if [ -n "$PYTHON_EXE" ] && $PYTHON_EXE -c "import cocotb; import cocotb_tools.ru
     echo "[ENV] cocotb: AVAILABLE (Python traceback-based simulation)"
 else
     echo "[ENV] cocotb: NOT AVAILABLE"
-    echo "[ENV]   Install with: pip install cocotb"
+    echo "[ENV]   Install with: $PYTHON_EXE -m pip install --user cocotb"
+    echo "[ENV]   (--user bypasses PEP 668 restrictions on modern Linux)"
     echo "[ENV]   cocotb provides: Python tracebacks for debug, golden model cross-checks,"
     echo "[ENV]   structured xUnit test reports. Without it, simulation uses Verilog"
     echo "[ENV]   \$display-based testbenches (functional but less diagnostic detail)."
     echo "[PROMPT] cocotb is not installed. Would you like to install it now?"
-    echo "[PROMPT]   Yes → run: pip install cocotb"
+    echo "[PROMPT]   Yes → run: $PYTHON_EXE -m pip install --user cocotb"
     echo "[PROMPT]   No  → continue with Verilog-only testbenches"
 fi
 
-# Discover EDA tools — must include bin + lib + lib/ivl (iverilog needs ivlpp.exe and ivl.exe)
+# Discover EDA tools (Windows priority → Linux FHS fallback → PATH fallback)
+# Uses binary file check (not just directory) to avoid false-positives from empty dirs
 EDA_BIN=""
 EDA_LIB=""
-for base in /c/oss-cad-suite "/c/Program Files/iverilog" "/c/Program Files (x86)/iverilog"; do
-    if [ -d "$base/bin" ]; then
+for base in "/c/oss-cad-suite" "/c/Program Files/iverilog" "/c/Program Files (x86)/iverilog" "/opt/oss-cad-suite" "/usr/local" "/usr" "$HOME/.local"; do
+    if [ -d "$base/bin" ] && { [ -f "$base/bin/iverilog" ] || [ -f "$base/bin/iverilog.exe" ]; }; then
         EDA_BIN="$base/bin"
         [ -d "$base/lib" ] && EDA_LIB="$base/lib"
         [ -d "$base/lib/ivl" ] && EDA_LIB="$base/lib:$base/lib/ivl"
         break
     fi
 done
+
+# Fallback: find iverilog via system PATH
+if [ -z "$EDA_BIN" ] && command -v iverilog >/dev/null 2>&1; then
+    EDA_BIN=$(dirname "$(command -v iverilog)")
+    if [ "$EDA_BIN" = "/usr/bin" ]; then EDA_LIB="/usr/lib:/usr/lib/ivl"; fi
+    echo "[ENV] EDA found via PATH: $EDA_BIN"
+fi
 
 # Save env to file so every subsequent Bash call can source it
 cat > "$PROJECT_DIR/.veriflow/eda_env.sh" << ENVEOF
@@ -93,8 +102,8 @@ fi
 
 **If `[PROMPT] cocotb is not installed`** appears in the output above:
 
-1. Ask the user: *"cocotb is not installed. It provides Python traceback-based simulation with better error diagnostics. Install it now? (pip install cocotb)"*
-2. If **Yes** → Run `pip install cocotb` via Bash, then re-run the cocotb detection block to confirm it works. Set `COCOTB_AVAILABLE="true"` in your session.
+1. Ask the user: *"cocotb is not installed. It provides Python traceback-based simulation with better error diagnostics. Install it now? (pip install --user cocotb)"*
+2. If **Yes** → Run `$PYTHON_EXE -m pip install --user cocotb` via Bash, then re-run the cocotb detection block to confirm it works. Set `COCOTB_AVAILABLE="true"` in your session.
 3. If **No** → Continue with `COCOTB_AVAILABLE="false"`. The pipeline will use Verilog `$display`-based testbenches for simulation.
 
 If resuming, check `stages_completed` in pipeline_state.json and skip those stages.
@@ -195,7 +204,7 @@ Execute stages sequentially. For each stage, **Read the stage file first**, then
 | 4 | coder | spec.json, behavior_spec.md, micro_arch.md | rtl/*.v | Sub-agent (vf-coder) per module |
 | 5 | skill_d | rtl/*.v, spec.json | static_report.json | Sub-agent (vf-reviewer) |
 | 6 | lint | rtl/*.v | logs/lint.log | Sub-agent (vf-linter) |
-| 7 | sim | rtl/*.v, tb/*.v | logs/sim.log | Sub-agent (vf-simulator) |
+| 7 | sim | rtl/*.v, tb/*.v | logs/sim.log | Inline |
 | 8 | synth | rtl/*.v, spec.json | synth_report.txt | Sub-agent (vf-synthesizer) |
 
 ---
@@ -206,7 +215,7 @@ When any stage fails (lint errors, sim failure, synth failure):
 
 ### Subagent Stage Error Recovery
 
-For stages that use subagents (4 coder, 5 skill_d, 6 lint, 7 sim, 8 synth), the error recovery flow differs from inline stages:
+For stages that use subagents (4 coder, 5 skill_d, 6 lint, 8 synth), the error recovery flow differs from inline stages:
 
 1. **Subagent runs and reports** — The subagent executes in its own context and returns a text summary. All artifacts (logs, reports, waveform tables) are written to disk.
 2. **Main session reads artifacts** — When the subagent reports failure, the main session reads the diagnostic files from disk (sim.log, wave_table.txt, static_report.json, etc.)
@@ -220,6 +229,7 @@ For stages that use subagents (4 coder, 5 skill_d, 6 lint, 7 sim, 8 synth), the 
 ### Step 1: Diagnose
 - Read the error output from the failed stage
 - Read the relevant RTL files from `workspace/rtl/`
+- **Reference `bug_patterns.md`** (in the skill directory) for a catalog of known bug patterns with symptoms, root causes, and fixes. Match the error against the pattern descriptions before doing manual analysis.
 
 ### Step 1.5: Structured Root Cause Analysis (MANDATORY)
 
@@ -270,7 +280,11 @@ Pattern D — Handshake violation (valid deasserted too early):
 
 Pattern E — Counter range error (N vs N-1):
   Expected N iterations of enable=1, but got N-1 or N+1
-  → Fix: change loop terminal condition from <= to <, or vice versa
+  → Fix: change loop terminal condition from <= to <, or vice versa.
+  → ALSO check: is the loop variable defined as a fixed-width `reg [N-1:0]`? If so,
+    change it to `integer` to prevent silent overflow wrapping (e.g., 63+1 → 0 for
+    `reg [5:0]`, causing infinite loops). See coding_style.md Section 17a and
+    bug_patterns.md Pattern 3 for the full diagnosis.
 
 Pattern F — Data value mismatch (algorithm error):
 <!-- Applicable primarily to algorithmic/computational designs (hash, cipher, DSP, error-correction)
@@ -361,7 +375,7 @@ Fix rules:
 
 After fixing, re-run the failed stage to verify:
 - **Inline stages** (1-3): re-run the stage's Bash command
-- **Subagent stages** (4, 5, 6, 7, 8): re-dispatch the Agent tool (go back to the stage's agent dispatch step, e.g., stage_7.md section 7b)
+- **Subagent stages** (4, 5, 6, 8): re-dispatch the Agent tool (go back to the stage's agent dispatch step)
 
 ### Step 4: Sync upstream documents
 
@@ -393,3 +407,10 @@ Rollback targets by error type:
 | syntax | coder | coder → skill_d → lint → sim → synth |
 | logic | microarch | microarch → timing → coder → skill_d → lint → sim → synth |
 | timing | timing | timing → coder → skill_d → lint → sim → synth |
+
+To perform a rollback, execute:
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" --reset <target_stage>
+```
+Replace `<target_stage>` with: architect, microarch, timing, coder, skill_d, lint, sim, or synth.
+After rollback, proceed sequentially from the reset stage.
