@@ -13,7 +13,8 @@ The prompt will contain these paths:
 - `SPEC`: path to spec.json
 - `EDA_ENV`: path to .veriflow/eda_env.sh
 - `PYTHON_EXE`: path to Python executable
-- `SKILL_DIR`: path to installed skill directory (contains vcd2table.py)
+- `SKILL_DIR`: path to installed skill directory (contains vcd2table.py, cocotb_runner.py)
+- `COCOTB_AVAILABLE`: "true" or "false" — whether cocotb Python framework is installed
 - `TIMING_YAML`: path to timing_model.yaml
 
 ## Phase 0: Setup
@@ -29,6 +30,93 @@ which iverilog vvp 2>/dev/null || echo "[WARN] iverilog or vvp not found"
 **IMPORTANT**: In all bash commands below, replace the placeholder tokens (`PROJECT_DIR`, `EDA_ENV`, `PYTHON_EXE`, `SKILL_DIR`, `TIMING_YAML`, `SPEC`) with the actual absolute paths you received in the prompt. For example, if your prompt says `EDA_ENV=/c/Users/x/project/.veriflow/eda_env.sh`, then `source /c/Users/x/project/.veriflow/eda_env.sh`.
 
 Read `SPEC` to get `design_name` and module list.
+
+## Phase 0c: cocotb Simulation (when COCOTB_AVAILABLE=true)
+
+If `COCOTB_AVAILABLE` is "true", run cocotb simulation **first**. cocotb provides Python traceback-based error feedback that is superior to Verilog `$display` string matching. If cocotb tests pass, skip Phase 1 and Phase 2 entirely and go to Final Report.
+
+If `COCOTB_AVAILABLE` is "false" or no `test_*.py` files exist, skip this phase and go to Phase 1.
+
+### 0c-1. Check for Python testbenches
+
+```bash
+cd PROJECT_DIR && source EDA_ENV
+echo "[COCOTB] Checking for Python testbenches..."
+ls workspace/tb/test_*.py 2>/dev/null && echo "[COCOTB] Python testbenches found" || echo "[COCOTB] No Python testbenches — fallback to Verilog"
+```
+
+If `workspace/tb/test_*.py` files exist, proceed with cocotb simulation. Otherwise, skip to Phase 1.
+
+### 0c-2. Run per-module cocotb simulation
+
+Replace `PROJECT_DIR`, `EDA_ENV`, `PYTHON_EXE`, `SKILL_DIR` with the actual absolute paths from your prompt.
+
+```bash
+cd PROJECT_DIR && source EDA_ENV
+mkdir -p workspace/sim/cocotb_build logs
+
+DESIGN_NAME=$(python3 -c "import json; print(json.load(open('SPEC'))['design_name'])" 2>/dev/null || echo "")
+
+COCOTB_PASS=0
+COCOTB_FAIL=0
+COCOTB_TOTAL=0
+
+for tb_py in workspace/tb/test_*.py; do
+    [ -f "$tb_py" ] || continue
+    MODULE_NAME=$(basename "$tb_py" | sed 's/^test_//; s/\.py$//')
+    COCOTB_TOTAL=$((COCOTB_TOTAL + 1))
+
+    echo "--------------------------------------------"
+    echo "[COCOTB] Module $COCOTB_TOTAL: $MODULE_NAME"
+
+    PYTHON_EXE SKILL_DIR/cocotb_runner.py \
+        --rtl-dir PROJECT_DIR/workspace/rtl \
+        --tb-dir PROJECT_DIR/workspace/tb \
+        --module "$MODULE_NAME" \
+        --build-dir "workspace/sim/cocotb_build/$MODULE_NAME" \
+        --results-file "logs/cocotb_${MODULE_NAME}_results.xml" \
+        2>&1 | tee "logs/sim_${MODULE_NAME}.log"
+
+    EXIT_CODE=${PIPESTATUS[0]}
+    if [ "$EXIT_CODE" -eq 0 ]; then
+        echo "  [COCOTB] $MODULE_NAME: PASS"
+        COCOTB_PASS=$((COCOTB_PASS + 1))
+    else
+        echo "  [COCOTB] $MODULE_NAME: FAIL"
+        COCOTB_FAIL=$((COCOTB_FAIL + 1))
+    fi
+done
+
+echo ""
+echo "[COCOTB] Summary: $COCOTB_PASS passed, $COCOTB_FAIL failed, $COCOTB_TOTAL total"
+```
+
+### 0c-3. Decision
+
+- **All cocotb tests pass**: Output `SIM_RESULT: PASS` as Final Report (below) and stop. **Skip Phase 1 and Phase 2.**
+- **Any cocotb test fails**: Output `SIM_RESULT: FAIL` as Final Report. **Do NOT fall back to Verilog Phase 1** — cocotb failure is authoritative (cocotb checks are stricter than Verilog `$display` assertions; falling back could produce false positives).
+- **No `test_*.py` files found** or **COCOTB_AVAILABLE is "false"**: Skip this phase, proceed to Phase 1.
+
+### 0c-4. Read failure details (if any)
+
+If cocotb failed, read the XML results file to get Python traceback info for the Final Report:
+
+```bash
+PYTHON_EXE -c "
+import xml.etree.ElementTree as ET
+import glob
+for xml_f in sorted(glob.glob('PROJECT_DIR/logs/cocotb_*_results.xml')):
+    tree = ET.parse(xml_f)
+    for suite in tree.iter('testsuite'):
+        for tc in suite.iter('testcase'):
+            fail = tc.find('failure')
+            if fail is not None:
+                msg = fail.get('message','')
+                print(f'  FAIL: {tc.get(\"name\")} — {msg[:300]}')
+" 2>&1
+```
+
+Replace `PROJECT_DIR` and `PYTHON_EXE` with actual paths.
 
 ## Phase 1: Per-module unit simulation
 
@@ -233,7 +321,28 @@ If `logs/wave_golden.txt` is generated, note it in your Final Report. Do NOT rea
 
 After all phases complete, you MUST output a structured summary. The main session uses this to decide whether to proceed to the hook or enter Error Recovery.
 
-### On success:
+### On cocotb success:
+
+```
+SIM_RESULT: PASS
+Method: cocotb
+Modules: N/N passed
+Results XML: logs/cocotb_<module>_results.xml
+```
+
+### On cocotb failure:
+
+```
+SIM_RESULT: FAIL
+Method: cocotb
+Failed modules: <module1>, <module2>
+Results XML: logs/cocotb_<module>_results.xml for each failure
+Failure details (from XML <failure> elements):
+  FAIL: <test_name> — <traceback excerpt>
+NOTE: cocotb failures are authoritative — do NOT fall back to Verilog simulation.
+```
+
+### On Verilog success:
 
 ```
 SIM_RESULT: PASS
@@ -270,6 +379,8 @@ This report is the ONLY information the main session sees directly from you. All
 
 - No planning — execute tools immediately
 - All paths in prompt must be resolved to absolute paths before use
+- **cocotb takes priority**: If COCOTB_AVAILABLE=true and test_*.py exist, run cocotb (Phase 0c) first. Skip Phase 1/2 if cocotb passes.
+- **cocotb failure is authoritative**: Do NOT fall back to Verilog if cocotb fails — cocotb checks are stricter.
 - Phase 2 only runs if Phase 1 is fully clean
 - Waveform analysis runs on ANY failure
 - Golden model comparison is optional — skip if no script found

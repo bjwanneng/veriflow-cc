@@ -36,6 +36,22 @@ if [ -z "$PYTHON_EXE" ]; then
 fi
 echo "[ENV] Python: ${PYTHON_EXE:-NOT FOUND}"
 
+# Discover cocotb (Python-based co-simulation framework)
+COCOTB_AVAILABLE="false"
+if [ -n "$PYTHON_EXE" ] && $PYTHON_EXE -c "import cocotb; import cocotb_tools.runner" 2>/dev/null; then
+    COCOTB_AVAILABLE="true"
+    echo "[ENV] cocotb: AVAILABLE (Python traceback-based simulation)"
+else
+    echo "[ENV] cocotb: NOT AVAILABLE"
+    echo "[ENV]   Install with: pip install cocotb"
+    echo "[ENV]   cocotb provides: Python tracebacks for debug, golden model cross-checks,"
+    echo "[ENV]   structured xUnit test reports. Without it, simulation uses Verilog"
+    echo "[ENV]   \$display-based testbenches (functional but less diagnostic detail)."
+    echo "[PROMPT] cocotb is not installed. Would you like to install it now?"
+    echo "[PROMPT]   Yes → run: pip install cocotb"
+    echo "[PROMPT]   No  → continue with Verilog-only testbenches"
+fi
+
 # Discover EDA tools — must include bin + lib + lib/ivl (iverilog needs ivlpp.exe and ivl.exe)
 EDA_BIN=""
 EDA_LIB=""
@@ -53,6 +69,7 @@ cat > "$PROJECT_DIR/.veriflow/eda_env.sh" << ENVEOF
 export PYTHON_EXE="$PYTHON_EXE"
 export EDA_BIN="$EDA_BIN"
 export EDA_LIB="$EDA_LIB"
+export COCOTB_AVAILABLE="$COCOTB_AVAILABLE"
 export PATH="$EDA_BIN:$EDA_LIB:\$PATH"
 ENVEOF
 echo "[ENV] Saved EDA env to .veriflow/eda_env.sh"
@@ -73,6 +90,12 @@ else
     echo "[STATUS] New project, starting from Stage 1."
 fi
 ```
+
+**If `[PROMPT] cocotb is not installed`** appears in the output above:
+
+1. Ask the user: *"cocotb is not installed. It provides Python traceback-based simulation with better error diagnostics. Install it now? (pip install cocotb)"*
+2. If **Yes** → Run `pip install cocotb` via Bash, then re-run the cocotb detection block to confirm it works. Set `COCOTB_AVAILABLE="true"` in your session.
+3. If **No** → Continue with `COCOTB_AVAILABLE="false"`. The pipeline will use Verilog `$display`-based testbenches for simulation.
 
 If resuming, check `stages_completed` in pipeline_state.json and skip those stages.
 

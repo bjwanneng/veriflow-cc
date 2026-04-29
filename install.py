@@ -24,7 +24,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 # --- Skill ---
 SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
-SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py"]
+SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py", "cocotb_runner.py"]
 STAGES_DIR = "stages"
 
 # Source for coding_style.md is now in the skill directory itself

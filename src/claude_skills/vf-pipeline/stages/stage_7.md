@@ -32,7 +32,7 @@ echo ""
 Call the **Agent** tool with `subagent_type: "vf-simulator"` and the following prompt (replace placeholders with absolute paths):
 
 ```
-PROJECT_DIR={PROJECT_DIR} SPEC={PROJECT_DIR}/workspace/docs/spec.json EDA_ENV={PROJECT_DIR}/.veriflow/eda_env.sh PYTHON_EXE={PYTHON_EXE} SKILL_DIR={CLAUDE_SKILL_DIR} TIMING_YAML={PROJECT_DIR}/workspace/docs/timing_model.yaml. Source EDA_ENV, Read SPEC, run Phase 1 (per-module unit sim), Phase 2 (integration sim), analyze logs for PASS/FAIL, generate waveform tables on failure, run golden model comparison if available. Output a final SIM_RESULT: PASS or SIM_RESULT: FAIL summary with details of which phase failed, failing modules, and artifact paths.
+PROJECT_DIR={PROJECT_DIR} SPEC={PROJECT_DIR}/workspace/docs/spec.json EDA_ENV={PROJECT_DIR}/.veriflow/eda_env.sh PYTHON_EXE={PYTHON_EXE} SKILL_DIR={CLAUDE_SKILL_DIR} COCOTB_AVAILABLE={COCOTB_AVAILABLE} TIMING_YAML={PROJECT_DIR}/workspace/docs/timing_model.yaml. Source EDA_ENV. If COCOTB_AVAILABLE=true, run cocotb simulation first (Phase 0c). If cocotb fails or unavailable, fall back to iverilog/vvp simulation (Phase 1-unit, Phase 2-integration). Analyze logs/XML for PASS/FAIL, generate waveform tables on Verilog failure, run golden model comparison if available. Output final SIM_RESULT: PASS or SIM_RESULT: FAIL summary with details.
 ```
 
 Replace:
@@ -46,9 +46,9 @@ The agent's text output contains a `SIM_RESULT:` line. Check it:
 
 - **`SIM_RESULT: PASS`** → proceed to **7c. Hook**
 - **`SIM_RESULT: FAIL`** → the agent has generated diagnostic artifacts on disk. Proceed to Error Recovery in SKILL.md:
-  1. The agent's output tells you which phase failed and where to find logs
-  2. Use **Read** tool to read `logs/sim.log` (Phase 2 failure) or `logs/sim_<module>.log` (Phase 1 failure)
-  3. Use **Read** tool to read `logs/wave_table.txt` (Phase 2) or `logs/wave_<module>.txt` (Phase 1)
+  1. The agent's output tells you which method was used (cocotb or Verilog) and which phase failed
+  2. **If cocotb was used**: Read `logs/cocotb_<module>_results.xml` xUnit XML using **Read** tool — each `<testcase>` with a `<failure>` child contains a Python traceback with expected vs actual values. No waveform table needed in most cases.
+  3. **If Verilog was used**: Read `logs/sim.log` (Phase 2) or `logs/sim_<module>.log` (Phase 1), then `logs/wave_table.txt` or `logs/wave_<module>.txt`
   4. If `logs/wave_golden.txt` exists, read it too
   5. Follow SKILL.md Error Recovery Step 1.5 (structured root cause analysis) → Step 3 (fix RTL) → re-dispatch vf-simulator by going back to **7b**
 
@@ -79,6 +79,77 @@ If the agent made **0 tool calls** (empty response), retry once with the exact s
 ## 7b-fallback. Inline fallback
 
 If the retry also returns 0 tool uses, perform simulation inline:
+
+### Phase 0c-fallback — cocotb simulation (if available)
+
+If `COCOTB_AVAILABLE=true` and `workspace/tb/test_*.py` exist, try cocotb first:
+
+```bash
+cd "$PROJECT_DIR" && source .veriflow/eda_env.sh
+
+if [ "$COCOTB_AVAILABLE" = "true" ] && ls workspace/tb/test_*.py 2>/dev/null | head -1 >/dev/null 2>&1; then
+    mkdir -p workspace/sim/cocotb_build logs
+
+    echo "============================================"
+    echo "[COCOTB] Python-based co-simulation"
+    echo "============================================"
+
+    COCOTB_PASS=0
+    COCOTB_FAIL=0
+    COCOTB_TOTAL=0
+
+    for tb_py in workspace/tb/test_*.py; do
+        [ -f "$tb_py" ] || continue
+        MODULE_NAME=$(basename "$tb_py" | sed 's/^test_//; s/\.py$//')
+        COCOTB_TOTAL=$((COCOTB_TOTAL + 1))
+
+        echo "--------------------------------------------"
+        echo "[COCOTB] Module $COCOTB_TOTAL: $MODULE_NAME"
+
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/cocotb_runner.py" \
+            --rtl-dir "$PROJECT_DIR/workspace/rtl" \
+            --tb-dir "$PROJECT_DIR/workspace/tb" \
+            --module "$MODULE_NAME" \
+            --build-dir "$PROJECT_DIR/workspace/sim/cocotb_build/$MODULE_NAME" \
+            --results-file "$PROJECT_DIR/logs/cocotb_${MODULE_NAME}_results.xml" \
+            2>&1 | tee "$PROJECT_DIR/logs/sim_${MODULE_NAME}.log"
+
+        EXIT_CODE=${PIPESTATUS[0]}
+        if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "  [COCOTB] $MODULE_NAME: PASS"
+            COCOTB_PASS=$((COCOTB_PASS + 1))
+        else
+            echo "  [COCOTB] $MODULE_NAME: FAIL"
+            COCOTB_FAIL=$((COCOTB_FAIL + 1))
+        fi
+    done
+
+    echo ""
+    echo "[COCOTB] Summary: $COCOTB_PASS passed, $COCOTB_FAIL failed, $COCOTB_TOTAL total"
+
+    if [ "$COCOTB_FAIL" -eq 0 ]; then
+        echo "[COCOTB] All cocotb tests PASSED — skipping Verilog fallback"
+        # Write a minimal sim.log for hook compatibility
+        echo "cocotb simulation: ALL TESTS PASSED" > "$PROJECT_DIR/logs/sim.log"
+        echo "Results: $COCOTB_PASS/$COCOTB_TOTAL modules passed" >> "$PROJECT_DIR/logs/sim.log"
+        # Jump directly to hook
+        # (continue to save state after Phase 0c-fallback)
+        echo "[COCOTB] Simulation complete — go to 7c Hook"
+    else
+        echo "[COCOTB] $COCOTB_FAIL cocotb test(s) FAILED"
+        echo "[COCOTB] cocotb failures are authoritative — NOT falling back to Verilog"
+        echo "[COCOTB] Read the XML results files for Python traceback details:"
+        ls -la "$PROJECT_DIR/logs/cocotb_*_results.xml" 2>/dev/null || true
+        echo "[COCOTB] Proceed to 7c Hook for structured failure analysis"
+    fi
+
+    # Regardless of PASS or FAIL, we're done — skip Verilog fallback
+    # (cocotb is either authoritative on success or authoritative on failure)
+    exit 0
+fi
+
+echo "[COCOTB] cocotb not available or no Python testbenches — using Verilog simulation"
+```
 
 ### Phase 1 — Per-module unit simulation
 
@@ -281,26 +352,73 @@ fi
 ## 7c. Hook
 
 ```bash
-# --- Sim Hook: strict 3-layer verification ---
-LOG="$PROJECT_DIR/logs/sim.log"
+# --- Sim Hook: dual-path (cocotb XML or Verilog sim.log) ---
 
-# Layer 0: compiled binary must exist
-test -f "$PROJECT_DIR/workspace/sim/tb.vvp" || { echo "[HOOK] FAIL — tb.vvp not found"; exit 1; }
+# Determine which simulation path was used
+COCOTB_XML=$(ls "$PROJECT_DIR/logs/"cocotb_*_results.xml 2>/dev/null | head -1)
 
-# TB integrity check
-if [ -f "$PROJECT_DIR/.veriflow/tb_checksum" ]; then
-    md5sum -c "$PROJECT_DIR/.veriflow/tb_checksum" >/dev/null 2>&1 || { echo "[HOOK] FAIL — testbench was modified after Stage 3!"; exit 1; }
+if [ -n "$COCOTB_XML" ]; then
+    # ─── cocotb path: parse xUnit XML ──────────────────────────────────
+    echo "[HOOK] cocotb results detected — checking xUnit XML"
+
+    # TB integrity check (covers both .v and .py files)
+    if [ -f "$PROJECT_DIR/.veriflow/tb_checksum" ]; then
+        md5sum -c "$PROJECT_DIR/.veriflow/tb_checksum" >/dev/null 2>&1 || { echo "[HOOK] FAIL — testbench was modified after Stage 3!"; exit 1; }
+    fi
+
+    # Parse xUnit XML for pass/fail
+    $PYTHON_EXE -c "
+import xml.etree.ElementTree as ET
+import sys, glob
+
+total = 0
+failed = 0
+for xml_f in sorted(glob.glob('$PROJECT_DIR/logs/cocotb_*_results.xml')):
+    tree = ET.parse(xml_f)
+    for suite in tree.iter('testsuite'):
+        for tc in suite.iter('testcase'):
+            total += 1
+            fail_elem = tc.find('failure')
+            if fail_elem is not None:
+                failed += 1
+                msg = fail_elem.get('message', '')
+                text = (fail_elem.text or '')[:200]
+                print(f'  [FAIL] {tc.get(\"name\")} — {msg} {text}')
+
+print(f'[HOOK] cocotb: {total} tests, {total - failed} passed, {failed} failed')
+if failed > 0:
+    print('[HOOK] FAIL — cocotb tests failed (see tracebacks above)')
+    sys.exit(1)
+elif total == 0:
+    print('[HOOK] FAIL — no test results found in cocotb XML')
+    sys.exit(1)
+else:
+    print('[HOOK] PASS')
+" || { echo "[HOOK] FAIL — cocotb simulation did not pass"; exit 1; }
+
+elif [ -s "$PROJECT_DIR/logs/sim.log" ]; then
+    # ─── Verilog path: existing 3-layer verification ──────────────────
+    LOG="$PROJECT_DIR/logs/sim.log"
+
+    # Layer 0: compiled binary must exist
+    test -f "$PROJECT_DIR/workspace/sim/tb.vvp" || { echo "[HOOK] FAIL — tb.vvp not found"; exit 1; }
+
+    # TB integrity check
+    if [ -f "$PROJECT_DIR/.veriflow/tb_checksum" ]; then
+        md5sum -c "$PROJECT_DIR/.veriflow/tb_checksum" >/dev/null 2>&1 || { echo "[HOOK] FAIL — testbench was modified after Stage 3!"; exit 1; }
+    fi
+
+    # Layer 2: count explicit test failures
+    FAIL_COUNT=$(grep -cE '^\s*\[FAIL\]|^FAILED:' "$LOG" 2>/dev/null || echo 0)
+    [ "$FAIL_COUNT" -eq 0 ] || { echo "[HOOK] FAIL — $FAIL_COUNT test assertion(s) failed in sim.log"; exit 1; }
+
+    # Layer 3: must find explicit PASS summary
+    grep -qiE 'ALL TESTS PASSED|All tests passed|all tests passed' "$LOG" && echo "[HOOK] PASS" || { echo "[HOOK] FAIL — no PASS summary found in sim.log"; exit 1; }
+
+else
+    echo "[HOOK] FAIL — no simulation output found (no cocotb XML, no sim.log)"
+    exit 1
 fi
-
-# Layer 1: sim.log must exist and be non-empty
-[ -s "$LOG" ] || { echo "[HOOK] FAIL — sim.log missing or empty"; exit 1; }
-
-# Layer 2: count explicit test failures
-FAIL_COUNT=$(grep -cE '^\s*\[FAIL\]|^FAILED:' "$LOG" 2>/dev/null || echo 0)
-[ "$FAIL_COUNT" -eq 0 ] || { echo "[HOOK] FAIL — $FAIL_COUNT test assertion(s) failed in sim.log"; exit 1; }
-
-# Layer 3: must find explicit PASS summary
-grep -qiE 'ALL TESTS PASSED|All tests passed|all tests passed' "$LOG" && echo "[HOOK] PASS" || { echo "[HOOK] FAIL — no PASS summary found in sim.log"; exit 1; }
 ```
 
 If FAIL → go to Error Recovery. Do NOT mark sim as completed.
@@ -316,5 +434,5 @@ Mark Stage 7 task as **completed** using TaskUpdate.
 ## 7e. Journal
 
 ```bash
-printf "\n## Stage: sim\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/sim/*.vvp, logs/sim*.log\n**Notes**: Bottom-up simulation passed (Phase 1: unit tests + Phase 2: integration).\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+printf "\n## Stage: sim\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/sim/*.vvp, logs/sim*.log\n**Notes**: Simulation passed using cocotb (Python-based, with traceback diagnostics) or Verilog \$display-based fallback.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
 ```
