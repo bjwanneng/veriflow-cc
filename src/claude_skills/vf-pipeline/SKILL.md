@@ -104,7 +104,7 @@ fi
 
 If cocotb is not installed, ask the user if they want to install it. If resuming, check `stages_completed` and skip those stages.
 
-### 0a. Initialize stage journal
+### 0a. Initialize stage journal and pipeline start time
 
 ```bash
 if [ -f "$PROJECT_DIR/workspace/docs/stage_journal.md" ]; then
@@ -115,6 +115,8 @@ else
 
 This file records the progress, outputs, and key decisions for each pipeline stage.
 EOF
+    # Record pipeline start time for first run
+    printf "\n## Pipeline Start\n**Timestamp**: $(date -Iseconds)\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
 fi
 ```
 

@@ -308,12 +308,13 @@ def _get_arg(argv: list, flag: str) -> str | None:
     return None
 
 
-def _append_journal(project_dir: str, stage: str, outputs: str = "", notes: str = ""):
+def _append_journal(project_dir: str, stage: str, outputs: str = "", notes: str = "",
+                    status: str = "completed"):
     """Append a stage journal entry to workspace/docs/stage_journal.md."""
     journal_path = Path(project_dir) / "workspace" / "docs" / "stage_journal.md"
     from datetime import datetime
     ts = datetime.now().isoformat()
-    entry = f"\n## Stage: {stage}\n**Status**: completed\n**Timestamp**: {ts}\n"
+    entry = f"\n## Stage: {stage}\n**Status**: {status}\n**Timestamp**: {ts}\n"
     if outputs:
         entry += f"**Outputs**: {outputs}\n"
     if notes:
@@ -378,10 +379,12 @@ if __name__ == "__main__":
 
     if _is_start:
         _state.mark_started(_stage)
+        _append_journal(_project_dir, _stage, status="started")
         print(f"[STATE] {_stage} → STARTED")
     elif _is_fail:
         _state.mark_failed(_stage, {"success": False, "errors": ["Hook failed"]})
         _state.save()
+        _append_journal(_project_dir, _stage, status="failed")
         print(f"[STATE] {_stage} → FAILED")
     else:
         # Run hook if provided
