@@ -305,7 +305,7 @@ fi
 4. **If simulation fails**, enter the fix loop:
 
    a. **Read error output** from `logs/sim.log`
-   b. **Read the failing RTL files** from `workspace/rtl/`
+   b. **Collect diagnostic data** — run vcd2table golden model diff (see Error Recovery Step 0 below)
    c. **Run structured root cause analysis** (see Error Recovery below)
    d. **Fix RTL** using Edit tool in main session
    e. **Re-run simulation** (go back to step 3)
@@ -361,6 +361,47 @@ For stages that use subagents, the error recovery flow:
 6. **Retry budget** — 3-retry policy applies at orchestrator level.
 
 **Key principle**: Subagents are **stateless workers** — they generate artifacts but do NOT diagnose or fix. The main session is the **only entity that modifies RTL**.
+
+### Step 0: Data Collection + Bug Type Classification (MANDATORY)
+
+Before forming ANY root cause hypothesis, collect objective diagnostic data. This step prevents the most common debug failure mode: guessing the wrong direction.
+
+**0a. Collect data**:
+
+1. Read `logs/sim.log` — extract all `[FAIL]` lines with cycle numbers
+2. Run vcd2table golden model diff (if golden_model.py exists):
+```bash
+source "$PROJECT_DIR/.veriflow/eda_env.sh"
+cd "$PROJECT_DIR"
+VCD_FILE=$(ls workspace/sim/tb_*.vcd 2>/dev/null | head -1)
+if [ -f workspace/docs/golden_model.py ] && [ -n "$VCD_FILE" ]; then
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
+        --vcd "$VCD_FILE" \
+        --golden-model workspace/docs/golden_model.py \
+        --module $TOP_MODULE 2>&1 | tee logs/wave_diff.txt
+else
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
+        --vcd "$VCD_FILE" \
+        --module $TOP_MODULE 2>&1 | tee logs/wave_table.txt
+fi
+```
+3. Read the diff/table output — identify first divergence cycle and signal
+
+**0b. Classify bug type**:
+
+| Type | Symptom | Direction |
+|------|---------|-----------|
+| **A. Computation error** | Output value wrong (not zero) or zero when expected non-zero | Trace datapath: formula, condition, index. Check golden model per-cycle comparison. |
+| **B. Timing error** | Correct value but wrong cycle (early/late by 1) | Check pipeline alignment, register stages |
+| **C. Protocol violation** | valid/ready timing violates handshake spec | Check handshake protocol, FSM transitions |
+| **D. Initialization error** | First operation's output offset by constant | Check register init values, algorithm IV loading |
+
+**0c. Anti-pattern warning**:
+
+- **Do NOT assume timing issues without data.** If the golden model diff shows the divergent value is zero or a constant → Type A or D (logic/init error), NOT timing.
+- If value is correct-but-wrong-cycle → Type B (timing)
+- If valid/ready behavior violates spec → Type C (protocol)
+- **Most bugs in synchronous single-clock-domain designs are Type A or D, not Type B.**
 
 ### Step 1: Diagnose
 - Read the error output from the failed stage

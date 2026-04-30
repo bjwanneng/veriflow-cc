@@ -20,6 +20,23 @@ def _module_<module_name>(inputs: dict) -> list[dict]:
     results = []
     # --- Translated from algorithm specification ---
     # ... literal translation of pseudocode to Python ...
+    #
+    # IMPORTANT for iterative/multi-cycle algorithms:
+    # Include ALL intermediate computation values in the results,
+    # not just final outputs. This enables layered verification:
+    # comparing per-cycle RTL state against golden model intermediate
+    # values to quickly isolate the first divergence.
+    #
+    # Example for an iterative algorithm:
+    #   for step in range(NUM_STEPS):
+    #       # ... computation ...
+    #       results.append({
+    #           "output_port": output_val,
+    #           # Include intermediate state for layered debug:
+    #           "step_counter": step,
+    #           "accumulator": acc_val,
+    #           "buffer_window": [b0, b1, ...],
+    #       })
     return results
 
 

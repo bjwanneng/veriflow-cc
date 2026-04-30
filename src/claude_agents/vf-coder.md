@@ -125,6 +125,19 @@ The module must:
 - Implement the algorithm from golden_model.py faithfully — same constants, same formulas, same state machine behavior
 - If this is the top module, instantiate all submodules with named port connections
 
+### Debug Observability
+
+For **iterative/multi-cycle modules**, the RTL MUST include:
+- All intermediate state registers with descriptive names that map to golden_model.py variable names (e.g., `step_counter_reg`, `accumulator_reg`)
+- No unnecessary gating of internal state signals — they must be observable in VCD waveforms
+- Register names should use `_reg` suffix so they appear in VCD as separate signals (not combined with `_next`)
+
+For **interface/handshake modules**, the RTL MUST include:
+- Valid/ready signals driven via registered outputs (`_reg` + `assign`) so they are observable in VCD
+- FSM state register with `localparam` encoding so state transitions are visible in waveforms
+
+This enables layered verification: comparing per-cycle RTL state against golden model intermediate values to quickly isolate the first divergence.
+
 ## Internal Verification (do NOT output text)
 
 Before writing, internally verify:

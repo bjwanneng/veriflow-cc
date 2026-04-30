@@ -235,3 +235,52 @@ and verify terminal condition uses the correct comparison (`<` vs `<=`).
 **verify_fix stage**: For every counter with `reg [N:0]`, verify the terminal
 value is reachable without overflow. If the terminal value equals `2^N - 1`,
 the counter wraps correctly. If it equals `2^N`, the counter overflows.
+
+---
+
+## Pattern 9: Premature Timing Hypothesis
+
+**Discovered in**: Multiple projects — debuggers assume timing/pipeline issues
+when the real cause is a logic error (wrong formula, wrong condition, wrong index).
+
+### Symptom
+
+Debug session spends significant time modifying FSM timing, adding delay
+registers, or adjusting pipeline stages, without resolving the failure.
+
+### Root Cause
+
+When computation output is wrong, the default assumption is often "pipeline
+alignment" or "register timing." But most RTL bugs in synchronous
+single-clock-domain designs are **logic errors** — incorrect formulas,
+wrong conditional guards, missing initial values, or incorrect array indices.
+Timing issues are rare in fully synchronous designs with a single clock domain.
+
+### Fix
+
+Before investigating timing:
+1. Run golden model cycle-by-cycle comparison (algorithm designs) or
+   protocol compliance check (interface designs)
+2. Classify: is the wrong value **(A) data-wrong** or **(B) timing-wrong**?
+3. Data-wrong → trace the signal's computation logic (formula, condition, index)
+4. Timing-wrong → then investigate pipeline alignment
+
+**Key discriminator**: If the divergent value is zero or a constant when the
+golden model expects a computed value, it is almost certainly a logic error
+(conditional gating to zero, missing initialization, wrong formula), not a
+timing issue. Zero is never a timing symptom.
+
+### Prevention
+
+**verify_fix stage**: When a simulation fails, the mandatory data collection
+step (Error Recovery Step 0) prevents this pattern:
+
+1. Run golden model diff to find first divergence cycle
+2. Examine the divergent value:
+   - Zero or constant → logic error (Type A or D)
+   - Correct value, wrong cycle → timing error (Type B)
+3. Never skip to "timing fix" without completing data-driven classification
+
+**Rule**: Never assume timing issues without data. If the golden model diff
+shows a zero or constant at the divergence point, it's a LOGIC error, not
+a timing error.
