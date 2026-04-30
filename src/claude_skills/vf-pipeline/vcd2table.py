@@ -6,7 +6,7 @@ Usage:
 
 Options:
     --sim-log <path>        sim.log or sim_<module>.log — extract failing signal names
-    --timing-yaml <path>    timing_model.yaml — annotate assertion violations
+    --timing-yaml <path>    (optional) timing assertions YAML — annotate violations
     --signals <s1,s2,...>   comma-separated list of extra signals to always include
     --window <N>            cycles around each failure to show (default: 15)
     --module <name>         only show signals from this module scope
@@ -16,7 +16,7 @@ Output:
     A text table written to stdout (or --output), formatted for direct LLM reading.
     Columns: Cycle | <signal1> | <signal2> | ... | NOTES
     Rows: one per posedge clk
-    NOTES column: flags timing_model assertion violations and [FAIL] markers.
+    NOTES column: flags assertion violations and [FAIL] markers.
 """
 
 import re

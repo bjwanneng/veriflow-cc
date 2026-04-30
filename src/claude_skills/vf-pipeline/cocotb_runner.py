@@ -2,7 +2,7 @@
 """Parameterized cocotb simulation runner for VeriFlow-CC pipeline.
 
 Runs cocotb tests for a single Verilog module using the Icarus Verilog (iverilog)
-simulator backend. Designed to be called from Bash by Stage 7 (inline cocotb-first simulation).
+simulator backend. Designed to be called from Bash by Stage 3 (verify_fix).
 
 Usage:
     python3 cocotb_runner.py \\

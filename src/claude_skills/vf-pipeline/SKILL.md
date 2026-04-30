@@ -193,112 +193,169 @@ source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/s
 
 ## Stage Dispatch
 
-### Stage 1: Architect (subagent — vf-architect)
+The pipeline has 4 stages: **spec_golden → codegen → verify_fix → lint_synth**
+
+### Stage 1: spec_golden (subagent — vf-architect)
+
+Generate spec.json (interface only) + golden_model.py. No behavior_spec.md or micro_arch.md.
 
 1. Record start time:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "architect" --start
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --start
 ```
 
 2. Dispatch vf-architect subagent via Agent tool (subagent_type: general-purpose):
    - **Prompt must include**: PROJECT_DIR path, CLARIFICATIONS path, TEMPLATES_DIR path
    - **Inline in prompt**: Full contents of requirement.md, constraints.md (if exists), design_intent.md (if exists), context/*.md (if any)
-   - The agent reads templates on demand and generates spec.json + behavior_spec.md + golden_model.py
 
 3. After agent returns, run combined hook + state + journal:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "architect" --hook="test -f workspace/docs/spec.json && grep -q module_name workspace/docs/spec.json && test -f workspace/docs/behavior_spec.md && grep -q 'Domain Knowledge' workspace/docs/behavior_spec.md" --journal-outputs="workspace/docs/spec.json, workspace/docs/behavior_spec.md" --journal-notes="Specification and behavior spec generated"
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && grep -q module_name workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="Specification and golden model generated"
 ```
 
 4. Mark Stage 1 task as completed via TaskUpdate.
 
-### Stage 2: Microarch (subagent — vf-microarch)
+### Stage 2: codegen (subagent — vf-coder, parallel per module)
+
+Generate all RTL modules + testbench from spec.json + golden_model.py.
 
 1. Record start time:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "microarch" --start
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --start
 ```
 
-2. Read spec.json and behavior_spec.md (parallel Read calls) to include inline in prompt.
+2. Read spec.json and golden_model.py (parallel Read calls) to include inline in prompt.
 
-3. Dispatch vf-microarch subagent via Agent tool:
-   - **Prompt must include**: PROJECT_DIR path
-   - **Inline in prompt**: spec.json content, behavior_spec.md content, requirement.md content, design_intent.md content (if exists)
+3. For each module in spec.json, dispatch a vf-coder subagent via Agent tool:
+   - **Prompt must include**: MODULE_NAME, OUTPUT_FILE path, spec.json content, golden_model.py content
+   - **For top modules**: include submodule port definitions from spec.json
+   - **For leaf modules**: include only that module's spec entry
+   - Dispatch all modules in parallel (single message, multiple Agent calls)
 
-4. After agent returns, run combined hook + state + journal:
+4. After ALL agents return, generate the testbench:
+   - Read the cocotb template: `${CLAUDE_SKILL_DIR}/templates/cocotb_template.py`
+   - Read golden_model.py to extract test vectors and port names
+   - Write `workspace/tb/test_<design_name>.py` using the VPI-safe pattern
+   - If COCOTB_AVAILABLE is false, also write a Verilog TB: `workspace/tb/tb_<design_name>.v`
+
+5. Run combined hook + state + journal:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "microarch" --hook="test -f workspace/docs/micro_arch.md && wc -l workspace/docs/micro_arch.md | awk '\$1 >= 10 {exit 0} {exit 1}'" --journal-outputs="workspace/docs/micro_arch.md" --journal-notes="Microarchitecture documented"
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v 2>/dev/null | wc -l | awk '{if (\$1 > 0) exit 0; exit 1}'" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py" --journal-notes="RTL and testbench generated"
 ```
 
-5. Mark Stage 2 task as completed via TaskUpdate.
+6. Mark Stage 2 task as completed via TaskUpdate.
 
-### Stage 3: Timing (subagent — vf-timing)
+### Stage 3: verify_fix (inline — runs in main session)
+
+Compile RTL, run simulation, compare with golden model, fix errors in a loop. This stage runs inline because error recovery needs main session context.
+
+**This is the HIGH-CONSTRAINT stage** — VPI timing, cocotb quirks, and simulation edge cases are LLM weak spots. The pre-baked VPI-safe testbench template handles most issues, but the fix loop handles the rest.
 
 1. Record start time:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "timing" --start
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --start
 ```
 
-2. Read spec.json, micro_arch.md, and behavior_spec.md (parallel Read calls) to include inline in prompt.
-
-3. Dispatch vf-timing subagent via Agent tool:
-   - **Prompt must include**: PROJECT_DIR path, TEMPLATES_DIR path, SKILL_DIR path, PYTHON_EXE path, COCOTB_AVAILABLE value
-   - **Inline in prompt**: spec.json content, micro_arch.md content, behavior_spec.md content
-
-4. After agent returns, run combined hook + state + journal:
+2. **Compile with iverilog**:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "timing" --hook="test -f workspace/docs/timing_model.yaml" --journal-outputs="workspace/docs/timing_model.yaml, workspace/tb/tb_*.v" --journal-notes="Timing model and testbenches generated"
+source "$PROJECT_DIR/.veriflow/eda_env.sh"
+cd "$PROJECT_DIR"
+
+# Discover all RTL files
+RTL_FILES=$(ls workspace/rtl/*.v 2>/dev/null | sort)
+TB_FILE=$(ls workspace/tb/test_*.py 2>/dev/null | head -1)
+
+if [ -z "$RTL_FILES" ]; then
+    echo "[VERIFY] ERROR: No RTL files found"
+    exit 1
+fi
+
+echo "[VERIFY] RTL files:"
+echo "$RTL_FILES"
+
+# Get top module from spec.json
+TOP_MODULE=$($PYTHON_EXE -c "import json; spec=json.load(open('workspace/docs/spec.json')); print([m['module_name'] for m in spec['modules'] if m.get('module_type')=='top'][0])")
+echo "[VERIFY] Top module: $TOP_MODULE"
 ```
 
-5. Mark Stage 3 task as completed via TaskUpdate.
+3. **Run cocotb simulation** (if cocotb available):
+```bash
+source "$PROJECT_DIR/.veriflow/eda_env.sh"
+cd "$PROJECT_DIR"
 
-### Stage 4: Coder (subagent — vf-coder)
+# Run cocotb via runner
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/cocotb_runner.py" \
+    --module $TOP_MODULE \
+    --rtl-dir workspace/rtl \
+    --tb-dir workspace/tb \
+    --build-dir workspace/sim \
+    --verbose 2>&1 | tee logs/sim.log
 
-Use **Read** tool to open `${CLAUDE_SKILL_DIR}/stages/stage_4.md`, then execute its instructions (pre-read docs, dispatch vf-coder per module in parallel).
+# Check result — cocotb_runner outputs JSON to stdout
+if grep -q '"failed": 0' logs/sim.log 2>/dev/null && ! grep -q '"failed": [1-9]' logs/sim.log 2>/dev/null; then
+    echo "[VERIFY] PASS — all cocotb tests passed"
+else
+    echo "[VERIFY] FAIL — simulation errors detected"
+    grep -E "\[FAIL\]|ERROR|error:|traceback" logs/sim.log 2>/dev/null | head -20
+fi
+```
 
-### Stage 5 + 6: Review + Lint (parallel subagents)
+4. **If simulation fails**, enter the fix loop:
+
+   a. **Read error output** from `logs/sim.log`
+   b. **Read the failing RTL files** from `workspace/rtl/`
+   c. **Run structured root cause analysis** (see Error Recovery below)
+   d. **Fix RTL** using Edit tool in main session
+   e. **Re-run simulation** (go back to step 3)
+   f. **Retry budget**: 3 attempts, then STOP and ask user
+
+5. **If simulation passes**, run combined hook + state + journal:
+```bash
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q '\"failed\": 0' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
+```
+
+6. Mark Stage 3 task as completed via TaskUpdate.
+
+### Stage 4: lint_synth (parallel subagents — vf-linter + vf-synthesizer)
+
+Run lint and synthesis in parallel.
 
 1. Record start times:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "review" --start
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint" --start
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" --start
 ```
 
 2. Dispatch BOTH agents in a **single message** with two Agent tool calls:
-   - Agent 1: vf-reviewer (subagent_type from agent definition)
-   - Agent 2: vf-linter (subagent_type from agent definition)
+   - Agent 1: vf-linter
+   - Agent 2: vf-synthesizer
 
-3. After BOTH return, run combined hook + state for each (sequential — no race condition):
+3. After BOTH return, check results:
+
+   If lint failed → fix syntax errors in main session, re-run lint only.
+   If synth failed → check synthesis report for issues, fix if needed.
+
+4. Run combined hook + state + journal:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "review" --hook="test -f workspace/rtl/static_report.json" --journal-outputs="workspace/rtl/static_report.json" --journal-notes="Static analysis complete"
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint" --hook="test -f logs/lint.log" --journal-outputs="logs/lint.log" --journal-notes="Lint complete"
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
 ```
 
-4. Mark Stage 5 and Stage 6 tasks as completed via TaskUpdate.
-
-### Stage 7: Simulation (inline)
-
-Use **Read** tool to open `${CLAUDE_SKILL_DIR}/stages/stage_7.md`, then execute its instructions inline. This is the only stage that runs inline — it needs main session context for error recovery.
-
-### Stage 8: Synth (subagent — vf-synthesizer)
-
-Use **Read** tool to open `${CLAUDE_SKILL_DIR}/stages/stage_8.md`, then execute its instructions.
+5. Mark Stage 4 task as completed via TaskUpdate.
 
 ---
 
 ## Error Recovery
 
-When any stage fails (lint errors, sim failure, synth failure):
+When Stage 3 (verify_fix) or Stage 4 (lint_synth) fails:
 
 ### Subagent Stage Error Recovery
 
 For stages that use subagents, the error recovery flow:
 
 1. **Subagent runs and reports** — returns a text summary. All artifacts written to disk.
-2. **Main session reads artifacts** — reads diagnostic files (sim.log, wave_table.txt, static_report.json, etc.)
+2. **Main session reads artifacts** — reads diagnostic files (sim.log, wave_table.txt, etc.)
 3. **Main session diagnoses** — Error Recovery Step 1.5 runs in main session, which has full design context.
 4. **Main session fixes RTL** — Edit tool modifies the relevant RTL file(s).
-5. **Re-dispatch subagent** — go back to the failed stage's dispatch step.
+5. **Re-run the failed stage** — go back to the failed stage's execution step.
 6. **Retry budget** — 3-retry policy applies at orchestrator level.
 
 **Key principle**: Subagents are **stateless workers** — they generate artifacts but do NOT diagnose or fix. The main session is the **only entity that modifies RTL**.
@@ -312,60 +369,37 @@ For stages that use subagents, the error recovery flow:
 
 Before modifying ANY file, complete the analysis and write it to `stage_journal.md`.
 
-#### Step 1.5-A: Read the waveform table (timing errors ONLY)
-
-```bash
-ls "$PROJECT_DIR/logs/wave_table.txt" "$PROJECT_DIR/logs/wave_"*.txt 2>/dev/null
-```
-
-Use Read tool to read `logs/wave_table.txt`. Answer:
-
-| Question | Where to look |
-|----------|--------------|
-| At the `[FAIL]` cycle, what is the FSM state? | `state_reg` / `state` column |
-| Is the FSM in the expected state per timing_model.yaml? | Compare with scenario assertions |
-| What is the value of the failing signal at `[FAIL]` cycle? | Named column |
-| When did the failing signal LAST CHANGE before `[FAIL]`? | Scan backwards from `[FAIL]` row |
-| Is the error an off-by-one? | Compare cycle N-1 vs N vs N+1 |
-| Is `rst` still asserted at `[FAIL]`? | `rst` column |
-
-**Common timing patterns**:
-
-```
-Pattern A — Off-by-one pipeline delay:
-  Cycle N:   input valid, data_out = 0x00   ← [FAIL] expected 0xAB
-  Cycle N+1: input valid, data_out = 0xAB   ← correct value arrived one cycle late
-  → Fix: sample output one cycle later, OR remove extra register stage
-
-Pattern B — Reset not clearing output register:
-  Cycle 0: rst=1, data_out = 0xFF   ← [FAIL] expected 0x00 during reset
-  → Fix: add output_reg to reset block
-
-Pattern C — FSM stuck / missing transition:
-  Cycle N:   state=CALC, done_flag=1    ← should transition to DONE
-  Cycle N+1: state=CALC, done_flag=1   ← stuck
-  → Fix: check FSM transition condition
-
-Pattern D — Handshake violation (valid deasserted too early):
-  → Fix: hold valid until ready is seen
-
-Pattern E — Counter range error (N vs N-1):
-  → Fix: change loop terminal condition, check for integer vs reg overflow
-
-Pattern F — Data value mismatch (algorithm error):
-  → Diagnose: compare RTL with golden model cycle-by-cycle
-  → Find FIRST divergence cycle, trace back to formula/shift alignment
-```
-
-#### Step 1.5-B: 5-point root cause analysis
+#### 5-point root cause analysis
 
 1. **Error location**: Which `[FAIL]` line? Which cycle? Which signal?
 2. **Signal trace**: Which module drives it? Which `always` block?
-3. **Root cause hypothesis**: Exact RTL line that is wrong. Reference pattern A-F.
+3. **Root cause hypothesis**: Exact RTL line that is wrong.
 4. **Minimal fix plan**: File, lines, exact change.
 5. **Impact scope**: Which other signals/modules affected?
 
 If you cannot form a hypothesis, STOP and ask the user. Do NOT guess-and-fix.
+
+**Common simulation patterns**:
+
+```
+Pattern A — VPI timing (wide signals): cocotb + iverilog delays wide signal writes.
+  → Fix: use 2-RisingEdge VPI-safe pattern in testbench
+
+Pattern B — Off-by-one pipeline delay:
+  → Fix: sample output one cycle later, OR remove extra register stage
+
+Pattern C — Reset not clearing output register:
+  → Fix: add output_reg to reset block
+
+Pattern D — FSM stuck / missing transition:
+  → Fix: check FSM transition condition
+
+Pattern E — Handshake violation (valid deasserted too early):
+  → Fix: hold valid until ready is seen
+
+Pattern F — Data value mismatch (algorithm error):
+  → Diagnose: compare RTL with golden model cycle-by-cycle
+```
 
 ### Step 2: Classify
 - **syntax** (lint): typos, missing declarations, port mismatches
@@ -394,17 +428,10 @@ Fix rules:
 - **Functional integrity**: fix must NOT remove, disable, or stub out existing functionality
 - Make minimal changes, fix one error at a time
 - **Debug budget**: 3 fix-and-retry cycles max, then STOP and ask user
-- **Spec-level rollback**: If behavior_spec has internal contradiction, ask user about rolling back to Stage 1
 
 After fixing, re-run the failed stage to verify.
 
-### Step 4: Sync upstream documents
-
-If fix changes architectural behavior, update:
-- **Logic fix** → update `micro_arch.md`
-- **Timing fix** → update `timing_model.yaml`
-
-### Step 5: Log recovery to journal
+### Step 4: Log recovery to journal
 
 ```bash
 printf "\n### Recovery: <stage_name>\n**Timestamp**: $(date -Iseconds)\n**Attempt**: <N>\n**Error type**: <syntax|logic|timing>\n**Fix summary**: <description>\n**Result**: <PASS|FAIL|PENDING>\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
@@ -413,18 +440,13 @@ printf "\n### Recovery: <stage_name>\n**Timestamp**: $(date -Iseconds)\n**Attemp
 ### Retry Policy
 
 1. **1st fail**: Fix RTL, retry the stage
-2. **2nd fail**: Rollback to earlier stage and re-run sequentially
+2. **2nd fail**: Rollback to codegen and re-run from Stage 2
 3. **3rd fail**: STOP and notify user
 
-Rollback targets by error type:
-
-| Error Type | Rollback To | Re-run Path |
-|-----------|-------------|-------------|
-| syntax | coder | coder → review → lint → sim → synth |
-| logic | microarch | microarch → timing → coder → review → lint → sim → synth |
-| timing | timing | timing → coder → review → lint → sim → synth |
+Rollback target (all error types):
+- Always roll back to `codegen` — re-generate RTL from spec + golden_model
 
 To perform a rollback:
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" --reset <target_stage>
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" --reset codegen
 ```

@@ -1,7 +1,8 @@
-"""golden_model.py — Auto-generated from behavior_spec.md Section 2.5
+"""golden_model.py — Auto-generated golden reference model.
 
 Pure Python reference implementation. No external dependencies.
 Standard interface: run() -> list[dict] for cycle-by-cycle expected values.
+Contains algorithm implementation and test vectors for verification.
 """
 
 # --- Module: <module_name_with_pseudocode> ---
@@ -17,7 +18,7 @@ def _module_<module_name>(inputs: dict) -> list[dict]:
         For combinational modules, returns a single-element list.
     """
     results = []
-    # --- Translated from behavior_spec.md Section X.5 Algorithm Pseudocode ---
+    # --- Translated from algorithm specification ---
     # ... literal translation of pseudocode to Python ...
     return results
 

@@ -4,10 +4,12 @@ VeriFlow-CC Installer
 
 Installs to ~/.claude/:
   - skills/vf-pipeline/SKILL.md   — Pipeline orchestration skill (/vf-pipeline)
-  - agents/vf-coder.md            — RTL code generation sub-agent (Stage 4)
-  - agents/vf-reviewer.md         — Static analysis sub-agent (Stage 5)
-  - agents/vf-linter.md           — Lint sub-agent (Stage 6)
-  - agents/vf-synthesizer.md      — Synthesis sub-agent (Stage 8)
+  - agents/vf-architect.md        — Specification + golden model generation (Stage 1)
+  - agents/vf-coder.md            — RTL code generation sub-agent (Stage 2)
+  - agents/vf-linter.md           — Lint sub-agent (Stage 4)
+  - agents/vf-synthesizer.md      — Synthesis sub-agent (Stage 4)
+
+Pipeline: spec_golden → codegen → verify_fix → lint_synth
 
 After installation, use /vf-pipeline <project_dir> in Claude Code to drive the full RTL design pipeline.
 """
@@ -24,7 +26,6 @@ CLAUDE_DIR = Path.home() / ".claude"
 SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
 SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py", "cocotb_runner.py", "bug_patterns.md", "design_rules.md"]
-STAGES_DIR = "stages"
 TEMPLATES_DIR = "templates"
 
 # Source for coding_style.md is now in the skill directory itself
@@ -37,10 +38,7 @@ AGENTS_SRC_DIR = PROJECT_DIR / "src" / "claude_agents"
 
 AGENT_FILES = [
     "vf-architect.md",
-    "vf-microarch.md",
-    "vf-timing.md",
     "vf-coder.md",
-    "vf-reviewer.md",
     "vf-linter.md",
     "vf-synthesizer.md",
 ]
@@ -50,8 +48,8 @@ def main():
     if "--uninstall" in sys.argv:
         removed = 0
 
-        # Remove stage files
-        stages_dst = SKILL_DST_DIR / STAGES_DIR
+        # Remove old stage files (cleanup from 8-stage era)
+        stages_dst = SKILL_DST_DIR / "stages"
         if stages_dst.exists():
             for f in stages_dst.iterdir():
                 f.unlink()
@@ -66,6 +64,14 @@ def main():
                 dst.unlink()
                 print(f"  Removed skill: vf-pipeline/{name}")
                 removed += 1
+        # Remove templates
+        templates_dst = SKILL_DST_DIR / TEMPLATES_DIR
+        if templates_dst.exists():
+            for f in templates_dst.iterdir():
+                f.unlink()
+                print(f"  Removed template: {f.name}")
+                removed += 1
+            templates_dst.rmdir()
         if SKILL_DST_DIR.exists():
             try:
                 SKILL_DST_DIR.rmdir()
@@ -96,8 +102,8 @@ def main():
     # 0. Clean up old agents that are no longer used
     LEGACY_AGENTS = [
         "vf-skill-d.md", "vf-lint.md", "vf-sim.md", "vf-synth.md",
-        "vf-debugger.md",
-        "vf-simulator.md",
+        "vf-debugger.md", "vf-simulator.md",
+        "vf-reviewer.md", "vf-microarch.md", "vf-timing.md",
     ]
     cleaned = 0
     for name in LEGACY_AGENTS:
@@ -109,7 +115,18 @@ def main():
     if cleaned:
         print()
 
-    # 1. Install skill (SKILL.md + state.py)
+    # 0b. Clean up old stage files from 8-stage era
+    old_stages_dst = SKILL_DST_DIR / "stages"
+    if old_stages_dst.exists():
+        for f in old_stages_dst.iterdir():
+            f.unlink()
+            print(f"  [clean]  Removed old stage: {f.name}")
+            cleaned += 1
+        old_stages_dst.rmdir()
+        if cleaned:
+            print()
+
+    # 1. Install skill (SKILL.md + state.py + support files)
     SKILL_DST_DIR.mkdir(parents=True, exist_ok=True)
     skill_installed = 0
     for name in SKILL_FILES:
@@ -131,20 +148,7 @@ def main():
     else:
         print(f"  [skip]   vf-pipeline/{CODING_STYLE_DST_NAME} not found at {CODING_STYLE_SRC}")
 
-    # 1c. Install stage files
-    stages_src = SKILL_SRC_DIR / STAGES_DIR
-    stages_dst = SKILL_DST_DIR / STAGES_DIR
-    if stages_src.exists():
-        stages_dst.mkdir(parents=True, exist_ok=True)
-        for f in sorted(stages_src.glob("stage_*.md")):
-            dst = stages_dst / f.name
-            shutil.copy2(f, dst)
-            print(f"  [stage]  vf-pipeline/{STAGES_DIR}/{f.name}  →  {dst}")
-            skill_installed += 1
-    else:
-        print(f"  [skip]   vf-pipeline/{STAGES_DIR}/ not found at {stages_src}")
-
-    # 1d. Install templates
+    # 1c. Install templates
     templates_src = SKILL_SRC_DIR / TEMPLATES_DIR
     templates_dst = SKILL_DST_DIR / TEMPLATES_DIR
     if templates_src.exists():
@@ -174,7 +178,7 @@ def main():
         installed += 1
 
     print(f"\n{'='*50}")
-    print(f"  Installed: {skill_installed} skill files + {installed} agent/support")
+    print(f"  Installed: {skill_installed} skill files + {installed} agents")
     if missing:
         print(f"  Skipped: {missing} (source files missing)")
     print(f"{'='*50}")
@@ -205,32 +209,10 @@ def main():
         else:
             verify_errors.append(f"  [FAIL] {agent_name} not found at {agent_dst}")
 
-    # 3b. Check stage files (4-8 are active; 1-3 are deprecated stubs)
-    for i in range(1, 9):
-        stage_file = SKILL_DST_DIR / STAGES_DIR / f"stage_{i}.md"
-        if stage_file.exists():
-            if i <= 3:
-                # Check if it's a deprecated stub
-                content = stage_file.read_text(encoding="utf-8")
-                if "DEPRECATED" in content:
-                    print(f"  [OK]   stage_{i}.md present (deprecated stub)")
-                else:
-                    print(f"  [WARN] stage_{i}.md is NOT a deprecated stub — should be replaced")
-            else:
-                print(f"  [OK]   stage_{i}.md present")
-        else:
-            if i <= 3:
-                print(f"  [OK]   stage_{i}.md absent (deprecated)")
-            else:
-                verify_errors.append(f"  [FAIL] stage_{i}.md missing at {stage_file}")
-
-    # 3b2. Check templates directory
-    templates_dst = SKILL_DST_DIR / TEMPLATES_DIR
+    # 3b. Check templates directory
     expected_templates = [
         "spec_template.json",
-        "behavior_spec_template.md",
         "golden_model_template.py",
-        "timing_model_template.yaml",
         "tb_integration_template.v",
         "cocotb_template.py",
     ]

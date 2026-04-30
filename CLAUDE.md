@@ -37,25 +37,23 @@ All non-trivial changes must follow this cycle:
 
 ## Architecture Notes
 
-- `state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER` and `STAGE_PREREQUISITES` enforce strict execution order.
-- `src/claude_skills/vf-pipeline/SKILL.md` — Pipeline orchestrator (project source). Contains Step 0, Design Rules, State Management, Stage Dispatch Loop, and Error Recovery. Installed to `~/.claude/skills/vf-pipeline/`. Invoked via `/vf-pipeline <project_dir>`.
-- `src/claude_skills/vf-pipeline/stages/stage_1.md` through `stage_8.md` — Per-stage instruction files loaded on demand during pipeline execution. Each stage is self-contained.
+- `state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER = ["spec_golden", "codegen", "verify_fix", "lint_synth"]` and `STAGE_PREREQUISITES` enforce strict execution order.
+- `src/claude_skills/vf-pipeline/SKILL.md` — Pipeline orchestrator. Contains Step 0 (init + batch clarification), 4-stage dispatch, and Error Recovery. Installed to `~/.claude/skills/vf-pipeline/`. Invoked via `/vf-pipeline <project_dir>`.
+- `src/claude_skills/vf-pipeline/templates/` — Template files loaded on demand by subagents: spec_template.json, golden_model_template.py, cocotb_template.py, tb_integration_template.v.
 - `src/claude_skills/vf-pipeline/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
-- `src/claude_agents/vf-coder.md` — Sub-agent for RTL code generation (Stage 4).
-- `src/claude_agents/vf-reviewer.md` — Sub-agent for static analysis (Stage 5).
-- `src/claude_agents/vf-linter.md` — Sub-agent for lint (Stage 6).
-- `src/claude_agents/vf-simulator.md` — Sub-agent for simulation (Stage 7).
-- `src/claude_agents/vf-synthesizer.md` — Sub-agent for synthesis (Stage 8).
+- `src/claude_agents/vf-architect.md` — Sub-agent for spec.json + golden_model.py generation (Stage 1: spec_golden).
+- `src/claude_agents/vf-coder.md` — Sub-agent for RTL code generation (Stage 2: codegen).
+- `src/claude_agents/vf-linter.md` — Sub-agent for lint (Stage 4: lint_synth, parallel).
+- `src/claude_agents/vf-synthesizer.md` — Sub-agent for synthesis (Stage 4: lint_synth, parallel).
   - **CRITICAL**: Agent `tools` field MUST be comma-separated capitalized names: `tools: Read, Write, Glob, Grep, Bash`. YAML list syntax causes silent tool permission failure (see GitHub #12392).
-- `install.py` — Installs 1 skill (SKILL.md + state.py + coding_style.md + 8 stage files) + 5 agents to `~/.claude/`. Reads from `src/`.
-- **Multi-file input**: Projects accept `requirement.md` (required), `constraints.md` (optional), `design_intent.md` (optional), `context/*.md` (optional). Missing optional files trigger targeted clarification questions in Stage 1.
-- Stage 1 now produces TWO artifacts: spec.json (interface contract) + behavior_spec.md (behavioral requirements). behavior_spec.md contains cycle-accurate behavior, FSM, timing contracts, domain knowledge, and algorithm pseudocode.
-- spec.json contains: ports, parameters, module connectivity, constraints (timing/area/power/io/verification), and design_intent (architecture style, pipeline stages, resource strategy, interface preferences, IP reuse, key decisions).
-- Pipeline flow: Main Claude executes stages 1-3 inline. Stages 4-8 use sub-agents (vf-coder, vf-reviewer, vf-linter, vf-simulator, vf-synthesizer).
+- `install.py` — Installs 1 skill (SKILL.md + state.py + coding_style.md + templates) + 4 agents to `~/.claude/`. Reads from `src/`.
+- **Multi-file input**: Projects accept `requirement.md` (required), `constraints.md` (optional), `design_intent.md` (optional), `context/*.md` (optional). Missing optional files trigger targeted clarification questions in Step 0b.
+- Stage 1 (spec_golden) produces: spec.json (interface-only) + golden_model.py (algorithm + test vectors). golden_model.py replaces behavior_spec.md and micro_arch.md.
+- spec.json contains: ports, parameters, module connectivity, constraints (timing/area/power/io/verification), and design_intent.
+- Pipeline flow: Step 0 (init + clarification in main session). Stage 1: vf-architect subagent. Stage 2: vf-coder subagent (parallel per module). Stage 3: verify_fix (inline sim + error recovery). Stage 4: vf-linter + vf-synthesizer (parallel).
 - Error recovery: Main Claude reads errors, fixes RTL, re-runs. 3-retry budget, then asks user.
 - EDA environment: Discovered once in Step 0, saved to `.veriflow/eda_env.sh`, sourced before every EDA command.
-- Logs: `logs/lint.log`, `logs/compile.log`, `logs/sim.log`, `workspace/synth/synth_report.txt`.
-- Sim hook: Checks sim.log for actual PASS/FAIL, not just file existence.
+- Logs: `logs/lint.log`, `logs/sim.log`, `workspace/synth/synth_report.txt`.
 
 ## File Hygiene
 

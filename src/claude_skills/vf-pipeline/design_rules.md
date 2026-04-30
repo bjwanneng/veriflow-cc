@@ -8,7 +8,7 @@
 
 ## Interface Lock
 
-The following fields in spec.json are locked after Stage 1 completes. Stages 2-8 must NOT modify them:
+The following fields in spec.json are locked after Stage 1 completes. Stages 2-4 must NOT modify them:
 - Port names, widths, and directions
 - Reset polarity (`reset_polarity` field: `"active_high"` → port named `rst`, `"active_low"` → port named `rst_n`)
 - Handshake protocol (`handshake` field: `"hold_until_ack"` / `"single_cycle"` / `"pulse"`)

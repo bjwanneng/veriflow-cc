@@ -46,11 +46,11 @@ u_submodule (.data_port(input_signal), ...);
 
 ### Prevention
 
-**Stage 3 (Timing)**: In the cross-module timing table, if a signal is marked
+**verify_fix stage**: In the cross-module timing analysis, if a signal is marked
 "0 (combinational)" from producer to consumer, verify the RTL does NOT route
 it through a registered latch.
 
-**Stage 5 (Review)**: Check for this pattern:
+**codegen stage**: Check for this pattern:
 - Signal X is an input port of module M
 - Module M contains a register `X_latched` updated on `posedge clk`
 - A submodule of M connects to `X_latched` (not `X` directly)
@@ -96,7 +96,7 @@ wire [31:0] next_elem = expansion_func(...);
 
 ### Prevention
 
-**Stage 4 (Coder)**: When generating shift-register-based message expansion,
+**codegen stage**: When generating shift-register-based message expansion,
 the coder MUST follow this rule:
 
 > **Sliding Window Replenishment Rule**: If a shift register shifts every
@@ -105,7 +105,7 @@ the coder MUST follow this rule:
 > determines whether the injected element is consumed externally, not whether
 > it's computed.
 
-**Stage 5 (Review)**: Flag any shift register where:
+**verify_fix stage**: Flag any shift register where:
 - `reg[i] <= reg[i+1]` (shift) happens unconditionally during active cycles
 - `reg[N-1] <= next_elem` where `next_elem` is gated by a condition
 - The gate condition depends on `round_cnt < THRESHOLD` where THRESHOLD ≤ N
@@ -148,8 +148,8 @@ end
 
 ### Prevention
 
-**Stage 3 (Timing)**: Add an "Initial State Completeness Check" to the timing
-model. For each output signal, trace backwards through the computation:
+**codegen stage**: Add an "Initial State Completeness Check" during code generation.
+For each output signal, trace backwards through the computation:
 
 1. List all registers that contribute to the output expression
 2. For each register, verify it has a defined initial value for the first
@@ -157,16 +157,7 @@ model. For each output signal, trace backwards through the computation:
 3. If a register feeds into an XOR/ADD chain where 0 is NOT a safe default,
    flag it as "requires explicit initialization"
 
-**Stage 4 (Coder)**: The coder prompt must include this rule:
-
-> **Initial State Completeness**: For hash/cipher algorithms, list ALL
-> registers from the algorithm specification's initialization section.
-> Cross-check: for every register that feeds into the final output
-> (e.g., `data_out = chain_reg ^ work_reg`), verify that BOTH operand register
-> sets are initialized correctly. Do NOT assume "reset to 0" is safe for
-> XOR-based output paths.
-
-**Stage 5 (Review)**: Check for registers where:
+**verify_fix stage**: Check for registers where:
 - The register is read in an expression that contributes to a module output
 - The register's only initialization path is the reset block (value = 0)
 - The output expression is XOR-based (where 0 is a meaningful but potentially
@@ -186,7 +177,7 @@ the expected value at cycle N+1 instead of cycle N.
 
 ### Prevention
 
-**Stage 3 (Timing)**: For every output assertion in the timing model, specify
+**verify_fix stage**: For every output assertion in the testbench, specify
 both the expected value AND the expected cycle. If the value appears one cycle
 off, check for an extra register stage in the output path.
 
@@ -198,7 +189,7 @@ off, check for an extra register stage in the output path.
 
 ### Prevention
 
-**Stage 5 (Review)**: Verify that every output port is driven by a register
+**verify_fix stage**: Verify that every output port is driven by a register
 (or combinational logic derived from a register) that is included in the
 reset block.
 
@@ -210,7 +201,7 @@ reset block.
 
 ### Prevention
 
-**Stage 5 (Review)**: For every FSM state, verify that all transition
+**verify_fix stage**: For every FSM state, verify that all transition
 conditions are reachable and that every state has a defined next-state for
 all input combinations (explicit `default` branch).
 
@@ -222,7 +213,7 @@ all input combinations (explicit `default` branch).
 
 ### Prevention
 
-**Stage 3 (Timing)**: Verify that the timing model's handshake scenarios
+**verify_fix stage**: Verify that the testbench's handshake scenarios
 include: (a) valid asserted before ready, (b) valid held until ready, (c)
 valid deasserted after ready. For `hold_until_ack` protocols, verify valid
 persistence.
@@ -235,10 +226,10 @@ persistence.
 
 ### Prevention
 
-**Stage 4 (Coder)**: Use `integer` for loop counters in testbenches and
+**codegen stage**: Use `integer` for loop counters in testbenches and
 simulation-only code. For synthesis, use sufficiently wide register widths
 and verify terminal condition uses the correct comparison (`<` vs `<=`).
 
-**Stage 5 (Review)**: For every counter with `reg [N:0]`, verify the terminal
+**verify_fix stage**: For every counter with `reg [N:0]`, verify the terminal
 value is reachable without overflow. If the terminal value equals `2^N - 1`,
 the counter wraps correctly. If it equals `2^N`, the counter overflows.

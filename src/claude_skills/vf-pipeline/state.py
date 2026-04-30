@@ -9,18 +9,14 @@ from typing import Optional
 
 
 # Strict execution order — no stage may be skipped
-STAGE_ORDER = ["architect", "microarch", "timing", "coder", "review", "lint", "sim", "synth"]
+STAGE_ORDER = ["spec_golden", "codegen", "verify_fix", "lint_synth"]
 
 # Prerequisite stages that must all complete before a given stage can run
 STAGE_PREREQUISITES = {
-    "architect": [],                                          # no prerequisites
-    "microarch": ["architect"],                               # needs spec.json
-    "timing":    ["architect", "microarch"],                  # needs spec + micro_arch
-    "coder":     ["architect", "microarch", "timing"],        # needs spec + microarch + timing
-    "review":    ["coder"],                                   # needs RTL code
-    "lint":      ["coder"],                                   # needs RTL code
-    "sim":       ["coder", "lint"],                           # needs RTL + lint pass
-    "synth":     ["coder", "sim"],                            # needs RTL + sim pass
+    "spec_golden":  [],                     # no prerequisites
+    "codegen":      ["spec_golden"],        # needs spec.json + golden_model.py
+    "verify_fix":   ["codegen"],            # needs RTL + testbench
+    "lint_synth":   ["verify_fix"],         # needs verified RTL
 }
 
 
@@ -56,14 +52,10 @@ class PipelineState:
     stages_failed: list = field(default_factory=list)
 
     # Per-stage output summaries
-    architect_output: Optional[dict] = None
-    microarch_output: Optional[dict] = None
-    timing_output: Optional[dict] = None
-    coder_output: Optional[dict] = None
-    review_output: Optional[dict] = None
-    lint_output: Optional[dict] = None
-    sim_output: Optional[dict] = None
-    synth_output: Optional[dict] = None
+    spec_golden_output: Optional[dict] = None
+    codegen_output: Optional[dict] = None
+    verify_fix_output: Optional[dict] = None
+    lint_synth_output: Optional[dict] = None
 
     # Error recovery
     retry_count: dict = field(default_factory=dict)
@@ -75,7 +67,7 @@ class PipelineState:
     stage_summaries: dict = field(default_factory=dict)
 
     # Per-stage timing
-    stage_timings: dict = field(default_factory=dict)  # {"architect": {"start": ts, "end": ts, "duration_s": float}, ...}
+    stage_timings: dict = field(default_factory=dict)  # {"spec_golden": {"start": ts, "end": ts, "duration_s": float}, ...}
 
     # Metadata
     start_time: float = field(default_factory=time.time)
@@ -157,7 +149,7 @@ class PipelineState:
         return stage in self.stages_completed
 
     def is_pipeline_complete(self) -> bool:
-        return "synth" in self.stages_completed
+        return "lint_synth" in self.stages_completed
 
     # -- Persistence ---------------------------------------------------------
 
@@ -210,14 +202,13 @@ class PipelineState:
         return can_execute(stage, self.stages_completed)
 
     def validate_spec_completeness(self, project_dir: str) -> tuple[bool, list[str]]:
-        """Validate spec.json and behavior_spec.md completeness after Stage 1.
+        """Validate spec.json completeness after Stage 1.
 
         Returns:
             (is_complete, missing_items) — is_complete=True means ready to proceed
         """
         missing = []
         spec_path = Path(project_dir) / "workspace/docs/spec.json"
-        behavior_path = Path(project_dir) / "workspace/docs/behavior_spec.md"
 
         # Check spec.json
         if not spec_path.exists():
@@ -236,35 +227,16 @@ class PipelineState:
                             missing.append("spec.json: module missing module_name")
                         if not m.get("ports"):
                             missing.append(f"spec.json: module {m.get('module_name', '?')} missing ports")
-                        else:
-                            for p in m["ports"]:
-                                if not p.get("signal_lifetime"):
-                                    missing.append(
-                                        f"spec.json: port {p.get('name', '?')} in "
-                                        f"module {m['module_name']} missing signal_lifetime"
-                                    )
                         if m.get("module_type") == "top":
                             has_top = True
                     if not has_top:
                         missing.append("spec.json: no module with module_type 'top'")
                 if not spec.get("constraints", {}).get("timing", {}).get("target_frequency_mhz"):
                     missing.append("spec.json: constraints.timing.target_frequency_mhz missing")
-                if not spec.get("design_intent"):
-                    missing.append("spec.json: design_intent block missing")
                 if len(spec.get("modules", [])) > 1 and not spec.get("module_connectivity"):
                     missing.append("spec.json: module_connectivity missing for multi-module design")
             except (json.JSONDecodeError, KeyError) as e:
                 missing.append(f"spec.json: parse error - {e}")
-
-        # Check behavior_spec.md
-        if not behavior_path.exists():
-            missing.append("behavior_spec.md file missing")
-        else:
-            content = behavior_path.read_text(encoding="utf-8")
-            required_sections = ["Domain Knowledge", "Cycle-Accurate Behavior", "Timing Contracts"]
-            for sec in required_sections:
-                if sec not in content:
-                    missing.append(f"behavior_spec.md: section '{sec}' missing")
 
         return (len(missing) == 0, missing)
 
@@ -361,7 +333,7 @@ def _print_usage():
     print("  Combined (hook + state + journal in one call):")
     print("  python state.py <project_dir> <stage_name> \\")
     print('    --hook="test -f workspace/docs/spec.json" \\')
-    print('    --journal-outputs="spec.json, behavior_spec.md" \\')
+    print('    --journal-outputs="spec.json, golden_model.py" \\')
     print('    --journal-notes="Specification generated"')
     sys.exit(1)
 

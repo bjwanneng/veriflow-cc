@@ -993,7 +993,7 @@ Agreement: All use 0..63 → OK
 Mismatch:  FSM uses 0..63, W_gen expects W[63] at round=64 → W[63] never produced
 ```
 
-**Rule**: Counter range must be verified in behavior_spec.md Cross-Module Timing check (Stage 1, Section 1c2b Check C). Document the agreed range in each module's Section 2.1 cycle table.
+**Rule**: Counter range must be verified in golden_model.py and spec.json module_connectivity. Document the agreed range in each module's port and connectivity definitions.
 
 ### 24.6 Shift Register Alignment
 
@@ -1016,7 +1016,7 @@ Pattern B — load with simultaneous shift:
 
 **Rule**: `load_en` and `calc_en` MUST NOT be co-asserted if the shift register uses `if/else-if` priority. The FSM must provide a dedicated load cycle (IDLE→LOAD→CALC, not IDLE→CALC with co-asserted enables).
 
-**Validation**: Check behavior_spec.md Section 2.6.3 (Signal Conflicts) for `load_en`/`calc_en` exclusion entry. Verify the FSM's transition table shows separate load and calc cycles.
+**Validation**: Verify that `load_en` and `calc_en` are mutually exclusive in the FSM's transition table — the FSM must show separate load and calc cycles.
 
 ### 24.7 Shift Register Window Replenishment `[CRITICAL]`
 
@@ -1076,7 +1076,7 @@ first output will be `0 ^ R = R` instead of `INIT ^ R`.
 as requiring explicit initialization. Do NOT rely on "reset to 0" being correct
 for XOR-based output paths.
 
-**Validation**: In the reviewer (Stage 5), check for registers where:
+**Validation**: In the verify_fix stage, check for registers where:
 - The register is read in an expression contributing to a module output
 - The register's reset value is 0
 - The output expression is an XOR chain

@@ -12,14 +12,19 @@ The prompt will contain ALL necessary context inline:
 - `MODULE_NAME`: name of the module to generate
 - `OUTPUT_FILE`: full path to write the .v file
 - Module spec (from spec.json) — port list, parameters, constraints
-- Module behavior (from behavior_spec.md) — cycle-accurate behavior, FSM, timing contracts
-- Module micro-architecture (from micro_arch.md) — datapath, control logic, signal names
+- Golden model (from golden_model.py) — algorithm details, constants, test vectors
 - Key coding rules (condensed from coding_style.md)
 - For top modules: a "Submodule Port Definitions" section with all sub-module spec entries from spec.json
 
+The golden_model.py IS the detailed specification — it replaces behavior_spec.md and micro_arch.md. Read it carefully to understand:
+- Algorithm steps and formulas
+- State machine behavior (if modeled)
+- Constants and initialization values
+- Test vectors (for later verification)
+
 ## Your action
 
-Go straight to **Write**. All context (including submodule ports for top modules) is in the prompt — no reads needed.
+Go straight to **Write**. All context is in the prompt — no reads needed.
 
 **Read** tool is available as a safety net: if the prompt references external files for additional context, you may read them. But normally, the prompt is self-contained.
 
@@ -117,8 +122,7 @@ Go straight to **Write**. All context (including submodule ports for top modules
 The module must:
 - Be complete, synthesizable **Verilog-2005 ONLY**
 - Match the module definition in spec **exactly** — same port names, widths, directions, parameters
-- Follow the cycle-accurate behavior, FSM specification, register requirements, and timing contracts in the behavior section
-- Follow the microarchitecture — use the same FSM states, signal names, datapath structure, and control logic
+- Implement the algorithm from golden_model.py faithfully — same constants, same formulas, same state machine behavior
 - If this is the top module, instantiate all submodules with named port connections
 
 ## Internal Verification (do NOT output text)
@@ -131,9 +135,9 @@ Before writing, internally verify:
 5. Counter range: 0 to N-1 (not 0 to N).
 6. Cross-module timing: co-asserted signals handled simultaneously (no `if/else if` for co-asserted enables).
 7. Shift register alignment: after load_en cycle, does output hold correct element for each round?
-8. **Shift register replenishment**: if a shift register shifts every calc_en cycle, the next-element injected at the tail MUST be computed unconditionally (never gated to 0 by round counter). See coding_style.md Section 24.7.
-9. **Output trace-back**: for each output port, list all registers in the output expression. Verify each has a correct initial value for the first operational cycle — NOT just "reset to 0". If output = V ^ A, both V and A must be initialized. See coding_style.md Section 25.
-10. **Latched-signal routing**: if a top module latches an input, verify submodules that consume that data during load_en read the DIRECT input (not the latched register) to avoid NBA race. See coding_style.md Section 24.2.
+8. **Shift register replenishment**: if a shift register shifts every calc_en cycle, the next-element injected at the tail MUST be computed unconditionally (never gated to 0 by round counter).
+9. **Output trace-back**: for each output port, list all registers in the output expression. Verify each has a correct initial value for the first operational cycle — NOT just "reset to 0". If output = V ^ A, both V and A must be initialized.
+10. **Latched-signal routing**: if a top module latches an input, verify submodules that consume that data during load_en read the DIRECT input (not the latched register) to avoid NBA race.
 
 ## Rules
 - **Return ONLY this text**: `Module {MODULE_NAME}.v generated successfully.` — do NOT output the generated RTL code as text
