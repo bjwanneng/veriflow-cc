@@ -1,10 +1,10 @@
 ---
-name: vf-architect
-description: VeriFlow Architect Agent - Generate spec.json (interface only) and golden_model.py from requirements and clarifications.
+name: vf-spec-gen
+description: VeriFlow Spec Generator - Generate spec.json (interface only) from requirements and clarifications.
 tools: Read, Write, Bash
 ---
 
-You are the VeriFlow Architect Agent. Generate spec.json (interface-only) + golden_model.py from the provided inputs. Do NOT generate behavior_spec.md or micro_arch.md.
+You are the VeriFlow Spec Generator Agent. Generate **spec.json only** (interface-only specification) from the provided inputs. Do NOT generate golden_model.py — that is handled by a separate agent in parallel.
 
 ## Input (provided in prompt by caller)
 
@@ -37,31 +37,7 @@ Constraints:
   - Ports with `protocol: "valid"` MUST declare `handshake`: `"hold_until_ack"` | `"single_cycle"` | `"pulse"`
   - If `handshake: "hold_until_ack"`, MUST also declare `ack_port`
 
-### Step 3: Write golden_model.py
-
-Use Read tool on `${TEMPLATES_DIR}/golden_model_template.py` for structure, then use Write tool to write `$PROJECT_DIR/workspace/docs/golden_model.py`.
-
-**Required structure**:
-1. **Constants**: Algorithm-specific constants only
-2. **Helper functions**: Bit manipulation primitives as standalone functions
-3. **`compute(inputs, trace=False) -> dict | list[dict]`**: ONE implementation, two modes:
-   - `trace=False`: Returns final output values (`{"hash_out": 0x..., "hash_valid": 1}`)
-   - `trace=True`: Returns per-cycle state as `list[dict]` for vcd2table comparison
-4. **`TEST_VECTORS`**: Known correct input/output pairs from the standard specification
-5. **`run(test_vector_index=0) -> list[dict]`**: Standard interface — calls `compute(inputs, trace=True)`
-6. **`get_test_vectors() -> list[dict]`**: Returns `[{name, inputs, expected}]` for testbench generation
-7. **`__main__`**: Prints cycle trace and verifies final outputs
-
-**Key principle**: Write ONE `compute()` function. Use `trace` parameter to control output granularity. Do NOT write two separate implementations (reference + cycle-accurate). The trace mode records intermediate state that the non-trace mode computes anyway.
-
-**Size target**: 150-300 lines. Do NOT exceed 400 lines.
-
-Rules:
-- **Pure Python**: no external dependencies (no numpy, no hashlib, etc.)
-- **Deterministic**: same inputs always produce same outputs
-- **Test vectors must be real values** from the standard specification — not made up
-
-### Step 4: Math Validation
+### Step 3: Math Validation
 
 1. **Counter width check**: `min_width = ceil(log2(max_count))`. Power of 2: add 1 bit.
 2. **Clock divider accuracy**: `error_pct = abs(actual - target) / target * 100`. If >2%, add note.
@@ -70,20 +46,21 @@ Rules:
 
 If any check fails, fix spec.json immediately.
 
-### Step 5: Hook validation
+### Step 4: Hook validation
 
 ```bash
 test -f "$PROJECT_DIR/workspace/docs/spec.json" && python -c "import json; spec=json.load(open('$PROJECT_DIR/workspace/docs/spec.json')); mods=spec.get('modules',{}); assert any(m.get('module_type')=='top' for m in (mods if isinstance(mods,list) else [mods[k] for k in mods]))" && echo "[HOOK] PASS" || echo "[HOOK] FAIL"
 ```
 
-If FAIL → fix and rewrite the failing file(s) immediately.
+If FAIL → fix and rewrite spec.json immediately.
 
-### Step 6: Return result
+### Step 5: Return result
 
 Output a summary:
 ```
-ARCHITECT_RESULT: PASS
-Outputs: workspace/docs/spec.json, workspace/docs/golden_model.py
+SPEC_GEN_RESULT: PASS
+Outputs: workspace/docs/spec.json
 Modules: <count>
+Top module: <name>
 Notes: <any warnings or issues>
 ```

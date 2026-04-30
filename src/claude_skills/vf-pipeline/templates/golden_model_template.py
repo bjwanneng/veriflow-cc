@@ -1,78 +1,145 @@
-"""golden_model.py — Auto-generated golden reference model.
+"""golden_model.py — Golden reference model for <design_name>.
 
-Pure Python reference implementation. No external dependencies.
-Standard interface: run() -> list[dict] for cycle-by-cycle expected values.
-Contains algorithm implementation and test vectors for verification.
+Pure Python implementation. No external dependencies.
+Provides: algorithm, test vectors, run() -> cycle-accurate expected values.
+
+Two modes:
+  - compute(inputs, trace=False) -> dict   : final outputs only (for testbench)
+  - compute(inputs, trace=True)  -> list   : per-cycle state (for vcd2table diff)
+  - run()                        -> list   : standard interface for pipeline
 """
 
-# --- Module: <module_name_with_pseudocode> ---
+# --- Constants ---
+# (algorithm-specific constants: IV, T_j, state encodings, etc.)
 
-def _module_<module_name>(inputs: dict) -> list[dict]:
-    """Execute the algorithm for <module_name>.
+MASK32 = 0xFFFFFFFF  # common for 32-bit datapaths; adjust per design
+
+
+# --- Bit manipulation / helper functions ---
+# (ROL, P0, P1, FF, GG, etc. — only what the algorithm needs)
+# Keep these as standalone functions, not class methods.
+
+def ROL(x: int, n: int, width: int = 32) -> int:
+    """Left rotate for width-bit values."""
+    n = n % width
+    return ((x << n) | (x >> (width - n))) & ((1 << width) - 1)
+
+
+# --- Core algorithm ---
+def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
+    """Execute the algorithm.
 
     Args:
-        inputs: dict mapping input port names to integer values.
+        inputs: dict with input signal names -> values.
+                Example for hash cores:
+                  {"blocks": [block0_int, ...], "is_last_flags": [True, ...]}
+        trace:  If False (default), return dict of final output values only.
+                If True, return list[dict] — one dict per clock cycle, mapping
+                signal_name -> int. This is used by vcd2table.py for cycle-by-cycle
+                comparison against RTL waveform.
 
     Returns:
-        list of dicts, one per clock cycle. Each dict maps signal_name -> int.
-        For combinational modules, returns a single-element list.
+        trace=False -> dict: {"output_port": value, ...}
+        trace=True  -> list[dict]: [{signal: value, ...}, ...] indexed by cycle
+
+    Implementation note:
+        Write ONE algorithm implementation. When trace=True, record intermediate
+        state at each cycle into a list. When trace=False, skip the recording
+        and just return the final result. Do NOT write two separate implementations.
     """
-    results = []
-    # --- Translated from algorithm specification ---
-    # ... literal translation of pseudocode to Python ...
-    #
-    # IMPORTANT for iterative/multi-cycle algorithms:
-    # Include ALL intermediate computation values in the results,
-    # not just final outputs. This enables layered verification:
-    # comparing per-cycle RTL state against golden model intermediate
-    # values to quickly isolate the first divergence.
-    #
-    # Example for an iterative algorithm:
+    cycles = [] if trace else None
+
+    # --- Algorithm implementation ---
+    # For iterative/multi-cycle algorithms:
     #   for step in range(NUM_STEPS):
     #       # ... computation ...
-    #       results.append({
-    #           "output_port": output_val,
-    #           # Include intermediate state for layered debug:
-    #           "step_counter": step,
-    #           "accumulator": acc_val,
-    #           "buffer_window": [b0, b1, ...],
-    #       })
-    return results
+    #       if trace:
+    #           cycles.append({
+    #               "output_signal": output_val,
+    #               "intermediate_reg": reg_val,  # match RTL register names
+    #           })
+    #       # ... continue computation ...
+
+    if trace:
+        return cycles
+    else:
+        return {}  # {"output_port": final_value, ...}
 
 
-# --- Module: <other_module_with_pseudocode> ---
-# ... repeat per module ...
+# --- Test vectors ---
+# Known correct input/output pairs from the standard specification.
+TEST_VECTORS = [
+    {
+        "name": "<test_name>",
+        "inputs": {},   # design-specific input format
+        "expected": {},  # {"output_port": expected_value, ...}
+    },
+    # ... more vectors ...
+]
 
 
 # --- Standard Interface ---
 
-def run() -> list[dict]:
-    """Run all module algorithms with standard test vectors.
+def run(test_vector_index: int = 0) -> list[dict]:
+    """Run a test vector and return cycle-accurate expected values.
+
+    This is the standard interface consumed by:
+      - vcd2table.py (Strategy 2: import run(), get list[dict])
+      - cocotb testbench (golden_run() for per-cycle comparison)
+      - Verilog TB generation (extract expected final outputs)
+
+    Args:
+        test_vector_index: index into TEST_VECTORS (default: 0)
 
     Returns:
-        list indexed by cycle number, each entry is {signal_name: value}.
-        For multi-module designs, keys are '<module_name>.<signal_name>'.
+        list of dicts, one per clock cycle:
+        [
+            {"signal_name": int_value, ...},  # cycle 0
+            {"signal_name": int_value, ...},  # cycle 1
+            ...
+        ]
+        For multi-module designs, keys are "<module>.<signal>".
     """
-    all_results = {}
-    # Run each module that has pseudocode
-    # for module_name, module_fn in MODULE_FUNCTIONS.items():
-    #     module_results = module_fn(TEST_INPUTS[module_name])
-    #     for i, entry in enumerate(module_results):
-    #         if i not in all_results:
-    #             all_results[i] = {}
-    #         for sig, val in entry.items():
-    #             all_results[i][f"{module_name}.{sig}"] = val
-    # Convert dict to sorted list
-    if not all_results:
-        return []
-    max_cycle = max(all_results.keys())
-    return [all_results.get(i, {}) for i in range(max_cycle + 1)]
+    tv = TEST_VECTORS[test_vector_index]
+    return compute(tv["inputs"], trace=True)
+
+
+def get_test_vectors() -> list[dict]:
+    """Return test vectors with final expected outputs (for testbench generation).
+
+    Returns:
+        list of {"name": str, "inputs": dict, "expected": dict}
+    """
+    results = []
+    for tv in TEST_VECTORS:
+        computed = compute(tv["inputs"], trace=False)
+        results.append({
+            "name": tv["name"],
+            "inputs": tv["inputs"],
+            "expected": tv.get("expected") or computed,
+        })
+    return results
 
 
 if __name__ == "__main__":
+    # Strategy 1 for vcd2table.py: print "cycle N: signal=0xVALUE" lines
+    # Also used for standalone verification.
     import json
-    results = run()
-    for i, entry in enumerate(results):
+
+    # Run default test vector with cycle trace
+    cycles = run()
+    for i, entry in enumerate(cycles):
         if entry:
-            parts = [f"{k}={hex(v) if isinstance(v, int) else v}" for k, v in entry.items()]
+            parts = [f"{k}=0x{v:08x}" if isinstance(v, int) else f"{k}={v}"
+                     for k, v in entry.items()]
             print(f"cycle {i}: {' '.join(parts)}")
+
+    # Verify final outputs against expected
+    print()
+    for tv in get_test_vectors():
+        computed = compute(tv["inputs"], trace=False)
+        ok = computed == tv["expected"]
+        name = tv["name"]
+        parts = [f"{k}=0x{v:064x}" if isinstance(v, int) and v > 0xFFFF else f"{k}={v}"
+                 for k, v in tv["expected"].items()]
+        print(f"[{'PASS' if ok else 'FAIL'}] {name}: {' '.join(parts)}")

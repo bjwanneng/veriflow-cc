@@ -25,7 +25,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 # --- Skill ---
 SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
-SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py", "cocotb_runner.py", "bug_patterns.md", "design_rules.md"]
+SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py", "cocotb_runner.py", "iverilog_runner.py", "bug_patterns.md", "design_rules.md"]
 TEMPLATES_DIR = "templates"
 
 # Source for coding_style.md is now in the skill directory itself
@@ -38,7 +38,10 @@ AGENTS_SRC_DIR = PROJECT_DIR / "src" / "claude_agents"
 
 AGENT_FILES = [
     "vf-architect.md",
+    "vf-spec-gen.md",
+    "vf-golden-gen.md",
     "vf-coder.md",
+    "vf-tb-gen.md",
     "vf-linter.md",
     "vf-synthesizer.md",
 ]
@@ -243,6 +246,13 @@ def main():
         print(f"  [OK]   cocotb_runner.py present")
     else:
         verify_errors.append(f"  [FAIL] cocotb_runner.py missing at {cocotb_runner_dst}")
+
+    # 3f. Check iverilog_runner.py is present
+    iverilog_runner_dst = SKILL_DST_DIR / "iverilog_runner.py"
+    if iverilog_runner_dst.exists():
+        print(f"  [OK]   iverilog_runner.py present")
+    else:
+        verify_errors.append(f"  [FAIL] iverilog_runner.py missing at {iverilog_runner_dst}")
 
     if verify_errors:
         print(f"\n[verify] Issues found:")

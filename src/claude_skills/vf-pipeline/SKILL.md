@@ -102,7 +102,7 @@ else
 fi
 ```
 
-If cocotb is not installed, ask the user if they want to install it. If resuming, check `stages_completed` and skip those stages.
+If resuming, check `stages_completed` and skip those stages.
 
 ### 0a. Initialize stage journal and pipeline start time
 
@@ -197,52 +197,74 @@ source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/s
 
 The pipeline has 4 stages: **spec_golden → codegen → verify_fix → lint_synth**
 
-### Stage 1: spec_golden (subagent — vf-architect)
+### Stage 1: spec_golden (2 parallel subagents — vf-spec-gen + vf-golden-gen)
 
-Generate spec.json (interface only) + golden_model.py. No behavior_spec.md or micro_arch.md.
+Generate spec.json (interface only) + golden_model.py in parallel. No behavior_spec.md or micro_arch.md.
+
+Two independent agents run in parallel because spec.json and golden_model.py have no dependency on each other — both consume the same requirement inputs independently.
 
 1. Record start time:
 ```bash
 source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --start
 ```
 
-2. Dispatch vf-architect subagent via Agent tool (subagent_type: general-purpose):
-   - **Prompt must include**: PROJECT_DIR path, CLARIFICATIONS path, TEMPLATES_DIR path
-   - **Inline in prompt**: Full contents of requirement.md, constraints.md (if exists), design_intent.md (if exists), context/*.md (if any)
+2. Read all input files (requirement.md, constraints.md, design_intent.md, context/*.md) into context.
 
-3. After agent returns, run combined hook + state + journal:
+3. Dispatch TWO subagents in parallel (single message with two Agent calls):
+   - **Agent 1: vf-spec-gen** (subagent_type: general-purpose)
+     - **Prompt must include**: PROJECT_DIR path, CLARIFICATIONS path, TEMPLATES_DIR path
+     - **Inline in prompt**: Full contents of requirement.md, constraints.md (if exists), design_intent.md (if exists), context/*.md (if any)
+   - **Agent 2: vf-golden-gen** (subagent_type: general-purpose)
+     - **Prompt must include**: PROJECT_DIR path, CLARIFICATIONS path, TEMPLATES_DIR path
+     - **Inline in prompt**: Full contents of requirement.md, constraints.md (if exists), design_intent.md (if exists), context/*.md (if any)
+
+4. After BOTH agents return, validate outputs exist:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && grep -q module_name workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="Specification and golden model generated"
+test -f "$PROJECT_DIR/workspace/docs/spec.json" || { echo "[HOOK] FAIL: spec.json missing"; exit 1; }
+test -f "$PROJECT_DIR/workspace/docs/golden_model.py" || { echo "[HOOK] FAIL: golden_model.py missing"; exit 1; }
 ```
 
-4. Mark Stage 1 task as completed via TaskUpdate.
+5. Run combined hook + state + journal:
+```bash
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="Specification and golden model generated in parallel"
+```
 
-### Stage 2: codegen (subagent — vf-coder, parallel per module)
+6. Mark Stage 1 task as completed via TaskUpdate.
 
-Generate all RTL modules + testbench from spec.json + golden_model.py.
+### Stage 2: codegen (parallel subagents — vf-coder per module + testbench generator)
+
+Generate all RTL modules AND testbench in parallel from spec.json + golden_model.py.
+
+Testbench generation depends only on spec.json (port names, widths, handshake) and golden_model.py (test vectors, expected outputs) — NOT on the actual RTL code. Therefore it can run in parallel with RTL codegen.
 
 1. Record start time:
 ```bash
 source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --start
 ```
 
-2. Read spec.json and golden_model.py (parallel Read calls) to include inline in prompt.
+2. Read spec.json and golden_model.py (parallel Read calls) to include inline in prompts.
 
-3. For each module in spec.json, dispatch a vf-coder subagent via Agent tool:
-   - **Prompt must include**: MODULE_NAME, OUTPUT_FILE path, spec.json content, golden_model.py content
-   - **For top modules**: include submodule port definitions from spec.json
-   - **For leaf modules**: include only that module's spec entry
-   - Dispatch all modules in parallel (single message, multiple Agent calls)
+3. Dispatch ALL module agents AND the testbench agent in parallel (single message with multiple Agent calls):
+   - For each module in spec.json, dispatch a **vf-coder** subagent (subagent_type: general-purpose):
+     - **Prompt must include**: MODULE_NAME, OUTPUT_FILE path, spec.json content, golden_model.py content
+     - **For top modules**: include submodule port definitions from spec.json
+     - **For leaf modules**: include only that module's spec entry
+   - Dispatch ONE **vf-tb-gen** subagent (subagent_type: general-purpose) for testbench generation:
+     - **Prompt must include**: PROJECT_DIR path, DESIGN_NAME (top module name), spec.json content, golden_model.py content, COCOTB_AVAILABLE flag, TEMPLATES_DIR path
+     - This agent generates BOTH `workspace/tb/test_<design_name>.py` (cocotb) AND `workspace/tb/tb_<design_name>.v` (Verilog TB) always
+     - The Verilog TB embeds pre-computed expected values from golden_model.py test vectors, making it self-checking without any Python/cocotb dependency
 
-4. After ALL agents return, generate the testbench:
-   - Read the cocotb template: `${CLAUDE_SKILL_DIR}/templates/cocotb_template.py`
-   - Read golden_model.py to extract test vectors and port names
-   - Write `workspace/tb/test_<design_name>.py` using the VPI-safe pattern
-   - If COCOTB_AVAILABLE is false, also write a Verilog TB: `workspace/tb/tb_<design_name>.v`
+4. After ALL agents return, verify outputs:
+```bash
+echo "[CODEGEN] RTL files generated:"
+ls -la "$PROJECT_DIR/workspace/rtl/"*.v 2>/dev/null
+echo "[CODEGEN] Testbench files generated:"
+ls -la "$PROJECT_DIR/workspace/tb/" 2>/dev/null
+```
 
 5. Run combined hook + state + journal:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v 2>/dev/null | wc -l | awk '{if (\$1 > 0) exit 0; exit 1}'" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py" --journal-notes="RTL and testbench generated"
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --hook="test -f workspace/rtl/*.v && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
 ```
 
 6. Mark Stage 2 task as completed via TaskUpdate.
@@ -251,7 +273,7 @@ source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/s
 
 Compile RTL, run simulation, compare with golden model, fix errors in a loop. This stage runs inline because error recovery needs main session context.
 
-**This is the HIGH-CONSTRAINT stage** — VPI timing, cocotb quirks, and simulation edge cases are LLM weak spots. The pre-baked VPI-safe testbench template handles most issues, but the fix loop handles the rest.
+**Simulation strategy**: Use Verilog testbench by default (fast, no cocotb dependency). Fall back to cocotb only if `COCOTB_AVAILABLE=true` AND the user has not opted out. The Verilog TB is self-checking with pre-computed expected values embedded during codegen.
 
 1. Record start time:
 ```bash
@@ -265,7 +287,6 @@ cd "$PROJECT_DIR"
 
 # Discover all RTL files
 RTL_FILES=$(ls workspace/rtl/*.v 2>/dev/null | sort)
-TB_FILE=$(ls workspace/tb/test_*.py 2>/dev/null | head -1)
 
 if [ -z "$RTL_FILES" ]; then
     echo "[VERIFY] ERROR: No RTL files found"
@@ -276,33 +297,84 @@ echo "[VERIFY] RTL files:"
 echo "$RTL_FILES"
 
 # Get top module from spec.json
-TOP_MODULE=$($PYTHON_EXE -c "import json; spec=json.load(open('workspace/docs/spec.json')); print([m['module_name'] for m in spec['modules'] if m.get('module_type')=='top'][0])")
+TOP_MODULE=$($PYTHON_EXE -c "
+import json
+spec = json.load(open('workspace/docs/spec.json'))
+mods = spec.get('modules', {})
+if isinstance(mods, dict):
+    for k, v in mods.items():
+        if v.get('module_type') == 'top':
+            print(v.get('module_name', k)); break
+elif isinstance(mods, list):
+    for m in mods:
+        if m.get('module_type') == 'top':
+            print(m['module_name']); break
+")
 echo "[VERIFY] Top module: $TOP_MODULE"
 ```
 
-3. **Run cocotb simulation** (if cocotb available):
+3. **Run Verilog TB simulation** (default — always available if iverilog is installed):
 ```bash
 source "$PROJECT_DIR/.veriflow/eda_env.sh"
 cd "$PROJECT_DIR"
 
-# Run cocotb via runner
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/cocotb_runner.py" \
-    --module $TOP_MODULE \
-    --rtl-dir workspace/rtl \
-    --tb-dir workspace/tb \
-    --build-dir workspace/sim \
-    --verbose 2>&1 | tee logs/sim.log
+# Check if Verilog TB exists
+VERILOG_TB=$(ls workspace/tb/tb_*.v 2>/dev/null | head -1)
 
-# Check result — cocotb_runner outputs JSON to stdout
-if grep -q '"failed": 0' logs/sim.log 2>/dev/null && ! grep -q '"failed": [1-9]' logs/sim.log 2>/dev/null; then
-    echo "[VERIFY] PASS — all cocotb tests passed"
+if [ -n "$VERILOG_TB" ]; then
+    echo "[VERIFY] Using Verilog testbench: $VERILOG_TB"
+
+    # Use the iverilog runner
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
+        --module $TOP_MODULE \
+        --rtl-dir workspace/rtl \
+        --tb-file "$VERILOG_TB" \
+        --build-dir workspace/sim \
+        --verbose 2>&1 | tee logs/sim.log
+
+    # Check result
+    if grep -q "ALL TESTS PASSED" logs/sim.log 2>/dev/null && ! grep -q "\[FAIL\]" logs/sim.log 2>/dev/null; then
+        echo "[VERIFY] PASS — Verilog TB simulation passed"
+    else
+        echo "[VERIFY] FAIL — Verilog TB simulation errors detected"
+        grep -E "\[FAIL\]|ERROR|error:" logs/sim.log 2>/dev/null | head -20
+    fi
 else
-    echo "[VERIFY] FAIL — simulation errors detected"
-    grep -E "\[FAIL\]|ERROR|error:|traceback" logs/sim.log 2>/dev/null | head -20
+    echo "[VERIFY] No Verilog TB found"
 fi
 ```
 
-4. **If simulation fails**, enter the fix loop:
+4. **If Verilog TB passed**, skip cocotb and go to step 7.
+
+5. **If Verilog TB failed OR not available**, try cocotb simulation (if available):
+```bash
+source "$PROJECT_DIR/.veriflow/eda_env.sh"
+cd "$PROJECT_DIR"
+
+if [ "$COCOTB_AVAILABLE" = "true" ]; then
+    echo "[VERIFY] Trying cocotb simulation as fallback..."
+
+    # Run cocotb via runner
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/cocotb_runner.py" \
+        --module $TOP_MODULE \
+        --rtl-dir workspace/rtl \
+        --tb-dir workspace/tb \
+        --build-dir workspace/sim \
+        --verbose 2>&1 | tee -a logs/sim.log
+
+    # Check result
+    if grep -q '"failed": 0' logs/sim.log 2>/dev/null && ! grep -q '"failed": [1-9]' logs/sim.log 2>/dev/null; then
+        echo "[VERIFY] PASS — cocotb tests passed"
+    else
+        echo "[VERIFY] FAIL — cocotb simulation errors detected"
+        grep -E "\[FAIL\]|ERROR|error:|traceback" logs/sim.log 2>/dev/null | head -20
+    fi
+else
+    echo "[VERIFY] cocotb not available — cannot run cocotb simulation"
+fi
+```
+
+6. **If simulation fails**, enter the fix loop:
 
    a. **Read error output** from `logs/sim.log`
    b. **Collect diagnostic data** — run vcd2table golden model diff (see Error Recovery Step 0 below)
@@ -311,12 +383,12 @@ fi
    e. **Re-run simulation** (go back to step 3)
    f. **Retry budget**: 3 attempts, then STOP and ask user
 
-5. **If simulation passes**, run combined hook + state + journal:
+7. **If simulation passes**, run combined hook + state + journal:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q '\"failed\": 0' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
+source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q 'ALL TESTS PASSED' logs/sim.log || grep -q '\"failed\": 0' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
 ```
 
-6. Mark Stage 3 task as completed via TaskUpdate.
+8. Mark Stage 3 task as completed via TaskUpdate.
 
 ### Stage 4: lint_synth (parallel subagents — vf-linter + vf-synthesizer)
 
@@ -369,16 +441,24 @@ Before forming ANY root cause hypothesis, collect objective diagnostic data. Thi
 **0a. Collect data**:
 
 1. Read `logs/sim.log` — extract all `[FAIL]` lines with cycle numbers
-2. Extract VCD path and top module from sim.log (cocotb_runner reports them):
+2. Extract VCD path and top module from sim.log:
 ```bash
 source "$PROJECT_DIR/.veriflow/eda_env.sh"
 cd "$PROJECT_DIR"
-TOP_MODULE=$($PYTHON_EXE -c "import json; spec=json.load(open('workspace/docs/spec.json')); print([m['module_name'] for m in spec['modules'] if m.get('module_type')=='top'][0])")
-VCD_FILE=$(grep -o '"vcd_path"[[:space:]]*:[[:space:]]*"[^"]*"' logs/sim.log 2>/dev/null | head -1 | sed 's/.*"vcd_path"[[:space:]]*:[[:space:]]*"\(.*\)"/\1/')
-# Fallback: scan build_dir for VCD files
-if [ -z "$VCD_FILE" ] || [ ! -f "$VCD_FILE" ]; then
-    VCD_FILE=$(ls workspace/sim/*.vcd 2>/dev/null | head -1)
-fi
+TOP_MODULE=$($PYTHON_EXE -c "
+import json
+spec = json.load(open('workspace/docs/spec.json'))
+mods = spec.get('modules', {})
+if isinstance(mods, dict):
+    for k, v in mods.items():
+        if v.get('module_type') == 'top':
+            print(v.get('module_name', k)); break
+elif isinstance(mods, list):
+    for m in mods:
+        if m.get('module_type') == 'top':
+            print(m['module_name']); break
+")
+VCD_FILE=$(ls workspace/sim/*.vcd 2>/dev/null | head -1)
 ```
 3. Run vcd2table golden model diff (if golden_model.py exists AND VCD is available):
 ```bash

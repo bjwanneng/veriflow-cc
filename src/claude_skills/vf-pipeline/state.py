@@ -216,24 +216,43 @@ class PipelineState:
         else:
             try:
                 spec = json.loads(spec_path.read_text(encoding="utf-8"))
-                if not spec.get("design_name"):
-                    missing.append("spec.json: design_name missing")
+                if not spec.get("project") and not spec.get("design_name"):
+                    missing.append("spec.json: project/design_name missing")
                 if not spec.get("modules"):
-                    missing.append("spec.json: modules array missing")
+                    missing.append("spec.json: modules missing")
                 else:
                     has_top = False
-                    for m in spec["modules"]:
-                        if not m.get("module_name"):
-                            missing.append("spec.json: module missing module_name")
-                        if not m.get("ports"):
-                            missing.append(f"spec.json: module {m.get('module_name', '?')} missing ports")
-                        if m.get("module_type") == "top":
-                            has_top = True
+                    # Support both list format [{"module_name": ..., ...}] and
+                    # dict format {"module_name": {"module_type": ..., ...}}
+                    modules = spec["modules"]
+                    if isinstance(modules, dict):
+                        for name, m in modules.items():
+                            if not m.get("ports"):
+                                missing.append(f"spec.json: module {name} missing ports")
+                            if m.get("module_type") == "top":
+                                has_top = True
+                    elif isinstance(modules, list):
+                        for m in modules:
+                            mod_name = m.get("module_name", "?")
+                            if not m.get("module_name"):
+                                missing.append("spec.json: module missing module_name")
+                            if not m.get("ports"):
+                                missing.append(f"spec.json: module {mod_name} missing ports")
+                            if m.get("module_type") == "top":
+                                has_top = True
                     if not has_top:
                         missing.append("spec.json: no module with module_type 'top'")
-                if not spec.get("constraints", {}).get("timing", {}).get("target_frequency_mhz"):
-                    missing.append("spec.json: constraints.timing.target_frequency_mhz missing")
-                if len(spec.get("modules", [])) > 1 and not spec.get("module_connectivity"):
+                # Check constraints — support both nested and flat formats
+                constraints = spec.get("constraints", {})
+                has_freq = False
+                if constraints.get("timing", {}).get("target_frequency_mhz"):
+                    has_freq = True
+                elif spec.get("target_frequency_mhz"):
+                    has_freq = True
+                if not has_freq:
+                    missing.append("spec.json: target_frequency_mhz missing")
+                num_modules = len(spec.get("modules", {})) if isinstance(spec.get("modules"), dict) else len(spec.get("modules", []))
+                if num_modules > 1 and not spec.get("module_connectivity"):
                     missing.append("spec.json: module_connectivity missing for multi-module design")
             except (json.JSONDecodeError, KeyError) as e:
                 missing.append(f"spec.json: parse error - {e}")
