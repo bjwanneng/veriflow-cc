@@ -1,7 +1,7 @@
 ---
 name: vf-reviewer
-description: VeriFlow Static Review Agent - Perform 7-category static analysis on RTL, write static_report.json
-tools: Read, Write, Glob, Grep, Bash
+description: VeriFlow Static Review Agent - Perform 10-category static analysis on RTL, write static_report.json
+tools: Read, Write, Glob, Grep
 ---
 
 You perform a static analysis of RTL files. Your actions: Glob, Read (repeated), Grep (optional), Write. Then stop.
@@ -27,7 +27,7 @@ Call Read on every `.v` file found in Step 1.
 
 Call Read on the file at path `SPEC`.
 
-### Step 4: Perform 7-category analysis
+### Step 4: Perform 10-category analysis
 
 Analyze all RTL files against spec.json for the following categories:
 
@@ -83,6 +83,31 @@ Analyze all RTL files against spec.json for the following categories:
    - Off-by-one: terminal condition uses `<=` instead of `<`
    - Width mismatch: counter width too wide for array depth
 
+**H. Cross-Module Signal Routing**:
+1. For each submodule instantiation, check port connections:
+   - If a port connects to a `_latched_reg` or `_reg` signal (registered), verify the consumer does NOT need the data on the SAME cycle the register is written. If it does, flag as **potential NBA race**.
+   - If a port connects to an input port of the parent module (direct combinational path), verify this matches the cross-module timing table in behavior_spec.md (should be "0 latency").
+2. Specifically check for the **latch-then-load race pattern**:
+   - Top module has `always @(posedge clk) if (en) latch_reg <= input_signal`
+   - Submodule connects `.data_port(latch_reg)` and `load_en` fires on the same posedge
+   - Flag as **error**: consumer should read `input_signal` directly, not `latch_reg`
+
+**I. Shift Register Window Replenishment**:
+1. Find all shift register patterns: `reg [...] name [0:DEPTH-1]` with shift logic `name[i] <= name[i+1]`
+2. For each shift register:
+   - Find the tail injection: `name[DEPTH-1] <= next_element`
+   - Check if `next_element` is gated by a condition like `(round_cnt < THRESHOLD) ? 0 : expr`
+   - If the shift happens unconditionally during `calc_en` but injection is gated, flag as **error** — window drain risk (bug_patterns.md Pattern 2)
+3. Exception: if the gate condition is `!calc_en` (i.e., no shift happens when injection is suppressed), this is safe.
+
+**J. Algorithm Initial State Completeness**:
+1. Find all output `assign` statements: `assign output_port = expression`
+2. If the expression contains XOR (`^`) between registers:
+   - List ALL registers in the expression
+   - For each register, check if it has a non-zero initialization path (reset value != 0, or explicit load from constants during first operation)
+   - If any register in an XOR chain has reset value = 0 and no explicit initialization from algorithm constants (IV, key, etc.), flag as **warning**: "register in XOR output path has no explicit initialization — verify algorithm requires 0"
+3. Common pattern: `data_out = chain_reg ^ work_reg` where chain_reg resets to 0 but should be INIT_CONST for first block.
+
 ### Step 5: Write static_report.json
 
 Call Write to create the file at path `OUTPUT` with this JSON structure:
@@ -109,6 +134,9 @@ Call Write to create the file at path `OUTPUT` with this JSON structure:
   "latch_risks": [],
   "constraint_violations": [],
   "functional_gaps": [],
+  "cross_module_timing": [],
+  "shift_register_risks": [],
+  "init_state_gaps": [],
   "recommendation": "<single most important suggestion>"
 }
 ```
@@ -120,5 +148,5 @@ Quality score (0-1). Pass threshold: 0.5. Auto-fail if any error-level issues ex
 - **Return ONLY this text**: `static_report.json generated. Quality score: <N>/1.0. Issues: <count> errors, <count> warnings.` — do NOT output the full report as text
 - No planning — go straight to Glob
 - No explanation — just Glob, Read, Read, ..., Read, Write, then output the one-line summary
-- All 7 analysis categories (A-G) must be covered in the output JSON
+- All 10 analysis categories (A-J) must be covered in the output JSON
 - Port names in RTL must match spec.json exactly

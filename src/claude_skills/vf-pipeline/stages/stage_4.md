@@ -4,60 +4,125 @@
 
 Mark Stage 4 task as **in_progress** using TaskUpdate.
 
-## 4a. Read spec and extract module list
+## 4a. Pre-read all design documents (ONCE)
 
-Use **Read** tool to read `$PROJECT_DIR/workspace/docs/spec.json`.
+Use **Read** tool to read these files exactly once:
 
-Extract the list of modules from the `"modules"` array. For each module, note:
-- `module_name`
-- `module_type` (top, processing, control, memory, interface)
+1. `$PROJECT_DIR/workspace/docs/spec.json`
+2. `$PROJECT_DIR/workspace/docs/behavior_spec.md`
+3. `$PROJECT_DIR/workspace/docs/micro_arch.md`
+4. `${CLAUDE_SKILL_DIR}/coding_style.md`
 
-## 4b. Resolve coding_style path
+After reading all 4 files, extract from spec.json:
+- The `modules` array — list of all modules with their `module_name` and `module_type`
+- The `design_name` field
 
-```bash
-echo "$HOME/.claude/skills/vf-pipeline/coding_style.md"
+**Design rationale**: Pre-reading here eliminates the sub-agent's need to read these files individually. The main session reads once (~30s total), and passes extracted per-module context inline to each agent call. This saves ~4 tool round-trips per module and reduces per-call context from ~25K tokens to ~8K tokens.
+
+## 4b. Assemble prompts for ALL modules, then dispatch in parallel
+
+### 4b-i. Extract per-module context
+
+From the files already read in 4a, extract context for **each** module (including top):
+
+**From spec.json** — the single module entry for `module_name`:
+```json
+{"module_name": "...", "module_type": "...", "ports": [...], "parameters": [...], ...}
 ```
 
-Save the output as `CODING_STYLE_PATH`.
+**From behavior_spec.md** — the section for this module (typically Section 2.x matching the module name). Include:
+- Cycle-accurate timing tables
+- FSM state definitions and transitions
+- Timing contracts
+- Algorithm pseudocode
 
-## 4c. Call vf-coder agent for each module (non-top first, top last)
+**From micro_arch.md** — the section for this module. Include:
+- Datapath structure
+- Control logic description
+- Signal names and FSM states
+- Register requirements
 
-**IMPORTANT**: Generate sub-modules first, top module last. This ensures the top module knows all sub-module ports.
+**From coding_style.md** — NOT needed in the prompt. The agent definition (vf-coder.md) already contains the condensed key rules.
 
-For each module in the list (skip top module initially, process it last):
+### 4b-ii. Construct agent prompts
+
+#### Sub-module prompt template
 
 Call Agent with:
 - `subagent_type`: `vf-coder`
-- `prompt`: `CODING_STYLE={CODING_STYLE_PATH} SPEC={PROJECT_DIR}/workspace/docs/spec.json BEHAVIOR_SPEC={PROJECT_DIR}/workspace/docs/behavior_spec.md MICRO_ARCH={PROJECT_DIR}/workspace/docs/micro_arch.md MODULE_NAME={module_name} OUTPUT_DIR={PROJECT_DIR}/workspace/rtl. Read CODING_STYLE then Read SPEC then Read BEHAVIOR_SPEC then Read MICRO_ARCH then Write {PROJECT_DIR}/workspace/rtl/{module_name}.v. Follow coding_style.md, behavior_spec.md, and micro_arch.md strictly.`
+- `prompt`: (replace ALL placeholders with actual content)
 
-Replace all `{...}` placeholders with actual values. Do NOT use shell variables in the prompt — use resolved absolute paths.
+```
+MODULE_NAME={module_name}
+OUTPUT_FILE={PROJECT_DIR}/workspace/rtl/{module_name}.v
 
-After all sub-modules are done, call Agent for the top module (same prompt format).
+## Module Spec (from spec.json)
+{paste the single module JSON entry here}
 
-**Run all agent calls sequentially** — do NOT parallelize, as each call is independent but the top module should be last.
+## Module Behavior (from behavior_spec.md)
+{paste the extracted section for this module here}
+
+## Module Micro-Architecture (from micro_arch.md)
+{paste the extracted section for this module here}
+
+Write the file at OUTPUT_FILE. Follow the coding rules in your system prompt. Follow the behavior and micro-architecture above strictly.
+```
+
+#### Top module prompt template
+
+The top module prompt is the same format, but MUST also include an extra section with all submodule port definitions. This information comes from **spec.json** (design definition), not from reading generated .v files:
+
+```
+MODULE_NAME={top_module_name}
+OUTPUT_FILE={PROJECT_DIR}/workspace/rtl/{top_module_name}.v
+
+## Module Spec (from spec.json)
+{paste the top module JSON entry here}
+
+## Submodule Port Definitions (from spec.json)
+For each sub-module, paste its full module entry from spec.json (module_name, ports, parameters).
+This is the canonical port definition — instantiate submodules using these ports exactly.
+
+{sub1_module_entry}
+{sub2_module_entry}
+...
+
+## Module Behavior (from behavior_spec.md)
+{paste the extracted section for the top module here}
+
+## Module Micro-Architecture (from micro_arch.md)
+{paste the extracted section for the top module here}
+
+Write the file at OUTPUT_FILE. Follow the coding rules in your system prompt. Follow the behavior and micro-architecture above strictly.
+```
+
+**Prompt construction rules**:
+- Do NOT use shell variables — use resolved absolute paths
+- Sub-module prompts: only include that module's own sections
+- Top module prompt: include the extra "Submodule Port Definitions" section with ALL sub-module entries from spec.json
+- Do NOT include the full file content — extract only the relevant section
+- If a section is very long (>200 lines), include it in full — do NOT summarize or truncate
+
+### 4b-iii. Dispatch all agents in parallel
+
+Call **Agent** for ALL modules (sub-modules AND top module) in a **single message** with multiple Agent tool calls. All prompts are pre-assembled from 4a — there are no runtime dependencies between modules.
+
+After all agents complete, check results:
+- If agent returned `Module {module_name}.v generated successfully.` → OK
+- If agent returned 0 tool uses → retry once with the exact same prompt (4c-retry)
 
 ## 4c-retry. If agent returns 0 tool uses
-
-After each agent call, check the result. If the agent completed with **0 tool uses**:
 
 1. **Retry once** — call the same agent again with the exact same prompt
 2. If retry also returns 0 tool uses → fall back to 4c-fallback
 
 ## 4c-fallback. If retry also fails (0 tool uses)
 
-If a module's agent still fails after retry, generate that module inline:
-1. Read `${CLAUDE_SKILL_DIR}/coding_style.md`
-2. Read `$PROJECT_DIR/workspace/docs/spec.json`
-3. Read `$PROJECT_DIR/workspace/docs/behavior_spec.md`
-4. Read `$PROJECT_DIR/workspace/docs/micro_arch.md`
-5. **Step 3.5 Internal Verification** — Before writing the .v file, perform the 5-point self-check:
-   - **Timing table**: Does the module have a cycle-accurate timing table in comments?
-   - **Register delay**: Are all outputs driven by registers (not combinational from inputs)?
-   - **Control timing**: Do control signals (valid, ready, enable) align with data timing?
-   - **FSM sync**: Are FSM state transitions and outputs both registered?
-   - **Counter range**: Do counters cover the full required range (e.g., 0 to N-1 for N cycles)?
-   If any check fails, revise the design before proceeding.
-6. Use **Write** to create the failed module's .v file
+Generate the module inline using the context already read in 4a:
+
+1. Use the spec, behavior_spec, and micro_arch sections already in memory from 4a
+2. **Step 3.5 Internal Verification** — Before writing the .v file, perform the self-check from the coding agent definition
+3. Use **Write** to create the failed module's .v file
 
 ## 4d. Hook
 

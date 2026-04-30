@@ -1,5 +1,7 @@
 # Stage 6: lint (sub-agent)
 
+**NOTE: This stage runs in PARALLEL with Stage 5 (review). Both are dispatched in a single message with two Agent tool calls.**
+
 **Goal**: Run iverilog syntax check on RTL files.
 
 Mark Stage 6 task as **in_progress** using TaskUpdate.

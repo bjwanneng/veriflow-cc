@@ -23,9 +23,9 @@ Main Claude (skill prompt injected)
      ├→ Stage 2: microarch   (inline) → micro_arch.md
      ├→ Stage 3: timing      (inline) → timing_model.yaml + testbenches (one per module)
      ├→ Stage 4: coder       (vf-coder sub-agent) → rtl/*.v
-     ├→ Stage 5: skill_d     (inline) → static_report.json
+     ├→ Stage 5: review      (vf-reviewer sub-agent) → static_report.json
      ├→ Stage 6: lint        (inline, iverilog) → logs/lint.log
-     ├→ Stage 7: sim         (inline, iverilog+vvp) → two-phase bottom-up verification
+     ├→ Stage 7: sim         (inline, cocotb-first integration test) → logs/sim.log
      └→ Stage 8: synth       (inline, yosys) → workspace/synth/synth_report.txt
 ```
 
@@ -98,7 +98,7 @@ If optional files are missing, the pipeline asks targeted clarification question
 Strict sequential execution, no skipping:
 
 ```
-architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
+architect -> microarch -> timing -> coder -> review -> lint -> sim -> synth
      1           2          3         4         5        6     7      8
 ```
 
@@ -108,9 +108,9 @@ architect -> microarch -> timing -> coder -> skill_d -> lint -> sim -> synth
 | microarch | LLM | spec.json, behavior_spec.md, requirement.md, design_intent.md | micro_arch.md |
 | timing | LLM | spec.json, micro_arch.md, behavior_spec.md, context/*.py | timing_model.yaml, tb/*.v (one per module) |
 | coder | LLM (sub-agent) | spec + behavior_spec + coding_style + micro_arch | rtl/*.v |
-| skill_d | LLM | rtl/*.v, spec.json | static_report.json |
+| review | LLM (sub-agent) | rtl/*.v, spec.json | static_report.json |
 | lint | EDA (iverilog) | rtl/*.v | logs/lint.log |
-| sim | EDA (iverilog+vvp) | rtl/*.v, tb/*.v | Phase 1: per-module unit sims → Phase 2: integration sim → logs/sim*.log |
+| sim | EDA (cocotb or iverilog+vvp) | rtl/*.v, tb/*.v | cocotb integration test (primary) or Verilog fallback → logs/sim.log |
 | synth | EDA (yosys) | rtl/*.v | workspace/synth/synth_report.txt |
 
 ## Key Features
@@ -164,12 +164,11 @@ The simulation hook uses strict 3-layer verification on `logs/sim.log`:
 
 This prevents false-positive "all green" when sim.log contains both passing and failing tests, or is empty.
 
-### Bottom-Up Simulation (Two-Phase)
-Stage 7 runs in two phases with explicit per-module progress reporting:
-- **Phase 1 — Per-module unit simulation**: Each submodule is compiled and simulated independently with its own testbench. Results are reported module-by-module. All modules must pass before Phase 2.
-- **Phase 2 — Integration simulation**: Top-level testbench verifies the full design end-to-end.
-
-Each module's simulation log is saved separately as `logs/sim_<module_name>.log`.
+### Cocotb-First Integration Simulation
+Stage 7 uses cocotb (Python co-simulation) as the primary simulation path when available:
+- cocotb's `await RisingEdge(dut.clk)` fires via VPI callback AFTER the NBA region, eliminating all Verilog TB-DUT race conditions
+- Only top-level integration test runs (no per-module unit tests) — catches cross-module timing bugs that unit tests miss
+- Falls back to Verilog `$display`-based testbenches when cocotb is unavailable
 
 ### Per-Module Testbenches (Stage 3)
 Stage 3 generates a testbench for **every module** in spec.json, not just the top:
@@ -246,12 +245,15 @@ veriflow-cc/
 │   │           ├── stage_2.md    # microarch (micro_arch.md)
 │   │           ├── stage_3.md    # timing (per-module testbenches)
 │   │           ├── stage_4.md    # coder (vf-coder sub-agent dispatch)
-│   │           ├── stage_5.md    # skill_d (static analysis)
+│   │           ├── stage_5.md    # review (static analysis)
 │   │           ├── stage_6.md    # lint (iverilog)
 │   │           ├── stage_7.md    # sim (two-phase bottom-up verification)
 │   │           └── stage_8.md    # synth (yosys)
 │   └── claude_agents/
-│       └── vf-coder.md           # RTL code generation sub-agent
+│       ├── vf-coder.md           # RTL code generation sub-agent
+│       ├── vf-reviewer.md        # Static analysis sub-agent
+│       ├── vf-linter.md          # Lint sub-agent
+│       └── vf-synthesizer.md     # Synthesis sub-agent
 ├── bin/
 │   └── veriflow-cc.js            # npm CLI entry point
 ├── lib/

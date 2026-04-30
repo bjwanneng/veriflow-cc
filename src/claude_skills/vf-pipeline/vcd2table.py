@@ -321,6 +321,8 @@ def build_cycle_table(
         for sig in include_signals:
             val = state.get(sig, "?")
             # Format binary vectors as hex
+            # NOTE: x (unknown) and z (high-impedance) bits are treated as 0.
+            # This masks genuine undriven signals — check raw binary for x/z.
             if len(val) > 4 and all(c in "01xzXZ" for c in val):
                 try:
                     hex_val = hex(int(val.replace("x", "0").replace("z", "0"), 2))
@@ -445,6 +447,7 @@ def run_golden_model_comparison(
 
             rtl_val = state.get(sig, "?")
             # Normalize RTL value to hex for comparison
+            # NOTE: x/z bits treated as 0 — see build_cycle_table comment
             if len(rtl_val) > 4 and all(c in "01xzXZ" for c in rtl_val):
                 try:
                     rtl_val = hex(int(rtl_val.replace("x", "0").replace("z", "0"), 2))

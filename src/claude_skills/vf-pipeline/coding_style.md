@@ -1,4 +1,4 @@
-# Verilog-2001 Coding Style Guide
+# Verilog-2005 Coding Style Guide
 
 ## 1. File Structure
 
@@ -884,11 +884,11 @@ Every signal crossing a module boundary must be annotated with its **producer cy
 
 ```verilog
 // Signal:  load_en
-// Producer: sm3_fsm, always @(posedge clk), registered (load_en_reg)
-// Produced: cycle N   — FSM state=IDLE, msg_valid=1
-// Consumer: sm3_w_gen, always @(posedge clk)
+// Producer: top_fsm, always @(posedge clk), registered (load_en_reg)
+// Produced: cycle N   — FSM state=IDLE, input_valid=1
+// Consumer: datapath_a, always @(posedge clk)
 // Consumed: cycle N   — same posedge (NBA: consumer sees value from cycle N-1!)
-// Consumer: sm3_compress, always @(posedge clk)
+// Consumer: datapath_b, always @(posedge clk)
 // Consumed: cycle N+1 — next posedge (NBA has applied, sees correct value)
 ```
 
@@ -898,14 +898,14 @@ Every signal crossing a module boundary must be annotated with its **producer cy
 
 ### 24.2 Same-Cycle Produce-and-Consume: Combinational Bypass
 
-When a signal must be produced and consumed in the same clock cycle (e.g., a configuration flag latched on `msg_valid` must be stable before `load_en` fires at the same posedge), use a **combinational bypass** — expose the producer's next-state value as a wire. The consumer reads the wire (combinational), not the registered output.
+When a signal must be produced and consumed in the same clock cycle (e.g., a configuration flag latched on `input_valid` must be stable before `load_en` fires at the same posedge), use a **combinational bypass** — expose the producer's next-state value as a wire. The consumer reads the wire (combinational), not the registered output.
 
 **Correct pattern — combinational bypass**:
 
 ```verilog
 // Producer: expose next-state value as combinational wire
 wire flag_next;
-assign flag_next = (msg_valid && ready) ? input_flag : flag_reg;
+assign flag_next = (input_valid && ready) ? input_flag : flag_reg;
 
 always @(posedge clk) begin
     flag_reg <= flag_next;
@@ -913,9 +913,9 @@ always @(posedge clk) begin
 end
 
 // Consumer: reads flag_next (combinational), not flag_reg
-// flag_next is valid in the SAME cycle msg_valid fires — no NBA delay
-sm3_compress u_compress (
-    .flag_i (flag_next)  // combinational — no NBA delay
+// flag_next is valid in the SAME cycle input_valid fires — no NBA delay
+u_submodule (
+    .flag_i(flag_next)  // combinational — no NBA delay
 );
 ```
 
@@ -940,10 +940,10 @@ sm3_compress u_compress (
 
 Ports with `signal_lifetime: "hold_until_used"` in spec.json require special handling. These signals arrive as short pulses (1-2 cycles) but are consumed many cycles later by a downstream module.
 
-**Bug pattern**: `is_last` flag on multi-block hash/checksum designs:
-- `is_last` asserted with `msg_valid` on cycle 0 (1-cycle pulse)
-- FSM samples `is_last` in DONE state, 67 cycles later
-- Without latching, FSM sees 0 — last block treated as intermediate, no hash output
+**Bug pattern**: `is_last` flag on multi-block processing designs:
+- `is_last` asserted with `input_valid` on cycle 0 (1-cycle pulse)
+- FSM samples `is_last` in DONE state, many cycles later
+- Without latching, FSM sees 0 — last block treated as intermediate, no final output
 
 **Required pattern** — Add a latch register in the connecting wrapper:
 
@@ -955,22 +955,22 @@ reg is_last_latched_reg;
 always @(posedge clk) begin
     if (rst) begin
         is_last_latched_reg <= 1'b0;
-    end else if (fsm_hash_valid) begin
+    end else if (done_flag) begin
         is_last_latched_reg <= 1'b0;  // clear for next message
-    end else if (msg_valid && fsm_ready) begin
+    end else if (input_valid && fsm_ready) begin
         is_last_latched_reg <= is_last;  // capture the pulse at posedge
     end
 end
 ```
 
-**Why `@(posedge clk)` is correct**: The latched value is consumed far in the future (e.g., FSM DONE state at cycle 67). The NBA has long since applied. Standard posedge is sufficient.
+**Why `@(posedge clk)` is correct**: The latched value is consumed far in the future (e.g., FSM DONE state many cycles later). The NBA has long since applied. Standard posedge is sufficient.
 
 **If the consumer needs the value on the immediate next posedge**: Use combinational bypass (Section 24.2), not negedge clock.
 
 **Checklist for `hold_until_used` signals**:
 1. [ ] Latch register exists in the wrapper or consumer module
-2. [ ] Latch is set on the signal's assertion cycle (msg_valid pulse)
-3. [ ] Latch is cleared when the consumer has finished using it (fsm_hash_valid)
+2. [ ] Latch is set on the signal's assertion cycle (input_valid pulse)
+3. [ ] Latch is cleared when the consumer has finished using it (done_flag)
 4. [ ] Consumer reads the LATCHED register, not the raw input port
 5. [ ] If the consumer samples at the very next posedge, use a **Combinational Bypass** (Section 24.2) instead of a latch — standard `@(posedge clk)` latch is one cycle too slow for same-cycle produce-and-consume
 
@@ -1017,3 +1017,67 @@ Pattern B — load with simultaneous shift:
 **Rule**: `load_en` and `calc_en` MUST NOT be co-asserted if the shift register uses `if/else-if` priority. The FSM must provide a dedicated load cycle (IDLE→LOAD→CALC, not IDLE→CALC with co-asserted enables).
 
 **Validation**: Check behavior_spec.md Section 2.6.3 (Signal Conflicts) for `load_en`/`calc_en` exclusion entry. Verify the FSM's transition table shows separate load and calc cycles.
+
+### 24.7 Shift Register Window Replenishment `[CRITICAL]`
+
+When a shift register shifts every active cycle (unconditional shift during `calc_en`), the next-element injected at the end of the register MUST NOT be gated to zero by a round counter condition.
+
+**WRONG** — window drains during early rounds:
+```verilog
+wire [31:0] next_W = (round_cnt < 6'd16) ? 32'd0 : P1(temp_xor) ^ ...;
+// After 16 shifts with zero injection, original data is fully drained
+```
+
+**CORRECT** — always replenish:
+```verilog
+wire [31:0] next_W = P1(temp_xor) ^ ROL(w_reg[3], 7) ^ w_reg[10];
+```
+
+**Rule**: For sliding-window algorithms (SM3/SHA message expansion, FIR filters,
+CRC accumulators), the next-element computation must be **unconditional** during
+all active cycles. The round counter controls external consumption only, not
+internal replenishment.
+
+**Validation**: Search for the pattern `w_reg[N-1] <= ... next_W ...` where
+`next_W` contains a ternary `(round_cnt < THRESHOLD) ? 0 :`. Flag as defect.
+
+---
+
+## 25. Algorithm Initial State Completeness `[CRITICAL]`
+
+For cryptographic hash/cipher designs (SM3, SHA-256, AES, etc.), the algorithm
+specification defines a set of initial register values. The RTL must initialize
+**every** register that participates in the final output expression.
+
+### 25.1 Output Trace-Back Rule
+
+For each output port of a compression/datapath module:
+
+1. Write the output expression (e.g., `data_out = chain_reg ^ work_reg`)
+2. List **all** registers that appear in this expression
+3. For each register, verify it has a correct initial value for the first
+   operational cycle (not just "reset to 0")
+
+If any register feeds into an XOR/ADD chain where 0 is NOT the algorithmically
+correct initial value, it MUST be explicitly initialized (via load_en path,
+separate init state, or reset block).
+
+### 25.2 Selective Reset Caveat for Algorithm Designs
+
+Section 6 (Selective Reset) says "pure data-path signals may be left without
+reset." For hash/cipher datapaths, this guidance has a critical exception:
+
+**Registers that participate in output XOR chains are NOT pure data-path.**
+Even though their operational values are computed data, their initial values
+directly affect correctness. If `data_out = C ^ R`, and C=0 at start, the
+first output will be `0 ^ R = R` instead of `INIT ^ R`.
+
+**Rule**: For algorithmic designs, treat ALL registers in the output expression
+as requiring explicit initialization. Do NOT rely on "reset to 0" being correct
+for XOR-based output paths.
+
+**Validation**: In the reviewer (Stage 5), check for registers where:
+- The register is read in an expression contributing to a module output
+- The register's reset value is 0
+- The output expression is an XOR chain
+→ Flag as "potential initialization gap — verify algorithm spec requires 0"

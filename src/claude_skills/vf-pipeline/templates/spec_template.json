@@ -1,0 +1,108 @@
+{
+  "design_name": "design_name",
+  "description": "Brief description",
+  "target_frequency_mhz": 200,
+  "data_width": 32,
+  "byte_order": "MSB_FIRST",
+  "constraints": {
+    "timing": {
+      "target_frequency_mhz": 200,
+      "critical_path_ns": 5.0,
+      "jitter_ns": 0.1,
+      "clock_domains": [
+        {
+          "name": "clk_core",
+          "frequency_mhz": 200,
+          "source": "external"
+        }
+      ]
+    },
+    "area": {
+      "target_device": "XC7A35T",
+      "target_device_family": "Artix-7",
+      "max_luts": 8000,
+      "max_ffs": 5000,
+      "max_brams": 16,
+      "max_cells": 5000
+    },
+    "power": {
+      "budget_mw": 200,
+      "clock_gating": true
+    },
+    "io": {
+      "standard": "LVCMOS33",
+      "external_interfaces": [
+        {
+          "name": "uart",
+          "type": "UART",
+          "params": "115200 baud, 8N1"
+        }
+      ]
+    },
+    "verification": {
+      "coverage_target_pct": 95,
+      "formal_verification": false
+    }
+  },
+  "design_intent": {
+    "architecture_style": "iterative",
+    "pipeline_stages": 2,
+    "resource_strategy": "distributed_ram",
+    "interface_preferences": {
+      "internal": "valid/ready",
+      "register": "apb-like"
+    },
+    "ip_reuse": [],
+    "key_decisions": [
+      "Decision and rationale"
+    ]
+  },
+  "critical_path_budget": 50,
+  "modules": [
+    {
+      "module_name": "module_name",
+      "description": "What this module does",
+      "module_type": "top|processing|control|memory|interface",
+      "hierarchy_level": 0,
+      "parent": null,
+      "submodules": [],
+      "clock_domains": [
+        {
+          "name": "clk_domain_name",
+          "clock_port": "clk",
+          "reset_port": "rst",
+          "frequency_mhz": 200,
+          "reset_type": "sync_active_high"
+        }
+      ],
+      "ports": [
+        {
+          "name": "port_name",
+          "direction": "input|output",
+          "width": 1,
+          "protocol": "clock|reset|data|valid|ready|flag",
+          "reset_polarity": "active_high",
+          "handshake": "single_cycle",
+          "ack_port": "",
+          "signal_lifetime": "pulse",
+          "description": "Port description"
+        }
+      ],
+      "parameters": [
+        {
+          "name": "PARAM_NAME",
+          "default_value": 16,
+          "description": "Parameter description"
+        }
+      ]
+    }
+  ],
+  "module_connectivity": [
+    {
+      "source": "module1.port1",
+      "destination": "module2.port1",
+      "bus_width": 32,
+      "connection_type": "direct"
+    }
+  ]
+}

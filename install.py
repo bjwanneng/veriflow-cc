@@ -3,12 +3,11 @@
 VeriFlow-CC Installer
 
 Installs to ~/.claude/:
-  - skills/pipeline/SKILL.md   — Pipeline orchestration skill (/vf-pipeline)
-  - agents/vf-coder.md         — RTL code generation sub-agent (Stage 4)
-  - agents/vf-reviewer.md      — Static analysis sub-agent (Stage 5)
-  - agents/vf-linter.md        — Lint sub-agent (Stage 6)
-  - agents/vf-simulator.md     — Simulation sub-agent (Stage 7)
-  - agents/vf-synthesizer.md   — Synthesis sub-agent (Stage 8)
+  - skills/vf-pipeline/SKILL.md   — Pipeline orchestration skill (/vf-pipeline)
+  - agents/vf-coder.md            — RTL code generation sub-agent (Stage 4)
+  - agents/vf-reviewer.md         — Static analysis sub-agent (Stage 5)
+  - agents/vf-linter.md           — Lint sub-agent (Stage 6)
+  - agents/vf-synthesizer.md      — Synthesis sub-agent (Stage 8)
 
 After installation, use /vf-pipeline <project_dir> in Claude Code to drive the full RTL design pipeline.
 """
@@ -24,8 +23,9 @@ CLAUDE_DIR = Path.home() / ".claude"
 # --- Skill ---
 SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
-SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py", "cocotb_runner.py"]
+SKILL_FILES = ["SKILL.md", "state.py", "vcd2table.py", "cocotb_runner.py", "bug_patterns.md", "design_rules.md"]
 STAGES_DIR = "stages"
+TEMPLATES_DIR = "templates"
 
 # Source for coding_style.md is now in the skill directory itself
 CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline" / "coding_style.md"
@@ -36,9 +36,11 @@ AGENTS_DST_DIR = CLAUDE_DIR / "agents"
 AGENTS_SRC_DIR = PROJECT_DIR / "src" / "claude_agents"
 
 AGENT_FILES = [
+    "vf-architect.md",
+    "vf-microarch.md",
+    "vf-timing.md",
     "vf-coder.md",
     "vf-reviewer.md",
-    "vf-simulator.md",
     "vf-linter.md",
     "vf-synthesizer.md",
 ]
@@ -93,9 +95,9 @@ def main():
 
     # 0. Clean up old agents that are no longer used
     LEGACY_AGENTS = [
-        "vf-architect.md", "vf-microarch.md", "vf-timing.md",
         "vf-skill-d.md", "vf-lint.md", "vf-sim.md", "vf-synth.md",
         "vf-debugger.md",
+        "vf-simulator.md",
     ]
     cleaned = 0
     for name in LEGACY_AGENTS:
@@ -141,6 +143,20 @@ def main():
             skill_installed += 1
     else:
         print(f"  [skip]   vf-pipeline/{STAGES_DIR}/ not found at {stages_src}")
+
+    # 1d. Install templates
+    templates_src = SKILL_SRC_DIR / TEMPLATES_DIR
+    templates_dst = SKILL_DST_DIR / TEMPLATES_DIR
+    if templates_src.exists():
+        templates_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(templates_src.iterdir()):
+            if f.is_file():
+                dst = templates_dst / f.name
+                shutil.copy2(f, dst)
+                print(f"  [tmpl]   vf-pipeline/{TEMPLATES_DIR}/{f.name}  →  {dst}")
+                skill_installed += 1
+    else:
+        print(f"  [skip]   vf-pipeline/{TEMPLATES_DIR}/ not found at {templates_src}")
 
     # 2. Install sub-agents
     AGENTS_DST_DIR.mkdir(parents=True, exist_ok=True)
@@ -189,13 +205,41 @@ def main():
         else:
             verify_errors.append(f"  [FAIL] {agent_name} not found at {agent_dst}")
 
-    # 3b. Check all 8 stage files are present
+    # 3b. Check stage files (4-8 are active; 1-3 are deprecated stubs)
     for i in range(1, 9):
         stage_file = SKILL_DST_DIR / STAGES_DIR / f"stage_{i}.md"
         if stage_file.exists():
-            print(f"  [OK]   stage_{i}.md present")
+            if i <= 3:
+                # Check if it's a deprecated stub
+                content = stage_file.read_text(encoding="utf-8")
+                if "DEPRECATED" in content:
+                    print(f"  [OK]   stage_{i}.md present (deprecated stub)")
+                else:
+                    print(f"  [WARN] stage_{i}.md is NOT a deprecated stub — should be replaced")
+            else:
+                print(f"  [OK]   stage_{i}.md present")
         else:
-            verify_errors.append(f"  [FAIL] stage_{i}.md missing at {stage_file}")
+            if i <= 3:
+                print(f"  [OK]   stage_{i}.md absent (deprecated)")
+            else:
+                verify_errors.append(f"  [FAIL] stage_{i}.md missing at {stage_file}")
+
+    # 3b2. Check templates directory
+    templates_dst = SKILL_DST_DIR / TEMPLATES_DIR
+    expected_templates = [
+        "spec_template.json",
+        "behavior_spec_template.md",
+        "golden_model_template.py",
+        "timing_model_template.yaml",
+        "tb_integration_template.v",
+        "cocotb_template.py",
+    ]
+    for tname in expected_templates:
+        tfile = templates_dst / tname
+        if tfile.exists():
+            print(f"  [OK]   templates/{tname} present")
+        else:
+            verify_errors.append(f"  [FAIL] templates/{tname} missing at {tfile}")
 
     # 3c. Check state.py is present
     state_dst = SKILL_DST_DIR / "state.py"
@@ -210,6 +254,13 @@ def main():
         print(f"  [OK]   vcd2table.py present")
     else:
         verify_errors.append(f"  [FAIL] vcd2table.py missing at {vcd2table_dst}")
+
+    # 3e. Check cocotb_runner.py is present
+    cocotb_runner_dst = SKILL_DST_DIR / "cocotb_runner.py"
+    if cocotb_runner_dst.exists():
+        print(f"  [OK]   cocotb_runner.py present")
+    else:
+        verify_errors.append(f"  [FAIL] cocotb_runner.py missing at {cocotb_runner_dst}")
 
     if verify_errors:
         print(f"\n[verify] Issues found:")

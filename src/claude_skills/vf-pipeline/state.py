@@ -9,7 +9,7 @@ from typing import Optional
 
 
 # Strict execution order — no stage may be skipped
-STAGE_ORDER = ["architect", "microarch", "timing", "coder", "skill_d", "lint", "sim", "synth"]
+STAGE_ORDER = ["architect", "microarch", "timing", "coder", "review", "lint", "sim", "synth"]
 
 # Prerequisite stages that must all complete before a given stage can run
 STAGE_PREREQUISITES = {
@@ -17,7 +17,7 @@ STAGE_PREREQUISITES = {
     "microarch": ["architect"],                               # needs spec.json
     "timing":    ["architect", "microarch"],                  # needs spec + micro_arch
     "coder":     ["architect", "microarch", "timing"],        # needs spec + microarch + timing
-    "skill_d":   ["coder"],                                   # needs RTL code
+    "review":    ["coder"],                                   # needs RTL code
     "lint":      ["coder"],                                   # needs RTL code
     "sim":       ["coder", "lint"],                           # needs RTL + lint pass
     "synth":     ["coder", "sim"],                            # needs RTL + sim pass
@@ -60,7 +60,7 @@ class PipelineState:
     microarch_output: Optional[dict] = None
     timing_output: Optional[dict] = None
     coder_output: Optional[dict] = None
-    skill_d_output: Optional[dict] = None
+    review_output: Optional[dict] = None
     lint_output: Optional[dict] = None
     sim_output: Optional[dict] = None
     synth_output: Optional[dict] = None
@@ -73,6 +73,9 @@ class PipelineState:
 
     # Persistent context summary — new sessions read this field to recover state
     stage_summaries: dict = field(default_factory=dict)
+
+    # Per-stage timing
+    stage_timings: dict = field(default_factory=dict)  # {"architect": {"start": ts, "end": ts, "duration_s": float}, ...}
 
     # Metadata
     start_time: float = field(default_factory=time.time)
@@ -97,6 +100,8 @@ class PipelineState:
         summary = result.get("summary", "")
         if summary:
             self.stage_summaries[stage] = summary
+        # Record end time
+        self._record_end(stage)
 
     def mark_failed(self, stage: str, result: dict):
         """Mark a stage as failed."""
@@ -112,6 +117,29 @@ class PipelineState:
         self.current_stage = stage
         self.feedback_source = stage
         self.last_updated = time.time()
+        # Record end time
+        self._record_end(stage)
+
+    def mark_started(self, stage: str):
+        """Record the start time of a stage."""
+        now = time.time()
+        if stage not in self.stage_timings:
+            self.stage_timings[stage] = {}
+        self.stage_timings[stage]["start"] = now
+        self.current_stage = stage
+        self.last_updated = now
+        # Auto-fix: if start is an ISO string from older data, overwrite with float
+        self.save()
+
+    def _record_end(self, stage: str):
+        """Record the end time and compute duration for a stage."""
+        now = time.time()
+        if stage not in self.stage_timings:
+            self.stage_timings[stage] = {}
+        self.stage_timings[stage]["end"] = now
+        start = self.stage_timings[stage].get("start")
+        if start and isinstance(start, (int, float)):
+            self.stage_timings[stage]["duration_s"] = round(now - start, 1)
 
     def inc_retry(self, stage: str):
         self.retry_count[stage] = self.retry_count.get(stage, 0) + 1
@@ -146,8 +174,11 @@ class PipelineState:
         """Load from file, create new state if file does not exist."""
         p = Path(project_dir) / ".veriflow" / "pipeline_state.json"
         if p.exists():
-            data = json.loads(p.read_text(encoding="utf-8"))
-            return cls(**data)
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                return cls(**data)
+            except (TypeError, json.JSONDecodeError) as e:
+                print(f"[WARNING] Corrupted pipeline_state.json, starting fresh: {e}", file=sys.stderr)
         return cls(project_dir=project_dir)
 
     def reset_stage(self, stage: str):
@@ -161,6 +192,7 @@ class PipelineState:
         for s in to_remove:
             setattr(self, f"{s}_output", None)
             self.stage_summaries.pop(s, None)
+            self.stage_timings.pop(s, None)
         self.save()
 
     def next_stage(self) -> str | None:
@@ -198,11 +230,29 @@ class PipelineState:
                 if not spec.get("modules"):
                     missing.append("spec.json: modules array missing")
                 else:
+                    has_top = False
                     for m in spec["modules"]:
                         if not m.get("module_name"):
-                            missing.append(f"spec.json: module missing module_name")
+                            missing.append("spec.json: module missing module_name")
                         if not m.get("ports"):
                             missing.append(f"spec.json: module {m.get('module_name', '?')} missing ports")
+                        else:
+                            for p in m["ports"]:
+                                if not p.get("signal_lifetime"):
+                                    missing.append(
+                                        f"spec.json: port {p.get('name', '?')} in "
+                                        f"module {m['module_name']} missing signal_lifetime"
+                                    )
+                        if m.get("module_type") == "top":
+                            has_top = True
+                    if not has_top:
+                        missing.append("spec.json: no module with module_type 'top'")
+                if not spec.get("constraints", {}).get("timing", {}).get("target_frequency_mhz"):
+                    missing.append("spec.json: constraints.timing.target_frequency_mhz missing")
+                if not spec.get("design_intent"):
+                    missing.append("spec.json: design_intent block missing")
+                if len(spec.get("modules", [])) > 1 and not spec.get("module_connectivity"):
+                    missing.append("spec.json: module_connectivity missing for multi-module design")
             except (json.JSONDecodeError, KeyError) as e:
                 missing.append(f"spec.json: parse error - {e}")
 
@@ -232,6 +282,11 @@ class PipelineState:
             return False
 
         recent_errors = self.error_history[stage][-3:]  # Last 3 attempts
+        signature_count = sum(
+            1 for e in recent_errors
+            if error_signature in str(e.get("errors", []))
+        )
+        return signature_count >= 2
 
     def validate_golden_model(self, project_dir: str) -> tuple[bool, list[str]]:
         """Validate golden_model.py after Stage 1 generation.
@@ -262,37 +317,138 @@ class PipelineState:
             return (False, issues)
 
         return (True, [])
-        signature_count = sum(1 for e in recent_errors if error_signature in str(e.get("errors", [])))
-
-        return signature_count >= 2
 
 
 # -- CLI entry point (called by SKILL.md state update command) -----------------
 
+def _get_arg(argv: list, flag: str) -> str | None:
+    """Extract value for --flag=value or --flag value from argv."""
+    for a in argv:
+        if a.startswith(f"--{flag}="):
+            return a.split("=", 1)[1]
+    idx = None
+    for i, a in enumerate(argv):
+        if a == f"--{flag}":
+            idx = i
+            break
+    if idx is not None and idx + 1 < len(argv):
+        return argv[idx + 1]
+    return None
+
+
+def _append_journal(project_dir: str, stage: str, outputs: str = "", notes: str = ""):
+    """Append a stage journal entry to workspace/docs/stage_journal.md."""
+    journal_path = Path(project_dir) / "workspace" / "docs" / "stage_journal.md"
+    from datetime import datetime
+    ts = datetime.now().isoformat()
+    entry = f"\n## Stage: {stage}\n**Status**: completed\n**Timestamp**: {ts}\n"
+    if outputs:
+        entry += f"**Outputs**: {outputs}\n"
+    if notes:
+        entry += f"**Notes**: {notes}\n"
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(journal_path, "a", encoding="utf-8") as f:
+        f.write(entry)
+
+
+def _print_usage():
+    print("Usage:")
+    print("  python state.py <project_dir> <stage_name>            Mark stage complete")
+    print("  python state.py <project_dir> <stage_name> --start    Record stage start time")
+    print("  python state.py <project_dir> <stage_name> --fail     Mark stage failed")
+    print("  python state.py <project_dir> --reset <stage_name>    Rollback from stage onward")
+    print("")
+    print("  Combined (hook + state + journal in one call):")
+    print("  python state.py <project_dir> <stage_name> \\")
+    print('    --hook="test -f workspace/docs/spec.json" \\')
+    print('    --journal-outputs="spec.json, behavior_spec.md" \\')
+    print('    --journal-notes="Specification generated"')
+    sys.exit(1)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python state.py <project_dir> <stage_name> [--fail]")
-        sys.exit(1)
+        _print_usage()
 
     _project_dir = sys.argv[1]
+
+    # --reset mode: rollback from target stage
+    if "--reset" in sys.argv:
+        idx = sys.argv.index("--reset")
+        if idx + 1 >= len(sys.argv):
+            print("ERROR: --reset requires a stage name", file=sys.stderr)
+            _print_usage()
+        _target = sys.argv[idx + 1]
+        if _target not in STAGE_ORDER:
+            print(f"ERROR: Unknown stage '{_target}'. Valid stages: {STAGE_ORDER}", file=sys.stderr)
+            sys.exit(1)
+        _state = PipelineState.load(_project_dir)
+        _state.reset_stage(_target)
+        print(f"[STATE] Rolled back to '{_target}' — cleared it and all subsequent stages")
+        print(f"[STATE] stages_completed: {_state.stages_completed}")
+        _next = _state.next_stage()
+        print(f"[STATE] Next: {_next}" if _next else "[STATE] Pipeline complete")
+        sys.exit(0)
+
     _stage = sys.argv[2]
 
     if _stage not in STAGE_ORDER:
         print(f"ERROR: Unknown stage '{_stage}'. Valid stages: {STAGE_ORDER}", file=sys.stderr)
         sys.exit(1)
 
+    _is_start = "--start" in sys.argv
     _is_fail = "--fail" in sys.argv
+    _hook_cmd = _get_arg(sys.argv, "hook")
+    _journal_outputs = _get_arg(sys.argv, "journal-outputs")
+    _journal_notes = _get_arg(sys.argv, "journal-notes")
 
     _state = PipelineState.load(_project_dir)
 
-    if _is_fail:
+    if _is_start:
+        _state.mark_started(_stage)
+        print(f"[STATE] {_stage} → STARTED")
+    elif _is_fail:
         _state.mark_failed(_stage, {"success": False, "errors": ["Hook failed"]})
         _state.save()
         print(f"[STATE] {_stage} → FAILED")
     else:
-        _state.mark_complete(_stage, {"success": True, "summary": "Hook passed"})
-        _state.save()
-        print(f"[STATE] {_stage} → COMPLETE")
+        # Run hook if provided
+        _hook_passed = True
+        if _hook_cmd:
+            import subprocess
+            _hook_cmd_resolved = _hook_cmd.replace("$PROJECT_DIR", _project_dir)
+            try:
+                result = subprocess.run(
+                    _hook_cmd_resolved, shell=True, capture_output=True, text=True, cwd=_project_dir
+                )
+                if result.stdout.strip():
+                    print(result.stdout.strip())
+                if result.returncode != 0:
+                    _hook_passed = False
+                    print(f"[HOOK] FAIL (exit code {result.returncode})")
+                    if result.stderr.strip():
+                        print(result.stderr.strip(), file=sys.stderr)
+            except Exception as e:
+                _hook_passed = False
+                print(f"[HOOK] FAIL (exception: {e})", file=sys.stderr)
+
+        if _hook_passed:
+            _state.mark_complete(_stage, {"success": True, "summary": "Hook passed"})
+            _state.save()
+            print(f"[STATE] {_stage} → COMPLETE")
+            # Print timing summary
+            if _stage in _state.stage_timings:
+                t = _state.stage_timings[_stage]
+                dur = t.get("duration_s", "?")
+                print(f"[STATE] {_stage} duration: {dur}s")
+            # Append journal entry if requested
+            if _journal_outputs or _journal_notes:
+                _append_journal(_project_dir, _stage, _journal_outputs or "", _journal_notes or "")
+                print(f"[JOURNAL] {_stage} entry appended")
+        else:
+            _state.mark_failed(_stage, {"success": False, "errors": ["Hook failed"]})
+            _state.save()
+            print(f"[STATE] {_stage} → FAILED (hook)")
 
     _next = _state.next_stage()
     print(f"[STATE] Next: {_next}" if _next else "[STATE] Pipeline complete")

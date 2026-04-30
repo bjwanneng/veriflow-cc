@@ -1,4 +1,6 @@
-# Stage 5: skill_d (sub-agent)
+# Stage 5: review (sub-agent)
+
+**NOTE: This stage runs in PARALLEL with Stage 6 (lint). Both are dispatched in a single message with two Agent tool calls.**
 
 **Goal**: Read RTL files, perform quality checks, write static_report.json.
 
@@ -27,7 +29,7 @@ If checksum fails, DO NOT proceed. Investigate who modified the testbench and re
 
 ```bash
 DESIGN_NAME=$($PYTHON_EXE -c "import json; print(json.load(open('$PROJECT_DIR/workspace/docs/spec.json'))['design_name'])" 2>/dev/null || echo "")
-echo "[skill_d] Design: $DESIGN_NAME"
+echo "[review] Design: $DESIGN_NAME"
 ```
 
 ## 5b. Call vf-reviewer agent
@@ -151,7 +153,7 @@ If FAIL → rewrite immediately.
 ## 5e. Save state
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "skill_d"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "review"
 ```
 
 Mark Stage 5 task as **completed** using TaskUpdate.
@@ -159,5 +161,5 @@ Mark Stage 5 task as **completed** using TaskUpdate.
 ## 5f. Journal
 
 ```bash
-printf "\n## Stage: skill_d\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/static_report.json\n**Notes**: Static analysis complete.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+printf "\n## Stage: review\n**Status**: completed\n**Timestamp**: $(date -Iseconds)\n**Outputs**: workspace/docs/static_report.json\n**Notes**: Static analysis complete.\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
 ```
