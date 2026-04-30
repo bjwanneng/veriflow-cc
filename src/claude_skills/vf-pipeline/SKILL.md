@@ -369,23 +369,33 @@ Before forming ANY root cause hypothesis, collect objective diagnostic data. Thi
 **0a. Collect data**:
 
 1. Read `logs/sim.log` — extract all `[FAIL]` lines with cycle numbers
-2. Run vcd2table golden model diff (if golden_model.py exists):
+2. Extract VCD path and top module from sim.log (cocotb_runner reports them):
 ```bash
 source "$PROJECT_DIR/.veriflow/eda_env.sh"
 cd "$PROJECT_DIR"
-VCD_FILE=$(ls workspace/sim/tb_*.vcd 2>/dev/null | head -1)
-if [ -f workspace/docs/golden_model.py ] && [ -n "$VCD_FILE" ]; then
+TOP_MODULE=$($PYTHON_EXE -c "import json; spec=json.load(open('workspace/docs/spec.json')); print([m['module_name'] for m in spec['modules'] if m.get('module_type')=='top'][0])")
+VCD_FILE=$(grep -o '"vcd_path"[[:space:]]*:[[:space:]]*"[^"]*"' logs/sim.log 2>/dev/null | head -1 | sed 's/.*"vcd_path"[[:space:]]*:[[:space:]]*"\(.*\)"/\1/')
+# Fallback: scan build_dir for VCD files
+if [ -z "$VCD_FILE" ] || [ ! -f "$VCD_FILE" ]; then
+    VCD_FILE=$(ls workspace/sim/*.vcd 2>/dev/null | head -1)
+fi
+```
+3. Run vcd2table golden model diff (if golden_model.py exists AND VCD is available):
+```bash
+if [ -f workspace/docs/golden_model.py ] && [ -n "$VCD_FILE" ] && [ -f "$VCD_FILE" ]; then
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
         --vcd "$VCD_FILE" \
         --golden-model workspace/docs/golden_model.py \
         --module $TOP_MODULE 2>&1 | tee logs/wave_diff.txt
-else
+elif [ -n "$VCD_FILE" ] && [ -f "$VCD_FILE" ]; then
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
         --vcd "$VCD_FILE" \
         --module $TOP_MODULE 2>&1 | tee logs/wave_table.txt
+else
+    echo "[VERIFY] No VCD file available — skipping waveform analysis. Rely on sim.log [FAIL] lines only."
 fi
 ```
-3. Read the diff/table output — identify first divergence cycle and signal
+4. Read the diff/table output — identify first divergence cycle and signal
 
 **0b. Classify bug type**:
 

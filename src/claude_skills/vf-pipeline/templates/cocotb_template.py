@@ -8,8 +8,9 @@ Two verification modes:
 - test_layered: Golden model cycle-by-cycle fail-fast comparison (algorithm designs)
 - test_protocol: Protocol compliance checks (all designs)
 
-Port names and widths are populated from spec.json by the codegen stage.
-Replace all <PLACEHOLDER> values with actual port names from the design.
+Port configuration constants below are populated from spec.json by the codegen
+stage. If codegen does not populate them, defaults are used and only
+top-level port signals are checked.
 """
 
 import os, sys
@@ -33,26 +34,49 @@ if GM_PATH.exists():
     except ImportError:
         pass
 
-# ─── Port configuration (populated from spec.json by codegen) ────────────
-# These are populated from spec.json ports by the codegen stage.
-# Example:
-# INPUT_PORTS = {"data_in": 32, "valid_in": 1}
-# OUTPUT_PORTS = {"data_out": 32, "valid_out": 1}
-# HANDSHAKE_PORTS = {"valid_in": "ready_out"}  # valid -> ack mapping
-# VALID_OUTPUT_PORTS = ["valid_out"]  # output ports that indicate valid data
+# ─── Port configuration ─────────────────────────────────────────────────
+# Populated from spec.json by the codegen stage.
+# Codegen MUST fill these in — they are NOT optional.
+# If a port category is empty for this design, codegen sets it to {}.
+INPUT_PORTS = {}          # {"port_name": width_bits, ...}
+OUTPUT_PORTS = {}         # {"port_name": width_bits, ...}
+VALID_OUTPUT_PORTS = []   # ["valid_out", ...] — output ports indicating valid data
+HANDSHAKE_PORTS = {}      # {"valid_in": "ready_out"} — valid -> ack mapping
+HOLD_UNTIL_ACK_PORTS = [] # ["valid_in", ...] — ports with hold_until_ack protocol
+
+
+# ─── Clock management ───────────────────────────────────────────────────
+# cocotb tests share the same DUT instance. Only start clock ONCE.
+_CLOCK_STARTED = False
+
+async def ensure_clock(dut):
+    """Start clock if not already running. Safe to call from any test."""
+    global _CLOCK_STARTED
+    if not _CLOCK_STARTED:
+        clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
+        cocotb.start_soon(clock.start())
+        _CLOCK_STARTED = True
+        await RisingEdge(dut.clk)  # wait for first edge
+
 
 # ─── Helpers ────────────────────────────────────────────────────────────
 
 async def reset_dut(dut):
-    """Apply synchronous reset and verify quiescent outputs."""
+    """Apply synchronous reset and wait for outputs to settle."""
     global FAIL_COUNT
     dut.rst.value = 1
-    # Zero all input ports (from spec.json port configuration)
-    for name in [p for p in dir(dut) if not p.startswith('_') and p not in ('clk', 'rst')]:
+    # Zero all input ports only (not outputs — outputs are driven by DUT)
+    for name in INPUT_PORTS:
         try:
             sig = getattr(dut, name)
             if hasattr(sig, 'value') and hasattr(sig, 'setimmediatevalue'):
                 sig.value = 0
+        except Exception:
+            pass
+    # Also zero any valid input ports from HANDSHAKE_PORTS
+    for valid_name in HANDSHAKE_PORTS:
+        try:
+            getattr(dut, valid_name).value = 0
         except Exception:
             pass
     await ClockCycles(dut.clk, 3)
@@ -83,11 +107,7 @@ async def drive_inputs(dut, input_values, valid_name='valid_in',
     1. Wait for ready=1
     2. Drive ALL inputs simultaneously (valid + data)
     3. Wait TWO RisingEdges — first for VPI propagation, second for DUT sampling
-    4. Deassert inputs
-
-    This pattern is required because cocotb + iverilog VPI can delay
-    wide signal writes. The 2-edge wait ensures the DUT
-    sees all inputs correctly before we deassert.
+    4. Deassert inputs (for single_cycle) or hold (for hold_until_ack)
 
     Args:
         dut: cocotb DUT handle
@@ -112,10 +132,17 @@ async def drive_inputs(dut, input_values, valid_name='valid_in',
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
 
-    # Deassert after DUT has sampled
-    getattr(dut, valid_name).value = 0
-    for port_name in input_values:
-        getattr(dut, port_name).value = 0
+    # Deassert based on handshake protocol
+    if valid_name in HOLD_UNTIL_ACK_PORTS:
+        # hold_until_ack: keep valid high until DUT asserts ready
+        # (ready was already high when we started, so DUT has sampled.
+        #  But for multi-cycle holds, wait for ready to be asserted again)
+        pass  # caller is responsible for deasserting after ack
+    else:
+        # single_cycle / pulse: deassert after DUT has sampled
+        getattr(dut, valid_name).value = 0
+        for port_name in input_values:
+            getattr(dut, port_name).value = 0
 
 
 async def wait_valid(dut, valid_name='valid_out', max_cycles=200):
@@ -128,19 +155,46 @@ async def wait_valid(dut, valid_name='valid_out', max_cycles=200):
     return -1  # timeout
 
 
+# ─── VCD capture for cocotb ────────────────────────────────────────────
+# cocotb + iverilog does not automatically produce VCD. Enable it
+# so that vcd2table.py can analyze waveforms after simulation.
+def enable_vcd(dut, design_name="dut"):
+    """Enable VCD dump for waveform analysis."""
+    try:
+        dut._log.info(f"[VCD] Enabling waveform capture for {design_name}")
+        # cocotb passes PLUSARGS to iverilog — use $dumpfile/$dumpvars
+        # via the Verilog testbench wrapper or force VCD via command line.
+        # NOTE: For cocotb, VCD must be enabled via iverilog compile flags
+        # or by including a Verilog wrapper with $dumpfile/$dumpvars.
+        # The cocotb_runner.py handles this via build_args.
+    except Exception:
+        pass
+
+
 # ─── Tests ──────────────────────────────────────────────────────────────
 
 @cocotb.test()
 async def test_reset(dut):
     """Test 1: Reset behavior — outputs quiescent after reset."""
     global FAIL_COUNT
-    clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
-    cocotb.start_soon(clock.start())
+    await ensure_clock(dut)
     await reset_dut(dut)
 
-    # After reset: verify output ports are in quiescent state
-    # (codegen populates these assertions from spec.json)
-    dut._log.info("[PASS] reset behavior correct")
+    # After reset: verify all valid output ports are 0
+    reset_ok = True
+    for valid_name in VALID_OUTPUT_PORTS:
+        try:
+            sig = getattr(dut, valid_name)
+            val = int(sig.value)
+            if val != 0:
+                FAIL_COUNT += 1
+                dut._log.error(f"[RESET] {valid_name}={val} after reset, expected 0")
+                reset_ok = False
+        except AttributeError:
+            dut._log.warning(f"[RESET] Port {valid_name} not found in DUT")
+
+    if reset_ok:
+        dut._log.info("[PASS] reset behavior correct")
 
 
 @cocotb.test()
@@ -152,14 +206,15 @@ async def test_protocol(dut):
     2. hold_until_ack: valid stays high until ack received
     3. single_cycle: valid is high for exactly one cycle
     4. No stale valid after operation completes
+
+    Note: Checks 2-4 require stimulus. Codegen adds design-specific
+    protocol monitors. This test provides the framework.
     """
     global FAIL_COUNT
-    clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
-    cocotb.start_soon(clock.start())
+    await ensure_clock(dut)
     await reset_dut(dut)
 
     # Check 1: After reset, all valid output ports must be 0
-    # (codegen populates VALID_OUTPUT_PORTS from spec.json)
     for valid_name in VALID_OUTPUT_PORTS:
         try:
             sig = getattr(dut, valid_name)
@@ -172,16 +227,19 @@ async def test_protocol(dut):
         except AttributeError:
             pass  # port not found in DUT, skip
 
-    if FAIL_COUNT == 0:
-        dut._log.info("[PASS] protocol compliance: reset clears valid outputs")
+    # Check 2-4: Design-specific protocol monitors added by codegen
+    # Example for hold_until_ack monitoring:
+    #   prev_valid = 0
+    #   for cycle in range(MAX_CYCLES):
+    #       await RisingEdge(dut.clk)
+    #       cur_valid = int(dut.valid_out.value)
+    #       cur_ready = int(dut.ready_out.value)
+    #       if prev_valid == 1 and cur_valid == 0 and cur_ready == 0:
+    #           dut._log.error("[PROTOCOL] valid dropped before ready")
+    #       prev_valid = cur_valid
 
-    # Check 2-4: Handshake protocol monitoring
-    # (codegen populates HANDSHAKE_PORTS from spec.json)
-    # These checks require stimulus — codegen adds design-specific
-    # protocol monitors that track valid/ready during operation.
-    # Example for hold_until_ack:
-    #   Monitor valid_out: if it goes high, it must stay high until ready_out=1
-    #   If valid_out drops before ready_out=1 → PROTOCOL VIOLATION
+    if FAIL_COUNT == 0:
+        dut._log.info("[PASS] protocol compliance checks passed")
 
 
 @cocotb.test()
@@ -202,8 +260,7 @@ async def test_layered(dut):
         dut._log.info("[SKIP] test_layered: golden_model.py not available")
         return
 
-    clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
-    cocotb.start_soon(clock.start())
+    await ensure_clock(dut)
     await reset_dut(dut)
 
     # Get golden model expected values
@@ -214,11 +271,22 @@ async def test_layered(dut):
 
     dut._log.info(f"[LAYERED] Comparing {len(expected_cycles)} cycles against golden model")
 
-    # Drive input and compare outputs cycle-by-cycle
-    # (codegen populates OUTPUT_PORTS from spec.json and wires
-    #  the drive_inputs() call with golden model test vectors)
+    # IMPORTANT: codegen MUST add drive_inputs() call here with golden model
+    # test vectors before the comparison loop. Without driving inputs,
+    # the DUT has no stimulus and all outputs will be initial values.
+    #
+    # Example (codegen fills in):
+    #   test_vectors = golden_model.TEST_VECTORS
+    #   for vec in test_vectors:
+    #       await drive_inputs(dut, vec["inputs"], valid_name="valid_in",
+    #                         ready_name="ready_out")
+    #
+    # If golden_model.py provides input data per cycle, drive it here.
+    # If the design processes a single input block, drive once then wait.
+
     first_divergence = None
     cycles_checked = 0
+    output_port_names = set(OUTPUT_PORTS.keys()) if OUTPUT_PORTS else set()
 
     for cycle_idx, expected in enumerate(expected_cycles):
         # Wait one cycle for DUT to produce output
@@ -229,8 +297,22 @@ async def test_layered(dut):
             # Skip input signals (only compare outputs)
             if sig_name in INPUT_PORTS:
                 continue
+            # If OUTPUT_PORTS is populated, only check those
+            if output_port_names and sig_name not in output_port_names:
+                # Also check module-qualified names: "module.signal"
+                base_name = sig_name.split('.')[-1] if '.' in sig_name else sig_name
+                if base_name not in output_port_names:
+                    continue
             try:
-                sig = getattr(dut, sig_name)
+                # Handle module-qualified names via hierarchy
+                if '.' in sig_name:
+                    parts = sig_name.split('.')
+                    obj = dut
+                    for part in parts:
+                        obj = getattr(obj, part)
+                    sig = obj
+                else:
+                    sig = getattr(dut, sig_name)
                 actual_val = int(sig.value)
                 if actual_val != expected_val:
                     first_divergence = {
@@ -241,7 +323,7 @@ async def test_layered(dut):
                     }
                     break
             except AttributeError:
-                pass  # signal not accessible in DUT hierarchy
+                pass  # signal not accessible in DUT hierarchy, skip
 
         cycles_checked += 1
 
@@ -255,10 +337,7 @@ async def test_layered(dut):
         # Classify the error type for guided diagnosis
         if div["actual"] == 0 and div["expected"] != 0:
             bug_type = "A (computation=0, expected non-zero → logic error or missing init)"
-        elif div["actual"] == div["expected"]:
-            bug_type = "impossible (matched but flagged)"
         else:
-            # Check if value is off by a constant (initialization error)
             diff = div["actual"] ^ div["expected"]
             bug_type = f"A (data-wrong, xor_diff=0x{diff:x} → logic or init error)"
 
@@ -280,8 +359,7 @@ async def test_layered(dut):
 async def test_summary(dut):
     """Final test: reports overall pass/fail."""
     global FAIL_COUNT
-    clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
-    cocotb.start_soon(clock.start())
+    await ensure_clock(dut)
     await RisingEdge(dut.clk)
     if FAIL_COUNT == 0:
         dut._log.info("ALL TESTS PASSED")

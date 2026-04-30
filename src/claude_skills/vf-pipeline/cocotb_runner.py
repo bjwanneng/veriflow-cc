@@ -82,6 +82,10 @@ def main():
                         help="Build directory for cocotb artifacts")
     parser.add_argument("--results-file", default=None,
                         help="Path to write xUnit XML results (default: <build_dir>/results.xml)")
+    parser.add_argument("--vcd", action="store_true", default=True,
+                        help="Enable VCD waveform dump (default: True)")
+    parser.add_argument("--no-vcd", dest="vcd", action="store_false",
+                        help="Disable VCD waveform dump")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed per-test results")
     args = parser.parse_args()
@@ -128,6 +132,7 @@ def main():
             hdl_toplevel=module_name,
             build_dir=str(build_dir),
             build_args=["-g2012"],
+            waves=args.vcd,
         )
     except Exception as e:
         print(json.dumps({
@@ -149,6 +154,7 @@ def main():
             test_dir=str(tb_dir),
             build_dir=str(build_dir),
             results_xml=results_xml_path,
+            waves=args.vcd,
         )
     except Exception as e:
         # Simulation crashed before producing results
@@ -195,11 +201,18 @@ def main():
             pass
 
     # ── Output JSON summary to stdout ──────────────────────────────────
+    # Find VCD file(s) in build_dir for waveform analysis
+    vcd_files = sorted(build_dir.glob("*.vcd"))
+    vcd_path = str(vcd_files[0]) if vcd_files else None
+    if args.verbose and vcd_path:
+        print(f"[cocotb_runner] VCD file  : {vcd_path}", file=sys.stderr)
+
     result = {
         "tests": num_tests,
         "passed": num_passed,
         "failed": num_failed,
         "xml_path": results_xml_path,
+        "vcd_path": vcd_path,
         "failures": failures,
     }
     print(json.dumps(result))
