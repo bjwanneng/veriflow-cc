@@ -10,7 +10,7 @@ earlier-stage detection.
 
 ## Pattern 1: Latch-Then-Load Race (Cross-Module)
 
-**Discovered in**: Cryptographic hash core (top-wrapper latches input, submodule loads same cycle)
+**Discovered in**: Multi-module design (top-wrapper latches input, submodule loads same cycle)
 
 ### Symptom
 
@@ -26,8 +26,8 @@ NBA semantics, the submodule sees the OLD (pre-latch) value — typically the
 reset default (zero).
 
 ```
-posedge N:  top.latch_reg   <= input_data    (NBA scheduled)
-posedge N:  sub.load_en=1, sub.data_in=top.latch_reg  (sees OLD value!)
+posedge N:  top.latch_reg  <= input_data     (NBA scheduled)
+posedge N:  sub.data_en=1, sub.data_in=top.latch_reg  (sees OLD value!)
 ```
 
 ### Fix
@@ -61,7 +61,7 @@ it through a registered latch.
 
 ## Pattern 2: Shift Register Window Drain
 
-**Discovered in**: Cryptographic hash core (message expansion module)
+**Discovered in**: Data expansion module (sliding-window shift register)
 
 ### Symptom
 
@@ -96,12 +96,12 @@ wire [31:0] next_elem = expansion_func(...);
 
 ### Prevention
 
-**codegen stage**: When generating shift-register-based message expansion,
+**codegen stage**: When generating shift-register-based data expansion,
 the coder MUST follow this rule:
 
 > **Sliding Window Replenishment Rule**: If a shift register shifts every
-> active cycle, the next-element computation MUST NOT be gated by a round
-> counter or conditional. Always compute and inject. The round counter only
+> active cycle, the next-element computation MUST NOT be gated by a step
+> counter or conditional. Always compute and inject. The step counter only
 > determines whether the injected element is consumed externally, not whether
 > it's computed.
 
@@ -114,7 +114,7 @@ the coder MUST follow this rule:
 
 ## Pattern 3: Algorithm Initial State Incomplete
 
-**Discovered in**: Cryptographic hash core (chaining value registers not initialized)
+**Discovered in**: Iterative datapath (accumulator registers not initialized)
 
 ### Symptom
 
@@ -125,12 +125,12 @@ versa). Multi-block messages may work for block 2+ but fail on block 1.
 ### Root Cause
 
 The algorithm defines two sets of initial state:
-1. Working registers — loaded from algorithm constants (e.g., IV) for first block
-2. Chaining/accumulation registers — also initialized to algorithm constants for first block
+1. Working registers — loaded from algorithm-defined initial values for first operation
+2. Accumulator/feedback registers — also initialized to algorithm-defined values for first operation
 
-The coder correctly initialized set 1 but missed set 2. The chaining registers
-remained at their reset value (0), so `output = chaining_reg(=0) ^ result = result`
-instead of `IV ^ result`.
+The coder correctly initialized set 1 but missed set 2. The accumulator registers
+remained at their reset value (0), so `output = accum_reg(=0) ^ result = result`
+instead of `INIT_VALUE ^ result`.
 
 ### Fix
 
@@ -138,11 +138,13 @@ During the load phase for the first block, initialize ALL registers that
 participate in the final output computation.
 
 ```verilog
-if (load_en && is_first_block) begin
+if (init_en && is_first_operation) begin
     // Working registers
-    work_A_next = INIT_CONST_A; ... work_H_next = INIT_CONST_H;
-    // Chaining registers — ALSO initialize
-    chain_V0_next = INIT_CONST_A; ... chain_V7_next = INIT_CONST_H;
+    work_reg_A_next = INIT_VAL_A;
+    work_reg_B_next = INIT_VAL_B;
+    // Accumulator registers — ALSO initialize
+    accum_reg_A_next = INIT_VAL_A;
+    accum_reg_B_next = INIT_VAL_B;
 end
 ```
 

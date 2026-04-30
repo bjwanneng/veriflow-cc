@@ -147,7 +147,7 @@ def extract_failing_signals_from_log(log_path: str) -> list[str]:
     text = Path(log_path).read_text(encoding="utf-8", errors="replace")
 
     # Match patterns like: [FAIL] cycle=5 expected data_out=0xFF got 0x00
-    # or: [FAIL] Test 3: state_reg expected IDLE got CALC
+    # or: [FAIL] Test 3: state_reg expected IDLE got RUN
     fail_lines = [l for l in text.splitlines() if re.search(r'\[FAIL\]|FAILED:', l)]
 
     for line in fail_lines:

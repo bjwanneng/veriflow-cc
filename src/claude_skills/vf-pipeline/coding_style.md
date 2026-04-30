@@ -852,19 +852,19 @@ Before implementing any module with multi-cycle operations or pipeline stages, b
 **Template** (adapt column names to your design):
 
 ```
-Cycle | FSM State | control_en | counter | data_source | output_valid
+Cycle | FSM State | process_en | counter | data_source | output_valid
 ------|-----------|------------|---------|-------------|-------------
   0   | IDLE      |     0      |    -    |      -      |      0
   1   | LOAD      |     0      |    0    |   input     |      0
-  2   | CALC      |     1      |    0    |  reg_file   |      0
-  3   | CALC      |     1      |    1    |  reg_file   |      0
-  ... | CALC      |     1      |   N-1   |  reg_file   |      0
+  2   | PROCESS   |     1      |    0    |  reg_file   |      0
+  3   | PROCESS   |     1      |    1    |  reg_file   |      0
+  ... | PROCESS   |     1      |   N-1   |  reg_file   |      0
  N+1  | DONE      |     0      |    -    |      -      |      1
 ```
 
 **Key rules**:
 1. Register values update at `posedge clk`. The new value is visible starting the **next** clock edge — never on the same cycle the assignment happens.
-2. A control signal (e.g., `calc_en`) asserted on cycle N produces its first effect on cycle N+1.
+2. A control signal (e.g., `process_en`) asserted on cycle N produces its first effect on cycle N+1.
 3. FSM state transitions and control signal assertions MUST be in the same `always` block to avoid cycle skew.
 4. Counter range must be exactly N iterations: count from 0 to N-1, producing exactly N assertions of the enable signal.
 5. For `handshake: "hold_until_ack"` ports: valid MUST stay high across cycles until ack is received. Do NOT pulse valid for one cycle.
@@ -883,8 +883,8 @@ Every signal crossing a module boundary must be annotated with its **producer cy
 **Template** (add to module header comments):
 
 ```verilog
-// Signal:  load_en
-// Producer: top_fsm, always @(posedge clk), registered (load_en_reg)
+// Signal:  data_en
+// Producer: top_fsm, always @(posedge clk), registered (data_en_reg)
 // Produced: cycle N   — FSM state=IDLE, input_valid=1
 // Consumer: datapath_a, always @(posedge clk)
 // Consumed: cycle N   — same posedge (NBA: consumer sees value from cycle N-1!)
@@ -898,7 +898,7 @@ Every signal crossing a module boundary must be annotated with its **producer cy
 
 ### 24.2 Same-Cycle Produce-and-Consume: Combinational Bypass
 
-When a signal must be produced and consumed in the same clock cycle (e.g., a configuration flag latched on `input_valid` must be stable before `load_en` fires at the same posedge), use a **combinational bypass** — expose the producer's next-state value as a wire. The consumer reads the wire (combinational), not the registered output.
+When a signal must be produced and consumed in the same clock cycle (e.g., a configuration flag latched on `input_valid` must be stable before `data_en` fires at the same posedge), use a **combinational bypass** — expose the producer's next-state value as a wire. The consumer reads the wire (combinational), not the registered output.
 
 **Correct pattern — combinational bypass**:
 
@@ -940,25 +940,25 @@ u_submodule (
 
 Ports with `signal_lifetime: "hold_until_used"` in spec.json require special handling. These signals arrive as short pulses (1-2 cycles) but are consumed many cycles later by a downstream module.
 
-**Bug pattern**: `is_last` flag on multi-block processing designs:
-- `is_last` asserted with `input_valid` on cycle 0 (1-cycle pulse)
-- FSM samples `is_last` in DONE state, many cycles later
-- Without latching, FSM sees 0 — last block treated as intermediate, no final output
+**Bug pattern**: `done_flag` on multi-cycle processing designs:
+- `done_flag` asserted with `input_valid` on cycle 0 (1-cycle pulse)
+- FSM samples `done_flag` in COMPLETE state, many cycles later
+- Without latching, FSM sees 0 — operation never completes
 
 **Required pattern** — Add a latch register in the connecting wrapper:
 
 ```verilog
-reg is_last_latched_reg;
+reg done_latched_reg;
 
-// Standard posedge latch — by the time FSM reads is_last (tens of cycles later),
+// Standard posedge latch — by the time FSM reads done_latched (tens of cycles later),
 // NBA has long since applied. No negedge needed.
 always @(posedge clk) begin
     if (rst) begin
-        is_last_latched_reg <= 1'b0;
-    end else if (done_flag) begin
-        is_last_latched_reg <= 1'b0;  // clear for next message
+        done_latched_reg <= 1'b0;
+    end else if (complete_flag) begin
+        done_latched_reg <= 1'b0;  // clear for next operation
     end else if (input_valid && fsm_ready) begin
-        is_last_latched_reg <= is_last;  // capture the pulse at posedge
+        done_latched_reg <= done_flag;  // capture the pulse at posedge
     end
 end
 ```
@@ -985,92 +985,93 @@ FSM registered outputs (`_reg` + `assign`) can only be consumed starting the pos
 All modules sharing a round/step counter must agree on the range:
 
 ```
-FSM:       round_cnt = 0, 1, 2, ..., 63  (64 values, 0 to N-1)
-W_gen:     expects round_cnt = 0..63      (shift register output is W[round_cnt])
-Compress:  expects round_cnt = 0..63      (round constant T_j depends on j)
+FSM:          step_cnt = 0, 1, 2, ..., N-1  (N values, 0 to N-1)
+datapath_a:   expects step_cnt = 0..N-1     (processes element data[step_cnt])
+datapath_b:   expects step_cnt = 0..N-1     (parameter lookup depends on step)
 
-Agreement: All use 0..63 → OK
-Mismatch:  FSM uses 0..63, W_gen expects W[63] at round=64 → W[63] never produced
+Agreement: All use 0..N-1 → OK
+Mismatch:  FSM uses 0..N-1, datapath_b expects data[N-1] at step=N → data[N-1] never produced
 ```
 
 **Rule**: Counter range must be verified in golden_model.py and spec.json module_connectivity. Document the agreed range in each module's port and connectivity definitions.
 
 ### 24.6 Shift Register Alignment
 
-For shift-register-based data expansion (message schedules, sliding windows, FIR filters):
+For shift-register-based data processing (sliding windows, FIR filters, data expansion):
 
-**Critical alignment question**: At round j, is the output element W[j] or W[j-1]?
+**Critical alignment question**: At step j, is the output element `data[j]` or `data[j-1]`?
 
 This depends on whether the load cycle shifts simultaneously:
 
 ```
 Pattern A — load without shift:
-  load_en=1: w_reg[0] ← W[0],    w_reg[1..15] unchanged
-  calc_en=1: w_reg[0] ← w_reg[1], shifts → W[1] at output
-  Result: at round=0, output = W[0] ✓ (but calc not yet asserted)
+  fill_en=1:  buf[0] ← data[0],   buf[1..M-1] unchanged
+  shift_en=1: buf[0] ← buf[1],    shifts → data[1] at output
+  Result: at step=0, output = data[0] ✓ (but shift not yet asserted)
 
 Pattern B — load with simultaneous shift:
-  load_en=1 + calc_en=1: w_reg[0] ← W[1] (shifted BEFORE load!)
-  Result: at round=0, output = W[1] ✗ — one round ahead, W[0] lost
+  fill_en=1 + shift_en=1: buf[0] ← data[1] (shifted BEFORE load!)
+  Result: at step=0, output = data[1] ✗ — one step ahead, data[0] lost
 ```
 
-**Rule**: `load_en` and `calc_en` MUST NOT be co-asserted if the shift register uses `if/else-if` priority. The FSM must provide a dedicated load cycle (IDLE→LOAD→CALC, not IDLE→CALC with co-asserted enables).
+**Rule**: `fill_en` and `shift_en` MUST NOT be co-asserted if the shift register uses `if/else-if` priority. The FSM must provide a dedicated load cycle (IDLE→LOAD→PROCESS, not IDLE→PROCESS with co-asserted enables).
 
-**Validation**: Verify that `load_en` and `calc_en` are mutually exclusive in the FSM's transition table — the FSM must show separate load and calc cycles.
+**Validation**: Verify that `fill_en` and `shift_en` are mutually exclusive in the FSM's transition table — the FSM must show separate load and process cycles.
 
 ### 24.7 Shift Register Window Replenishment `[CRITICAL]`
 
-When a shift register shifts every active cycle (unconditional shift during `calc_en`), the next-element injected at the end of the register MUST NOT be gated to zero by a round counter condition.
+When a shift register shifts every active cycle (unconditional shift during `proc_en`), the next-element injected at the end of the register MUST NOT be gated to zero by a step counter condition.
 
-**WRONG** — window drains during early rounds:
+**WRONG** — window drains during early steps:
 ```verilog
-wire [31:0] next_W = (round_cnt < 6'd16) ? 32'd0 : P1(temp_xor) ^ ...;
-// After 16 shifts with zero injection, original data is fully drained
+wire [DATA_W-1:0] next_elem = (step_cnt < THRESHOLD) ? {DATA_W{1'b0}} : transform(temp) ^ ...;
+// After THRESHOLD shifts with zero injection, original data is fully drained
 ```
 
 **CORRECT** — always replenish:
 ```verilog
-wire [31:0] next_W = P1(temp_xor) ^ ROL(w_reg[3], 7) ^ w_reg[10];
+wire [DATA_W-1:0] next_elem = transform(temp) ^ buf[OFFSET_A] ^ buf[OFFSET_B];
 ```
 
-**Rule**: For sliding-window algorithms (SM3/SHA message expansion, FIR filters,
+**Rule**: For sliding-window data processing (data expansion, FIR filters,
 CRC accumulators), the next-element computation must be **unconditional** during
-all active cycles. The round counter controls external consumption only, not
+all active cycles. The step counter controls external consumption only, not
 internal replenishment.
 
-**Validation**: Search for the pattern `w_reg[N-1] <= ... next_W ...` where
-`next_W` contains a ternary `(round_cnt < THRESHOLD) ? 0 :`. Flag as defect.
+**Validation**: Search for the pattern `buf[N-1] <= ... next_elem ...` where
+`next_elem` contains a ternary `(step_cnt < THRESHOLD) ? 0 :`. Flag as defect.
 
 ---
 
 ## 25. Algorithm Initial State Completeness `[CRITICAL]`
 
-For cryptographic hash/cipher designs (SM3, SHA-256, AES, etc.), the algorithm
-specification defines a set of initial register values. The RTL must initialize
-**every** register that participates in the final output expression.
+For designs with defined initial register values (e.g., iterative algorithms,
+accumulator chains, DSP datapaths), the specification defines a set of initial
+register values. The RTL must initialize **every** register that participates
+in the final output expression.
 
 ### 25.1 Output Trace-Back Rule
 
-For each output port of a compression/datapath module:
+For each output port of a datapath module:
 
-1. Write the output expression (e.g., `data_out = chain_reg ^ work_reg`)
+1. Write the output expression (e.g., `data_out = accum_reg ^ result_reg`)
 2. List **all** registers that appear in this expression
 3. For each register, verify it has a correct initial value for the first
    operational cycle (not just "reset to 0")
 
 If any register feeds into an XOR/ADD chain where 0 is NOT the algorithmically
-correct initial value, it MUST be explicitly initialized (via load_en path,
+correct initial value, it MUST be explicitly initialized (via init path,
 separate init state, or reset block).
 
-### 25.2 Selective Reset Caveat for Algorithm Designs
+### 25.2 Selective Reset Caveat for Algorithmic Designs
 
 Section 6 (Selective Reset) says "pure data-path signals may be left without
-reset." For hash/cipher datapaths, this guidance has a critical exception:
+reset." For algorithmic datapaths, this guidance has a critical exception:
 
-**Registers that participate in output XOR chains are NOT pure data-path.**
+**Registers that participate in output XOR/ADD chains are NOT pure data-path.**
 Even though their operational values are computed data, their initial values
-directly affect correctness. If `data_out = C ^ R`, and C=0 at start, the
-first output will be `0 ^ R = R` instead of `INIT ^ R`.
+directly affect correctness. If `data_out = A ^ B`, and A=0 at start, the
+first output will be `0 ^ B = B` instead of `INIT_A ^ B`.
 
 **Rule**: For algorithmic designs, treat ALL registers in the output expression
 as requiring explicit initialization. Do NOT rely on "reset to 0" being correct

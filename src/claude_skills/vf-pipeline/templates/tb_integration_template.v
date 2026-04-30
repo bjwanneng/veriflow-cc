@@ -39,7 +39,7 @@ module tb_<design_name>;
         $display("[TRACE] cycle=%0d rst released", cycle_count);
 
         // --- Test case 1: <description> ---
-        data_in = 32'hDEAD_BEEF;
+        data_in = 32'h0000_1234;
         @(posedge clk);   // DUT samples data_in
         @(negedge clk);   // NBA settled — registered outputs now valid
         $display("[TRACE] cycle=%0d data_in=0x%0h data_out=0x%0h", cycle_count, data_in, data_out);

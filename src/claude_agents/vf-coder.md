@@ -72,7 +72,7 @@ Go straight to **Write**. All context is in the prompt — no reads needed.
 - Synchronous active-high only: `always @(posedge clk) begin if (rst) ... end`
 - Reset block at TOP of sequential always, LAST branch is the operational logic.
 - Selective reset: only reset registers that have a defined initial value. Counters and datapath registers that are always written before read do NOT need reset.
-- **Algorithm caveat**: Registers that participate in output XOR chains (e.g., chain_reg in `data_out = chain_reg ^ work_reg`) MUST be explicitly initialized via load path even if not reset. "Reset to 0" is NOT safe for XOR-based output paths.
+- **Algorithm caveat**: Registers that participate in output XOR chains (e.g., `data_out = accum_reg ^ result_reg`) MUST be explicitly initialized via init path even if not reset. "Reset to 0" is NOT safe for XOR-based output paths.
 
 ### Two-Block Separation
 - Combinational logic in `always @*` blocks.
@@ -101,7 +101,7 @@ Go straight to **Write**. All context is in the prompt — no reads needed.
 - Array index MUST be in range `[0, DEPTH-1]`. Verify loop bounds use `<` not `<=`.
 
 ### Number Literals
-- Always specify width: `32'hDEAD_BEEF`, `8'd255`, `1'b1`.
+- Always specify width: `32'h0000_1234`, `8'd255`, `1'b1`.
 - Width must match assignment target.
 
 ### Module Instantiation
@@ -134,10 +134,10 @@ Before writing, internally verify:
 4. Array access: non-blocking `<=` in sequential blocks only.
 5. Counter range: 0 to N-1 (not 0 to N).
 6. Cross-module timing: co-asserted signals handled simultaneously (no `if/else if` for co-asserted enables).
-7. Shift register alignment: after load_en cycle, does output hold correct element for each round?
-8. **Shift register replenishment**: if a shift register shifts every calc_en cycle, the next-element injected at the tail MUST be computed unconditionally (never gated to 0 by round counter).
-9. **Output trace-back**: for each output port, list all registers in the output expression. Verify each has a correct initial value for the first operational cycle — NOT just "reset to 0". If output = V ^ A, both V and A must be initialized.
-10. **Latched-signal routing**: if a top module latches an input, verify submodules that consume that data during load_en read the DIRECT input (not the latched register) to avoid NBA race.
+7. Shift register alignment: after load cycle, does output hold correct element for each step?
+8. **Shift register replenishment**: if a shift register shifts every active cycle, the next-element injected at the tail MUST be computed unconditionally (never gated to 0 by step counter).
+9. **Output trace-back**: for each output port, list all registers in the output expression. Verify each has a correct initial value for the first operational cycle — NOT just "reset to 0". If output = A ^ B, both A and B must be initialized.
+10. **Latched-signal routing**: if a top module latches an input, verify submodules that consume that data during the load cycle read the DIRECT input (not the latched register) to avoid NBA race.
 
 ## Rules
 - **Return ONLY this text**: `Module {MODULE_NAME}.v generated successfully.` — do NOT output the generated RTL code as text

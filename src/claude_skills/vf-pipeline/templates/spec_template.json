@@ -33,9 +33,9 @@
       "standard": "LVCMOS33",
       "external_interfaces": [
         {
-          "name": "uart",
-          "type": "UART",
-          "params": "115200 baud, 8N1"
+          "name": "ext_if",
+          "type": "INTERFACE_TYPE",
+          "params": "Interface parameters"
         }
       ]
     },
