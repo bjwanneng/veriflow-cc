@@ -93,6 +93,16 @@ Then run **vf-golden-gen**:
   - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, SPEC_JSON content, `${CLAUDE_SKILL_DIR}/templates` path, all input file contents inline
 
 After vf-golden-gen returns:
+
+**Timing contract check** (pre-verification, before codegen):
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
+    --spec workspace/docs/spec.json \
+    --golden workspace/docs/golden_model.py \
+    --output logs/timing_check.json
+```
+If this reports errors, review `logs/timing_check.json` and fix spec.json or golden_model.py before proceeding. The check is non-blocking but errors indicate timing contradictions that will cause RTL bugs.
+
 ```bash
 state.py "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="Specification generated first; golden model aligned to spec timing"
 ```

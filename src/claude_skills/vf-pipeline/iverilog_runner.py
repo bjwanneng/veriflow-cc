@@ -130,6 +130,137 @@ def golden_check(golden_path: str, verbose: bool = False) -> dict:
     }
 
 
+_FAIL_PATTERN = re.compile(
+    r'\[FAIL\]\s+'
+    r'test=(\S+)\s+'
+    r'vector=(\d+)\s+'
+    r'cycle=(\d+)\s+'
+    r'signal=(\S+)\s+'
+    r'expected=(\S+)\s+'
+    r'actual=(\S+)\s+'
+    r'phase=(\S+)'
+)
+
+
+def _parse_fail_line(fl: str) -> dict:
+    """Parse a structured [FAIL] line into a failure dict."""
+    m = _FAIL_PATTERN.search(fl)
+    if m:
+        return {
+            "test": m.group(1),
+            "message": fl,
+            "vector": int(m.group(2)),
+            "cycle": int(m.group(3)),
+            "signal": m.group(4),
+            "expected": m.group(5),
+            "actual": m.group(6),
+            "phase": m.group(7),
+        }
+    # Fallback: legacy unstructured [FAIL] line
+    fallback = {"test": "verilog_tb", "message": fl}
+    m_cycle = re.search(r'cycle=(\d+)', fl)
+    if m_cycle:
+        fallback["cycle"] = int(m_cycle.group(1))
+    return fallback
+
+
+def _normalize_value(val: str) -> int | None:
+    """Normalize a hex/decimal value string to int. Returns None for unknowns."""
+    if not val:
+        return None
+    val = str(val).strip().lower().replace("_", "")
+    if val.startswith("0x"):
+        digits = val[2:]
+        if any(c in digits for c in "xz"):
+            return None
+        try:
+            return int(digits, 16)
+        except ValueError:
+            return None
+    if any(c in val for c in "xz"):
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        return None
+
+
+def _is_unknown(val: str) -> bool:
+    """Check if a value string contains x/z unknown bits (not hex prefix)."""
+    val = str(val).lower().replace("0x", "")
+    return any(c in val for c in "xz")
+
+
+def _find_value_in_golden(
+    golden_cycles: dict[int, dict[str, str]],
+    signal: str,
+    actual_raw: str,
+    expected_cycle: int,
+    search_window: int = 5,
+) -> int | None:
+    """Search golden trace for a cycle where signal matches actual value."""
+    actual_norm = _normalize_value(actual_raw)
+    if actual_norm is None:
+        return None
+    for offset in range(-search_window, search_window + 1):
+        if offset == 0:
+            continue
+        check_cycle = expected_cycle + offset
+        if check_cycle < 0:
+            continue
+        golden_at_cycle = golden_cycles.get(check_cycle, {})
+        golden_val = golden_at_cycle.get(signal)
+        if golden_val is not None:
+            golden_norm = _normalize_value(str(golden_val))
+            if golden_norm == actual_norm:
+                return check_cycle
+    return None
+
+
+def classify_failure(
+    failures: list[dict],
+    golden_cycles: dict[int, dict[str, str]] | None = None,
+) -> list[dict]:
+    """Classify each failure into A/B/D types with reasoning.
+
+    Classification:
+        D (Initialization): RTL value is x/z, or expected=0 but actual≠0
+        B (Timing):         Correct value at wrong cycle (golden trace match)
+        A (Computation):    Default — value mismatch, no timing alignment
+    """
+    results = []
+    for f in failures:
+        signal = f.get("signal", "")
+        expected_raw = f.get("expected", "")
+        actual_raw = f.get("actual", "")
+        cycle = f.get("cycle")
+
+        expected_norm = _normalize_value(expected_raw)
+        actual_norm = _normalize_value(actual_raw)
+
+        cls = "A"
+        reasoning = "Computation error — trace datapath logic"
+
+        if _is_unknown(actual_raw):
+            cls = "D"
+            reasoning = "RTL value is x/z/unknown — register not initialized or undriven"
+        elif expected_norm is not None and expected_norm == 0 and actual_norm not in (None, 0):
+            cls = "D"
+            reasoning = f"Expected 0 but got {actual_raw} — register not cleared or spurious enable"
+        elif golden_cycles is not None and cycle is not None:
+            found_at = _find_value_in_golden(golden_cycles, signal, actual_raw, cycle)
+            if found_at is not None:
+                cls = "B"
+                reasoning = (f"Value {actual_raw} matches golden at cycle {found_at}, "
+                             f"not at cycle {cycle} — pipeline alignment issue")
+
+        result = dict(f)
+        result["classification"] = cls
+        result["reasoning"] = reasoning
+        results.append(result)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Pure-Verilog simulation runner for VeriFlow-CC pipeline"
@@ -305,12 +436,14 @@ def main():
     failed_summary = re.search(r'FAILED:\s*(\d+)\s*assertion', sim_output)
     pass_lines = re.findall(r'\[PASS\].*', sim_output)
 
-    # Extract first failure cycle number from [FAIL] lines
+    # Parse structured [FAIL] lines
+    failures = [_parse_fail_line(fl) for fl in fail_lines]
+
+    # Extract first failure cycle from parsed data
     first_fail_cycle = None
-    for fl in fail_lines:
-        m = re.search(r'cycle=(\d+)', fl)
-        if m:
-            first_fail_cycle = int(m.group(1))
+    for f in failures:
+        if "cycle" in f and f["cycle"] is not None:
+            first_fail_cycle = f["cycle"]
             break
 
     num_passed = len(pass_lines)
@@ -324,15 +457,13 @@ def main():
     vcd_path = str(vcd_files[0]) if vcd_files else None
 
     if num_failed > 0 or not all_passed:
-        failures = []
-        for fl in fail_lines:
-            failures.append({"test": "verilog_tb", "message": fl})
+        classified = classify_failure(failures)
         result = {
             "tests": num_tests,
             "passed": num_passed,
             "failed": num_failed,
             "vcd_path": vcd_path,
-            "failures": failures,
+            "failures": classified,
             "first_fail_cycle": first_fail_cycle,
         }
         print(json.dumps(result))

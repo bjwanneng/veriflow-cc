@@ -78,12 +78,13 @@ class PipelineState:
         if isinstance(self.project_dir, Path):
             self.project_dir = str(self.project_dir)
 
-    def mark_complete(self, stage: str, result: dict):
-        """Mark a stage as complete. Saves summary for context recovery."""
+    def mark_complete(self, stage: str, result: dict) -> bool:
+        """Mark a stage as complete. Returns False if prerequisites not met."""
         if stage in STAGE_PREREQUISITES:
             ok, reason = can_execute(stage, self.stages_completed)
             if not ok:
-                print(f"[WARNING] Stage '{stage}' prerequisites not met: {reason}", file=sys.stderr)
+                print(f"[ERROR] Stage '{stage}' blocked — {reason}", file=sys.stderr)
+                return False
         if stage not in self.stages_completed:
             self.stages_completed.append(stage)
         setattr(self, f"{stage}_output", result)
@@ -95,6 +96,7 @@ class PipelineState:
             self.stage_summaries[stage] = summary
         # Record end time
         self._record_end(stage)
+        return True
 
     def mark_failed(self, stage: str, result: dict):
         """Mark a stage as failed."""
@@ -464,18 +466,21 @@ if __name__ == "__main__":
                 print(f"[HOOK] FAIL (exception: {e})", file=sys.stderr)
 
         if _hook_passed:
-            _state.mark_complete(_stage, {"success": True, "summary": "Hook passed"})
-            _state.save()
-            print(f"[STATE] {_stage} → COMPLETE")
-            # Print timing summary
-            if _stage in _state.stage_timings:
-                t = _state.stage_timings[_stage]
-                dur = t.get("duration_s", "?")
-                print(f"[STATE] {_stage} duration: {dur}s")
-            # Append journal entry if requested
-            if _journal_outputs or _journal_notes:
-                _append_journal(_project_dir, _stage, _journal_outputs or "", _journal_notes or "")
-                print(f"[JOURNAL] {_stage} entry appended")
+            if _state.mark_complete(_stage, {"success": True, "summary": "Hook passed"}):
+                _state.save()
+                print(f"[STATE] {_stage} → COMPLETE")
+                # Print timing summary
+                if _stage in _state.stage_timings:
+                    t = _state.stage_timings[_stage]
+                    dur = t.get("duration_s", "?")
+                    print(f"[STATE] {_stage} duration: {dur}s")
+                # Append journal entry if requested
+                if _journal_outputs or _journal_notes:
+                    _append_journal(_project_dir, _stage, _journal_outputs or "", _journal_notes or "")
+                    print(f"[JOURNAL] {_stage} entry appended")
+            else:
+                print(f"[STATE] {_stage} → BLOCKED (prerequisites not met)", file=sys.stderr)
+                sys.exit(1)
         else:
             _state.mark_failed(_stage, {"success": False, "errors": ["Hook failed"]})
             _state.save()

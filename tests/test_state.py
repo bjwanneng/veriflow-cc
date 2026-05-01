@@ -178,6 +178,36 @@ def test_is_pipeline_complete():
     assert s.is_pipeline_complete()
 
 
+def test_mark_complete_returns_false_on_prereq_violation():
+    """mark_complete must refuse and return False when prerequisites are not met."""
+    s = PipelineState(project_dir="/tmp/test")
+    s.stages_completed = []
+    result = s.mark_complete("verify_fix", {"success": True})
+    assert result is False
+    assert "verify_fix" not in s.stages_completed
+
+
+def test_mark_complete_returns_true_when_prereqs_met():
+    """mark_complete returns True when prerequisites are satisfied."""
+    s = PipelineState(project_dir="/tmp/test")
+    s.stages_completed = ["spec_golden"]
+    result = s.mark_complete("codegen", {"success": True})
+    assert result is True
+    assert "codegen" in s.stages_completed
+
+
+def test_cli_blocks_prereq_violation():
+    """CLI must exit non-zero when marking a stage out of order."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # Try to mark verify_fix without codegen — should be blocked
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "state.py"), tmp, "verify_fix"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert "blocked" in result.stderr.lower() or "BLOCKED" in result.stdout
+
+
 if __name__ == "__main__":
     # Run all tests
     import traceback
