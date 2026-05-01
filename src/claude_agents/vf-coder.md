@@ -95,6 +95,8 @@ Go straight to **Write**. All context is in the prompt — no reads needed.
 - State encoding: `localparam [W:0] STATE_IDLE = W'd0, STATE_LOAD = W'd1, ...`
 - Two-process or three-process FSM (state register + next-state combinational + output combinational).
 - ALL states must have explicit transitions (including reset return path).
+- **CRITICAL — Finalize-state register read rule**: In DONE/finalize FSM states, ALWAYS use `_reg` (registered) values for output computation and register updates. NEVER use `_new` (combinational next-state) wires — they represent the NEXT computation round, not the current state. Using `_new` in DONE applies an extra unintended round.
+- **CRITICAL — Merkle-Damgård init**: For iterated hash constructions with dual register sets (working A-H + chaining V0-V7), the `is_first_block` initialization path MUST cover BOTH sets. Chaining registers MUST be re-initialized to IV when starting a new message.
 
 ### Memory Arrays
 - `reg [DATA_W-1:0] mem [0:DEPTH-1];`
@@ -151,6 +153,8 @@ Before writing, internally verify:
 8. **Shift register replenishment**: if a shift register shifts every active cycle, the next-element injected at the tail MUST be computed unconditionally (never gated to 0 by step counter).
 9. **Output trace-back**: for each output port, list all registers in the output expression. Verify each has a correct initial value for the first operational cycle — NOT just "reset to 0". If output = A ^ B, both A and B must be initialized.
 10. **Latched-signal routing**: if a top module latches an input, verify submodules that consume that data during the load cycle read the DIRECT input (not the latched register) to avoid NBA race.
+11. **Finalize-state register read**: DONE/finalize states use ONLY `_reg` values (no `_new` combinational wires in DONE state assignments or output expressions).
+12. **Dual register init for iterated hashes**: For Merkle-Damgård style designs, chaining registers (V0-V7) are re-initialized to IV in the `is_first_block` branch alongside working registers (A-H).
 
 ## Rules
 - **Return ONLY this text**: `Module {MODULE_NAME}.v generated successfully.` — do NOT output the generated RTL code as text

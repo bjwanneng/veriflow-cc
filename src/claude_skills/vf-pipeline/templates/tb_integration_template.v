@@ -50,11 +50,20 @@ module tb_<design_name>;
         end else
             $display("[PASS] cycle=%0d data_out=0x%0h", cycle_count, data_out);
 
-        // --- Test case 2: multi-cycle operation ---
-        // For each cycle where output is expected to change:
-        //   @(posedge clk);  // DUT processes
-        //   @(negedge clk);  // NBA settled
-        //   check outputs
+        // --- Test case 2: multi-cycle operation with valid/ready handshake ---
+        // IMPORTANT: When polling for single-cycle pulse signals (hash_valid, ready):
+        //   - Detect the signal at posedge in a wait loop
+        //   - Check output IMMEDIATELY after wait returns — NO @(negedge clk) delay
+        //   - The pulse signal is cleared on the next posedge, so any delay misses it
+        //
+        // Correct pattern:
+        //   wait_hash_valid(cycles);   // polls @(posedge clk) until hash_valid==1
+        //   check_hash(expected, ...); // reads hash_out at SAME posedge — no delay!
+        //
+        // Wrong pattern:
+        //   wait_hash_valid(cycles);
+        //   @(negedge clk);            // BUG: hash_valid already cleared!
+        //   check_hash(expected, ...); // sees hash_valid=0
 
         // --- Summary ---
         if (fail_count == 0) $display("ALL TESTS PASSED");

@@ -25,3 +25,35 @@ If a later stage discovers a problem with the interface definition, it must roll
   - `"pulse"` — signal is asserted for 1 cycle and consumed immediately by the receiver
   - `"hold_until_used"` — signal is sampled at most once, arrives as a short pulse but is consumed many cycles later. The receiver MUST latch this signal.
 - These fields are locked after Stage 1 and MUST NOT be changed by subsequent stages
+
+## Finalize-State Invariant `[CRITICAL]`
+
+In iterative computation FSMs (IDLE → CALC → DONE), the DONE/finalize state
+MUST compute outputs from **registered values only** (`_reg`). Never use
+combinational next-state wires (`_new`) in finalize states.
+
+**Applies to**: All FSM designs with a DONE/finalize state that produces outputs
+or updates state based on the completed computation.
+
+**Rationale**: Combinational `_new` wires represent the result of applying one more
+round of computation. When the FSM reaches DONE after N rounds, reading `_new`
+effectively applies round N+1, corrupting the output.
+
+```verilog
+// WRONG — DONE state uses combinational next-state wires
+STATE_DONE: begin
+    V0 <= V0 ^ a_new;  // a_new = extra computation round!
+end
+
+// CORRECT — DONE state uses registered values only
+STATE_DONE: begin
+    V0 <= V0 ^ A_reg;  // A_reg = result of completed N rounds
+end
+```
+
+## Merkle-Damgård Init Completeness `[CRITICAL]`
+
+For iterated hash constructions with dual register sets (working A-H + chaining
+V0-V7), the `is_first_block` initialization path MUST re-initialize BOTH sets to
+IV. Chaining registers that retain stale values from previous messages will corrupt
+subsequent message hashes.

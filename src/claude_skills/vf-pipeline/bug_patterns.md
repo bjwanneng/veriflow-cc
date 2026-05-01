@@ -284,3 +284,113 @@ step (Error Recovery Step 0) prevents this pattern:
 **Rule**: Never assume timing issues without data. If the golden model diff
 shows a zero or constant at the divergence point, it's a LOGIC error, not
 a timing error.
+
+---
+
+## Pattern 10: Finalize-State Combinational Leak
+
+**Discovered in**: SM3 hash core (DONE state reading `_new` wires instead of `_reg`)
+
+### Symptom
+
+Hash/digest output is completely wrong — values are off by one full round of
+computation. The output appears to be the result of N+1 rounds instead of N
+rounds. Multi-block messages may also fail because chaining values are computed
+from the wrong state.
+
+### Root Cause
+
+In an iterative computation FSM (IDLE → CALC → DONE), combinational `_new` wires
+represent the **next** cycle's register values — i.e., what registers WILL become
+after the current round's computation is applied. In the DONE/finalize state, the
+designer incorrectly used these combinational wires instead of the actual registered
+values.
+
+```verilog
+// WRONG — reads next-state (combinational) values in DONE state
+STATE_DONE: begin
+    V0 <= V0 ^ a_new;   // a_new = TT1 (an extra compression round!)
+    V1 <= V1 ^ b_new;
+    hash_out_r <= {V0 ^ a_new, V1 ^ b_new, ...};
+end
+
+// CORRECT — reads current registered values in DONE state
+STATE_DONE: begin
+    V0 <= V0 ^ A_reg;   // A_reg holds the result after 64 rounds
+    V1 <= V1 ^ B_reg;
+    hash_out_r <= {V0 ^ A_reg, V1 ^ B_reg, ...};
+end
+```
+
+The `_new` wires are fed by the combinational logic that computes the next round.
+When the FSM transitions to DONE (after round 63), these wires hold what round 64
+WOULD produce — but round 64 was never meant to execute. The registered `_reg`
+values hold the correct result of 64 completed rounds.
+
+### Fix
+
+In DONE/finalize states, use ONLY `_reg` (registered) values. Never use `_new`
+(combinational next-state) wires. The `_new` wires are valid ONLY inside the
+CALC state's sequential block for updating registers.
+
+### Prevention
+
+**codegen stage**: Add this rule to the coder's checklist:
+
+> **Finalize-State Register Read Rule**: In DONE/finalize FSM states, ALL output
+> computations and register updates MUST use `_reg` (registered) values only.
+> Never use `_new` (combinational next-state) wires — they represent the NEXT
+> computation round, not the current state.
+
+**verify_fix stage**: Flag any DONE/finalize state where:
+- An expression references a `_new` wire (combinational next-state signal)
+- The `_new` wire is derived from the same combinational logic as the CALC state
+→ This applies an extra unintended computation round.
+
+---
+
+## Pattern 11: Merkle-Damgård Chaining Register Reset
+
+**Discovered in**: SM3 hash core (V0-V7 not re-initialized for new messages)
+
+### Symptom
+
+First message hashes correctly. Second message produces wrong output. Specifically,
+test 2 fails after test 1 passes in the same simulation run.
+
+### Root Cause
+
+In Merkle-Damgård hash constructions, chaining registers (V0-V7) accumulate
+intermediate results across blocks. When a new message starts, these registers
+MUST be re-initialized to IV — but the code only initialized the working registers
+(A-H), leaving V registers with stale values from the previous message.
+
+```verilog
+// WRONG — V registers retain stale values from previous message
+if (is_first_block) begin
+    A_reg <= IV0; B_reg <= IV1; ... H_reg <= IV7;
+    // V0-V7 NOT re-initialized!
+end
+
+// CORRECT — re-initialize BOTH working and chaining registers
+if (is_first_block) begin
+    A_reg <= IV0; B_reg <= IV1; ... H_reg <= IV7;
+    V0 <= IV0; V1 <= IV1; ... V7 <= IV7;  // ALSO re-init chaining values
+end
+```
+
+### Fix
+
+For iterated hash constructions (Merkle-Damgård, sponge, etc.), when starting a
+new message, re-initialize ALL state registers that persist across blocks — both
+working registers AND chaining/accumulator registers.
+
+### Prevention
+
+**codegen stage**: For hash/digest designs with dual register sets (working +
+chaining), verify that the `is_first_block` initialization path covers BOTH sets.
+
+**verify_fix stage**: Flag designs where:
+- Two sets of registers exist (working A-H and chaining V0-V7)
+- The `is_first_block` init path only covers one set
+→ The other set retains stale state from previous messages.

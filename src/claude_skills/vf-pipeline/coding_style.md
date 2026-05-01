@@ -733,6 +733,34 @@ reg [15:0] val  = 16'b0010_0011_0000_1101;
 reg [39:0] addr = 40'h00_1fc0_0000;
 ```
 
+### Hex literal digit count `[IMPORTANT]`
+
+For `N'h...` hex constants, the digit count MUST equal `ceil(N/4)` = `(N+3)/4`.
+Iverilog silently truncates or zero-pads mismatched constants — bugs from wrong
+digit counts are hard to detect.
+
+Common widths:
+- 32-bit → 8 hex digits
+- 128-bit → 32 hex digits
+- 256-bit → 64 hex digits
+- 512-bit → 128 hex digits
+
+```verilog
+// WRONG — 133 hex digits for a 512-bit constant (5 extra digits)
+localparam [511:0] MSG = 512'h616263800000...018;
+// iverilog truncates MSBs — data corruption!
+
+// CORRECT — exactly 128 hex digits for 512-bit constant
+localparam [511:0] MSG = 512'h0061626380000...0018;
+```
+
+**Validation**: When writing wide hex constants in localparam, count digits and
+verify `digit_count == width / 4`. Use Python to validate:
+```python
+digits = len(hex_str.lstrip('0').rstrip()) or 1
+assert digits <= width // 4, f"Too many hex digits: {digits} > {width//4}"
+```
+
 ### Width matching `[LOWRISC]`
 
 - Widths of connected ports must match; use explicit padding:
@@ -1082,3 +1110,82 @@ for XOR-based output paths.
 - The register's reset value is 0
 - The output expression is an XOR chain
 → Flag as "potential initialization gap — verify algorithm spec requires 0"
+
+### 25.3 Merkle-Damgård Dual Register Initialization `[CRITICAL]`
+
+For hash/digest cores using Merkle-Damgård or similar iterated constructions:
+
+- **Working registers** (A-H): loaded from IV for first block, from chaining values for subsequent blocks
+- **Chaining registers** (V0-V7): accumulate results across blocks via `V_new = V_old ^ result`
+- **Both sets MUST be re-initialized to IV when starting a new message**
+
+```verilog
+// WRONG — only working registers initialized
+if (is_first_block) begin
+    A_reg <= IV0; B_reg <= IV1; ... H_reg <= IV7;
+    // V0-V7 retain stale values from previous message!
+end
+
+// CORRECT — both sets initialized
+if (is_first_block) begin
+    A_reg <= IV0; B_reg <= IV1; ... H_reg <= IV7;
+    V0 <= IV0; V1 <= IV1; ... V7 <= IV7;  // re-init chaining values
+end
+```
+
+**Rule**: When `is_first_block` is used to distinguish new-message start, ALL
+persistent state registers (working + chaining) must be set to their algorithm-defined
+initial values — not just the working set.
+
+---
+
+## 26. Finalize-State Register Read Rule `[CRITICAL]`
+
+In iterative computation FSMs (IDLE → CALC → DONE), the DONE/finalize state
+MUST read registered values only, never combinational next-state wires.
+
+### Invariant
+
+**DONE/finalize states MUST use `_reg` values. NEVER use `_new` (combinational)
+wires for output computation or register updates in finalize states.**
+
+### Rationale
+
+Combinational `_new` wires (e.g., `a_new`, `b_new`) represent what the registers
+WILL become on the next clock edge — i.e., the result of applying one more round
+of computation. When the FSM reaches DONE after N rounds, using `_new` values
+effectively applies round N+1, producing wrong results.
+
+### Correct Pattern
+
+```verilog
+// CALC state: update registers from combinational next-state wires
+STATE_CALC: begin
+    A_reg <= a_new;  // correct — registers take next-state values
+    B_reg <= b_new;
+    // ...
+end
+
+// DONE state: use registered values (result of all completed rounds)
+STATE_DONE: begin
+    V0 <= V0 ^ A_reg;   // correct — reads registered state
+    V1 <= V1 ^ B_reg;
+    hash_out_r <= {V0 ^ A_reg, V1 ^ B_reg, ...};
+end
+```
+
+### Counter-Example (Bug Pattern)
+
+```verilog
+// WRONG — DONE state reads combinational next-state wires
+STATE_DONE: begin
+    V0 <= V0 ^ a_new;   // BUG: a_new = result of round 64 (never executed!)
+    hash_out_r <= {V0 ^ a_new, ...};
+end
+```
+
+### Detection
+
+In verify_fix stage, flag any DONE/finalize state that references a `_new`
+combinational signal. These signals are valid ONLY inside CALC-state sequential
+blocks for register updates.

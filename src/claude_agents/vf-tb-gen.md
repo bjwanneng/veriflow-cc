@@ -141,6 +141,30 @@ endmodule
 - For multi-cycle operations, poll for `valid` or `ready` signals with a timeout counter
 - For wide signals (>32 bits), use proper hex formatting in `$display`
 
+**CRITICAL — Single-cycle pulse sampling rule**:
+When checking a single-cycle pulse signal (e.g., `hash_valid`, `ready`), sample it
+at the SAME posedge where detection occurs. Do NOT insert `@(negedge clk)` between
+detection and sampling — the signal may already be cleared by then.
+
+```verilog
+// CORRECT — back-to-back, no delay between detection and sampling
+wait_hash_valid(cycles_waited);   // polls until hash_valid==1 at posedge
+check_hash(expected, "test_name"); // reads hash_out at SAME posedge
+
+// WRONG — @(negedge clk) causes miss of single-cycle pulse
+wait_hash_valid(cycles_waited);
+@(negedge clk);                    // hash_valid already cleared!
+check_hash(expected, "test_name"); // sees hash_valid=0, wrong data
+```
+
+**CRITICAL — Hex literal digit count**:
+For wide hex constants in localparam, the digit count MUST equal `width / 4`.
+A 512-bit constant needs exactly 128 hex digits. Iverilog silently truncates
+extra digits (losing MSBs). Count digits before writing. Use Python to validate:
+```python
+assert len(hex_str) == 512 // 4  # 128 digits for 512-bit
+```
+
 ### Step 5: Validate output files
 
 ```bash
