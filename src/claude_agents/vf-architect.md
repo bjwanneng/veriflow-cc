@@ -37,6 +37,39 @@ Constraints:
   - Ports with `protocol: "valid"` MUST declare `handshake`: `"hold_until_ack"` | `"single_cycle"` | `"pulse"`
   - If `handshake: "hold_until_ack"`, MUST also declare `ack_port`
 
+**Timing Contract Population** (when `module_connectivity` is non-empty):
+
+Every inter-module connection MUST have a populated `timing_contract` block. Use this decision procedure:
+
+1. Determine `producer_type`:
+   - Source is a registered output (`_reg` driven by `<=` in `always @(posedge clk)`, exposed via `assign`) → `"registered"`
+   - Source is a combinational wire (`assign` from next-state logic, or direct port passthrough) → `"combinational"`
+2. Determine `consumer_type`:
+   - Consumer samples in `always @(posedge clk)` → `"sequential"`
+   - Consumer reads in `always @*` only → `"combinational"`
+3. Look up the case:
+
+   | producer_type | consumer_type | same_cycle_visible | pipeline_delay_cycles | When |
+   |---|---|---|---|---|
+   | `"registered"` | `"sequential"` | `false` | `1` | Standard registered→registered. NBA: consumer sees OLD value at same posedge, NEW at next. **Default case — most connections.** |
+   | `"combinational"` | `"sequential"` | `true` | `0` | Wire passthrough (e.g., top-level input direct to submodule input) |
+   | `"registered"` | `"combinational"` | `false` | `1` | Combinational logic reads registered output — still sees OLD value until NBA applies |
+   | `"combinational"` | `"combinational"` | `true` | `0` | Both sides are wires — zero-time propagation |
+
+4. Exception: clock and reset distribution connections (bus_width=1, same signal fanning out to multiple modules) may omit `timing_contract`.
+
+5. For `pipeline_delay_cycles = 0` connections: verify that the producer exposes a `_next` wire or is a direct input port passthrough. If neither, `same_cycle_visible` MUST be `false` and `pipeline_delay_cycles` MUST be `1`.
+
+**Reset Scope Declaration** (for multi-message/multi-operation designs):
+
+For modules with `module_type: "processing"` that process multiple messages or operations:
+- Identify registers whose initial value is NOT zero AND that accumulate state across operations (e.g., hash chaining variables, packet counters, DMA address registers).
+- For each such register group, add a `reset_scopes` entry in the module's `cycle_timing`:
+  - `"global"` — register is reset only by hardware reset (rst/rst_n). Default for all registers if `reset_scopes` is absent.
+  - `"per_message"` — register must be re-initialized to algorithm IV/start values at the start of each new message.
+  - `"per_block"` — register is re-initialized at the start of each block within a message.
+- **Rule**: Any register with non-zero initial values that persists across message boundaries MUST be declared `"per_message"` or `"per_block"`. This catches bugs where chaining registers (e.g., Merkle-Damgard V) retain stale values from a previous message.
+
 ### Step 3: Write golden_model.py
 
 Use Read tool on `${TEMPLATES_DIR}/golden_model_template.py` for structure, then use Write tool to write `$PROJECT_DIR/workspace/docs/golden_model.py`.
@@ -67,6 +100,7 @@ Rules:
 2. **Clock divider accuracy**: `error_pct = abs(actual - target) / target * 100`. If >2%, add note.
 3. **Latency sanity**: verify expected latency is reasonable for the algorithm and clock frequency.
 4. **Constraint consistency**: `target_frequency_mhz` matches top-level, `critical_path_budget` correct.
+5. **Reset scope completeness**: For every processing module (`module_type: "processing"`), check if any register group accumulates state across messages/operations with non-zero initial values (e.g., hash chaining variables, iteration counters). If such registers exist and `reset_scopes` is absent or incomplete, add the appropriate `"per_message"` or `"per_block"` entries. Missing reset scope declarations cause bugs where stale values from a previous operation persist into the next one.
 
 If any check fails, fix spec.json immediately.
 

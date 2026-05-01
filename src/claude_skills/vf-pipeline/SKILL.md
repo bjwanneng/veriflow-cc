@@ -20,7 +20,8 @@ If `$ARGUMENTS` is empty, ask the user for it.
 Run the initialization script:
 
 ```bash
-cd "$ARGUMENTS" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/init.py" "$ARGUMENTS"
+PY_INIT="${PYTHON_EXE:-python}"
+cd "$ARGUMENTS" && "$PY_INIT" "${CLAUDE_SKILL_DIR}/init.py" "$ARGUMENTS"
 source "$ARGUMENTS/.veriflow/eda_env.sh"
 ```
 
@@ -78,16 +79,22 @@ Then: `TaskUpdate` mark the stage task as completed.
 
 ## Stage 1: spec_golden
 
-Dispatch 2 parallel agents (single message, two Agent calls):
+Run **vf-spec-gen** first. The cycle_timing and timing_contract fields in
+spec.json are the timing source of truth for both golden_model.py and RTL.
 
 - **vf-spec-gen** (subagent_type: general-purpose)
   - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, `${CLAUDE_SKILL_DIR}/templates` path, all input file contents inline
-- **vf-golden-gen** (subagent_type: general-purpose)
-  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, `${CLAUDE_SKILL_DIR}/templates` path, all input file contents inline
 
-After BOTH return:
+After vf-spec-gen returns, read `workspace/docs/spec.json`.
+
+Then run **vf-golden-gen**:
+
+- **vf-golden-gen** (subagent_type: general-purpose)
+  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, SPEC_JSON content, `${CLAUDE_SKILL_DIR}/templates` path, all input file contents inline
+
+After vf-golden-gen returns:
 ```bash
-state.py "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="Specification and golden model generated in parallel"
+state.py "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="Specification generated first; golden model aligned to spec timing"
 ```
 TaskUpdate complete.
 

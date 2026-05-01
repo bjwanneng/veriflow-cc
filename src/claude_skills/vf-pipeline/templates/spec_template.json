@@ -146,7 +146,15 @@
           "input_to_output_latency_cycles": 0,
           "throughput": "1 result per N cycles",
           "reset_recovery_cycles": 1
-        }
+        },
+        "reset_scopes": [
+          {
+            "register_group": "example_group",
+            "scope": "global",
+            "reset_values": "reset value description",
+            "description": "When and how this register group is re-initialized. scope: global (hardware reset only), per_message (each new message), per_block (each block within a message)"
+          }
+        ]
       }
     }
   ],
@@ -161,6 +169,12 @@
         "consumer_type": "sequential",
         "same_cycle_visible": false,
         "pipeline_delay_cycles": 1,
+        "producer_cycle": "T",
+        "visible_cycle": "T+1",
+        "consumer_cycle": "T+1",
+        "sample_phase": "posedge_after_nba",
+        "bypass_required": false,
+        "bypass_signal": "",
         "description": "Producer registers output at posedge T, consumer sees OLD value at posedge T, NEW value at T+1"
       }
     }

@@ -131,7 +131,7 @@ def main():
             sources=rtl_sources,
             hdl_toplevel=module_name,
             build_dir=str(build_dir),
-            build_args=["-g2012"],
+            build_args=["-g2005"],
             waves=args.vcd,
         )
     except Exception as e:

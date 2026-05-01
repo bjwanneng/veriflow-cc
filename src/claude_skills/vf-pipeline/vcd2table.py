@@ -3,14 +3,18 @@
 
 Usage:
     python3 vcd2table.py <vcd_file> [options]
+    python3 vcd2table.py --vcd <vcd_file> [options]
 
 Options:
+    --vcd <path>            VCD file path (alias for positional vcd_file)
     --sim-log <path>        sim.log or sim_<module>.log — extract failing signal names
     --timing-yaml <path>    (optional) timing assertions YAML — annotate violations
     --signals <s1,s2,...>   comma-separated list of extra signals to always include
     --window <N>            cycles around each failure to show (default: 15)
     --module <name>         only show signals from this module scope
     --output <path>         write table to file instead of stdout
+    --test-vector-index <N> golden model test vector index (default: 0)
+    --apply-offset          apply detected golden/VCD cycle offset during diff
 
 Output:
     A text table written to stdout (or --output), formatted for direct LLM reading.
@@ -24,6 +28,50 @@ import sys
 import argparse
 from pathlib import Path
 from collections import defaultdict
+
+
+def has_unknown_bits(value: str) -> bool:
+    """Return True when a VCD value contains x/z unknown bits."""
+    val = str(value)
+    if val.lower().startswith("0x"):
+        val = val[2:]
+    return any(c in "xXzZ" for c in val)
+
+
+def format_vcd_value(value: str) -> str:
+    """Format a VCD value for display without hiding x/z states."""
+    val = str(value)
+    if has_unknown_bits(val):
+        return val.lower()
+    if len(val) > 4 and all(c in "01" for c in val):
+        return hex(int(val, 2))
+    return val
+
+
+def normalize_for_compare(value: object) -> tuple[str, object]:
+    """Normalize VCD/golden values while preserving unknowns.
+
+    VCD vectors are binary strings. Golden values are usually ints or hex
+    strings. Returning typed tuples avoids ambiguous string comparison.
+    """
+    if isinstance(value, int):
+        return ("int", value)
+
+    val = str(value).strip().lower().replace("_", "")
+    if val in ("", "?"):
+        return ("missing", val)
+    if has_unknown_bits(val):
+        return ("unknown", val)
+    if val.startswith("0x"):
+        try:
+            return ("int", int(val, 16))
+        except ValueError:
+            return ("text", val)
+    if re.fullmatch(r"[01]+", val):
+        return ("int", int(val, 2))
+    if re.fullmatch(r"\d+", val):
+        return ("int", int(val, 10))
+    return ("text", val)
 
 
 # ─── VCD Parser ───────────────────────────────────────────────────────────────
@@ -320,15 +368,8 @@ def build_cycle_table(
         row = [str(cycle_num)]
         for sig in include_signals:
             val = state.get(sig, "?")
-            # Format binary vectors as hex
-            # NOTE: x (unknown) and z (high-impedance) bits are treated as 0.
-            # This masks genuine undriven signals — check raw binary for x/z.
-            if len(val) > 4 and all(c in "01xzXZ" for c in val):
-                try:
-                    hex_val = hex(int(val.replace("x", "0").replace("z", "0"), 2))
-                    val = hex_val
-                except ValueError:
-                    pass
+            # Format known binary vectors as hex, but preserve x/z exactly.
+            val = format_vcd_value(val)
             row.append(val)
 
         notes = annotations.get(cycle_num, [])
@@ -390,10 +431,9 @@ def detect_cycle_offset(
                 continue
             vcd_val = state.get(sig, "0")
             golden_val = golden_cycles[golden_start].get(short, "0")
-            # Normalize both values for comparison
-            vcd_norm = str(vcd_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
-            golden_norm = str(golden_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
-            if vcd_norm == golden_norm and vcd_norm != "0":
+            vcd_norm = normalize_for_compare(vcd_val)
+            golden_norm = normalize_for_compare(golden_val)
+            if vcd_norm == golden_norm and vcd_norm != ("int", 0):
                 offset = vcd_cycle - golden_start
                 return max(0, offset)
 
@@ -404,6 +444,8 @@ def run_golden_model_comparison(
     golden_path: str,
     cycle_snapshots: list[tuple[int, dict[str, str]]],
     include_signals: list[str],
+    test_vector_index: int = 0,
+    apply_offset: bool = False,
 ) -> str | None:
     """Run a golden model and compare outputs with RTL cycle-by-cycle.
 
@@ -453,7 +495,10 @@ def run_golden_model_comparison(
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)
                 if hasattr(mod, "run"):
-                    golden_data = mod.run()
+                    try:
+                        golden_data = mod.run(test_vector_index=test_vector_index)
+                    except TypeError:
+                        golden_data = mod.run()
                     if isinstance(golden_data, list):
                         for i, entry in enumerate(golden_data):
                             if isinstance(entry, dict):
@@ -479,12 +524,22 @@ def run_golden_model_comparison(
 
     short_names = {s: s.split(".")[-1] for s in include_signals}
     first_divergence = None
+    first_divergence_info = None
     divergence_count = 0
 
-    # Auto-detect cycle offset between VCD and golden model
-    offset = detect_cycle_offset(cycle_snapshots, golden_cycles, include_signals)
-    if offset != 0:
-        lines.append(f"CYCLE OFFSET DETECTED: +{offset} (golden cycle N aligns to VCD cycle N+{offset})")
+    # Detect, but do not silently apply, cycle offset. Applying it by default
+    # can hide the exact early/late timing bugs this tool is meant to expose.
+    offset_candidate = detect_cycle_offset(cycle_snapshots, golden_cycles, include_signals)
+    offset = offset_candidate if apply_offset else 0
+    if offset_candidate != 0:
+        lines.append(
+            f"CYCLE OFFSET CANDIDATE: +{offset_candidate} "
+            f"(golden cycle N appears to align to VCD cycle N+{offset_candidate})"
+        )
+        if apply_offset:
+            lines.append("OFFSET APPLIED because --apply-offset was requested.")
+        else:
+            lines.append("OFFSET NOT APPLIED by default; timing bugs remain visible.")
         lines.append("")
 
     for cycle_num, state in cycle_snapshots:
@@ -498,23 +553,24 @@ def run_golden_model_comparison(
             if short not in golden:
                 continue
 
-            rtl_val = state.get(sig, "?")
-            # Normalize RTL value to hex for comparison
-            # NOTE: x/z bits treated as 0 — see build_cycle_table comment
-            if len(rtl_val) > 4 and all(c in "01xzXZ" for c in rtl_val):
-                try:
-                    rtl_val = hex(int(rtl_val.replace("x", "0").replace("z", "0"), 2))
-                except ValueError:
-                    pass
+            raw_rtl_val = state.get(sig, "?")
+            rtl_val = format_vcd_value(raw_rtl_val)
 
             golden_val = golden[short]
-            # Normalize for comparison
-            rtl_norm = str(rtl_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
-            golden_norm = str(golden_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
+            rtl_norm = normalize_for_compare(raw_rtl_val)
+            golden_norm = normalize_for_compare(golden_val)
 
-            if rtl_norm != golden_norm and rtl_norm and golden_norm not in ("0",):
+            if rtl_norm != golden_norm:
                 if first_divergence is None:
                     first_divergence = cycle_num
+                    first_divergence_info = {
+                        "cycle": cycle_num,
+                        "signal": short,
+                        "golden": golden_val,
+                        "rtl": rtl_val,
+                        "rtl_kind": rtl_norm[0],
+                        "golden_kind": golden_norm[0],
+                    }
                 divergence_count += 1
                 lines.append(
                     f"  CYCLE {cycle_num}: {short} — golden={golden_val} rtl={rtl_val}"
@@ -524,6 +580,19 @@ def run_golden_model_comparison(
     if first_divergence is not None:
         lines.append(f"FIRST DIVERGENCE: cycle {first_divergence}")
         lines.append(f"TOTAL MISMATCHES: {divergence_count}")
+        if first_divergence_info:
+            div = first_divergence_info
+            if div["rtl_kind"] == "unknown":
+                bug_type = "unknown-or-undriven"
+            elif offset_candidate:
+                bug_type = "possible-timing-offset"
+            else:
+                bug_type = "data-or-initialization"
+            lines.append(
+                "FIRST DIVERGENCE SUMMARY: "
+                f"cycle={div['cycle']} signal={div['signal']} "
+                f"golden={div['golden']} rtl={div['rtl']} type={bug_type}"
+            )
         lines.append("")
         lines.append("DIAGNOSIS:")
         lines.append(f"  1. The first divergence at cycle {first_divergence} is the root cause.")
@@ -543,7 +612,8 @@ def run_golden_model_comparison(
 
 def main():
     parser = argparse.ArgumentParser(description="Convert VCD to LLM-readable cycle table")
-    parser.add_argument("vcd_file", help="Path to .vcd file")
+    parser.add_argument("vcd_file", nargs="?", help="Path to .vcd file")
+    parser.add_argument("--vcd", dest="vcd_file_alias", help="Path to .vcd file")
     parser.add_argument("--sim-log", help="sim.log path — extract failing signal names")
     parser.add_argument("--timing-yaml", help="timing_model.yaml — annotate assertion violations")
     parser.add_argument("--signals", help="Extra signals to always include (comma-separated)")
@@ -551,7 +621,15 @@ def main():
     parser.add_argument("--module", help="Filter signals to this module scope")
     parser.add_argument("--output", help="Write output to file instead of stdout")
     parser.add_argument("--golden-model", help="Python golden model — compare RTL outputs cycle-by-cycle")
+    parser.add_argument("--test-vector-index", type=int, default=0,
+                        help="Golden model test vector index (default: 0)")
+    parser.add_argument("--apply-offset", action="store_true",
+                        help="Apply detected golden/VCD cycle offset during diff")
     args = parser.parse_args()
+
+    args.vcd_file = args.vcd_file_alias or args.vcd_file
+    if not args.vcd_file:
+        parser.error("vcd_file is required (positional or --vcd)")
 
     if not Path(args.vcd_file).exists():
         print(f"ERROR: VCD file not found: {args.vcd_file}", file=sys.stderr)
@@ -678,7 +756,11 @@ def main():
     # 9. Golden model comparison (if available)
     if args.golden_model and Path(args.golden_model).exists():
         golden_diff = run_golden_model_comparison(
-            args.golden_model, cycle_snapshots, include_signals
+            args.golden_model,
+            cycle_snapshots,
+            include_signals,
+            test_vector_index=args.test_vector_index,
+            apply_offset=args.apply_offset,
         )
         if golden_diff:
             output_parts.append("")

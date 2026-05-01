@@ -146,6 +146,8 @@ def main():
                         help="Disable VCD waveform dump")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed output")
+    parser.add_argument("--save-raw-log",
+                        help="Save raw simulation output to this file path")
     parser.add_argument("--golden-check",
                         help="Run golden model self-check (path to golden_model.py)")
     args = parser.parse_args()
@@ -273,6 +275,12 @@ def main():
 
         sim_output = result.stdout + result.stderr
 
+        # Save raw simulation output for post-mortem debug
+        if args.save_raw_log:
+            raw_log_path = Path(args.save_raw_log)
+            raw_log_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_log_path.write_text(sim_output, encoding="utf-8")
+
         if args.verbose:
             print(f"[iverilog_runner] Simulation output:", file=sys.stderr)
             print(sim_output[:5000], file=sys.stderr)
@@ -297,6 +305,14 @@ def main():
     failed_summary = re.search(r'FAILED:\s*(\d+)\s*assertion', sim_output)
     pass_lines = re.findall(r'\[PASS\].*', sim_output)
 
+    # Extract first failure cycle number from [FAIL] lines
+    first_fail_cycle = None
+    for fl in fail_lines:
+        m = re.search(r'cycle=(\d+)', fl)
+        if m:
+            first_fail_cycle = int(m.group(1))
+            break
+
     num_passed = len(pass_lines)
     num_failed = len(fail_lines)
     if failed_summary:
@@ -317,6 +333,7 @@ def main():
             "failed": num_failed,
             "vcd_path": vcd_path,
             "failures": failures,
+            "first_fail_cycle": first_fail_cycle,
         }
         print(json.dumps(result))
         sys.exit(1)

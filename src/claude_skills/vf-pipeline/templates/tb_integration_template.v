@@ -29,26 +29,97 @@ module tb_<design_name>;
         $dumpvars(0, tb_<design_name>);
     end
 
+    // ===========================================================================
+    // TESTBENCH TIMING METHODOLOGY — Read Before Modifying This Testbench
+    // ===========================================================================
+    //
+    // Rule 1: NBA FOR DUT INPUTS (MANDATORY)
+    //   All DUT input assignments in initial blocks MUST use non-blocking
+    //   assignment (<=). This prevents race conditions between the testbench
+    //   and the DUT's sequential always blocks at the same posedge.
+    //
+    //   CORRECT:
+    //     msg_block <= 512'h...;
+    //     msg_valid <= 1'b1;
+    //     @(posedge clk);
+    //
+    //   WRONG (blocking assignment to DUT input — race condition):
+    //     msg_block = 512'h...;
+    //     msg_valid = 1'b1;
+    //     @(posedge clk);
+    //
+    //   Exception: Reset signal (rst/rst_n) MAY use blocking (=) in the
+    //   dedicated reset sequence only. All other DUT inputs: use <= .
+    //
+    // Rule 2: RESET SEQUENCE TIMING
+    //   Standard pattern:
+    //     rst = 1;                          // blocking OK for reset only
+    //     <zero all data inputs with <=>
+    //     @(posedge clk); @(posedge clk);   // hold reset 2 cycles
+    //     rst = 0;                          // blocking OK for reset only
+    //     @(negedge clk);                   // wait for NBA region to settle
+    //     // Now all DUT registers have their reset values
+    //
+    // Rule 3: MULTI-BLOCK/MESSAGE SENDING PATTERN
+    //   When sending multiple blocks to a processing core:
+    //     // Block 1:
+    //     msg_block <= BLOCK1_DATA;
+    //     msg_valid <= 1'b1;
+    //     is_last   <= 1'b0;
+    //     @(posedge clk);          // DUT samples inputs
+    //     msg_valid <= 1'b0;
+    //     // ... wait for block to complete ...
+    //     @(posedge clk);          // inter-block gap — DUT FSM returns to IDLE
+    //
+    //     // Block 2:
+    //     msg_block <= BLOCK2_DATA;
+    //     msg_valid <= 1'b1;
+    //     is_last   <= 1'b1;
+    //     @(posedge clk);
+    //     ...
+    //
+    //   CRITICAL: After a valid pulse, add at least one @(posedge clk) gap
+    //   before driving the next block. The DUT FSM needs time to transition
+    //   back to IDLE and re-assert ready.
+    //
+    // Rule 4: OUTPUT SAMPLING — posedge vs negedge
+    //   - Registered outputs (most outputs): sample at @(negedge clk) AFTER
+    //     the @(posedge clk) where the output is expected. The negedge gives
+    //     NBA region time to apply new register values.
+    //   - Single-cycle pulse signals (hash_valid, ready, done): sample at
+    //     the SAME @(posedge clk) where detection occurs. Do NOT insert
+    //     @(negedge clk) between detection and sampling. (See Rule 5 below.)
+    //
+    // Rule 5: TIMING CONTRACT QUICK REFERENCE
+    //   When spec.json timing_contract shows:
+    //     same_cycle_visible=false, pipeline_delay_cycles=1
+    //     → Consumer sees NEW value one posedge AFTER producer writes it.
+    //       Insert one @(posedge clk) between driving and checking.
+    //     same_cycle_visible=true, pipeline_delay_cycles=0
+    //     → Consumer sees value immediately. Check on the same posedge.
+    //
+    // ===========================================================================
+
     // Test cases (example structure)
     initial begin
         // --- Reset ---
-        rst = 1; data_in = 0;
+        rst = 1; data_in <= 0;
         @(posedge clk); @(posedge clk);
         rst = 0;
         @(negedge clk);  // wait for NBA to settle after rst deassert
         $display("[TRACE] cycle=%0d rst released", cycle_count);
 
         // --- Test case 1: <description> ---
-        data_in = 32'h0000_1234;
+        data_in <= 32'h0000_1234;
         @(posedge clk);   // DUT samples data_in
         @(negedge clk);   // NBA settled — registered outputs now valid
         $display("[TRACE] cycle=%0d data_in=0x%0h data_out=0x%0h", cycle_count, data_in, data_out);
         if (data_out !== 32'hEXPECTED) begin
-            $display("[FAIL] cycle=%0d data_out expected=0x%0h got=0x%0h",
+            $display("[FAIL] test=test1 vector=0 cycle=%0d signal=data_out expected=0x%0h actual=0x%0h phase=negedge",
                      cycle_count, 32'hEXPECTED, data_out);
             fail_count = fail_count + 1;
         end else
-            $display("[PASS] cycle=%0d data_out=0x%0h", cycle_count, data_out);
+            $display("[PASS] test=test1 vector=0 cycle=%0d signal=data_out actual=0x%0h", cycle_count, data_out);
 
         // --- Test case 2: multi-cycle operation with valid/ready handshake ---
         // IMPORTANT: When polling for single-cycle pulse signals (hash_valid, ready):

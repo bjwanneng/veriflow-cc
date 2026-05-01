@@ -31,13 +31,17 @@ VCD_FILE=$(ls workspace/sim/*.vcd 2>/dev/null | head -1)
 ```bash
 if [ -f workspace/docs/golden_model.py ] && [ -n "$VCD_FILE" ] && [ -f "$VCD_FILE" ]; then
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
-        --vcd "$VCD_FILE" \
+        "$VCD_FILE" \
+        --sim-log logs/sim.log \
         --golden-model workspace/docs/golden_model.py \
-        --module $TOP_MODULE 2>&1 | tee logs/wave_diff.txt
+        --module $TOP_MODULE \
+        --output logs/wave_diff.txt 2>&1 | tee logs/vcd2table.log
 elif [ -n "$VCD_FILE" ] && [ -f "$VCD_FILE" ]; then
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
-        --vcd "$VCD_FILE" \
-        --module $TOP_MODULE 2>&1 | tee logs/wave_table.txt
+        "$VCD_FILE" \
+        --sim-log logs/sim.log \
+        --module $TOP_MODULE \
+        --output logs/wave_table.txt 2>&1 | tee logs/vcd2table.log
 else
     echo "[VERIFY] No VCD file — relying on sim.log only."
 fi

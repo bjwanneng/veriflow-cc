@@ -108,21 +108,23 @@ module tb_<design_name>;
     initial begin
         // --- Reset ---
         rst = 1;
-        <zero all inputs>
+        <zero all inputs with <= >
         @(posedge clk); @(posedge clk);
         rst = 0;
         @(negedge clk);
 
         // --- Test 1: <name> ---
-        <drive inputs>
+        <drive inputs with <= >
         @(posedge clk);  // DUT samples
         // Wait for valid/ready handshake
         // Check output against pre-computed expected value
         if (<output_port> !== <EXPECTED_VALUE>) begin
-            $display("[FAIL] ...");
+            $display("[FAIL] test=<test_name> vector=<N> cycle=%0d signal=<output_port> expected=0x%0h actual=0x%0h phase=<posedge|negedge>",
+                     cycle_count, <EXPECTED_VALUE>, <output_port>);
             fail_count = fail_count + 1;
         end else
-            $display("[PASS] ...");
+            $display("[PASS] test=<test_name> vector=<N> cycle=%0d signal=<output_port> actual=0x%0h",
+                     cycle_count, <output_port>);
 
         // --- Summary ---
         if (fail_count == 0) $display("ALL TESTS PASSED");
@@ -164,6 +166,27 @@ extra digits (losing MSBs). Count digits before writing. Use Python to validate:
 ```python
 assert len(hex_str) == 512 // 4  # 128 digits for 512-bit
 ```
+
+**CRITICAL — Testbench timing rules (race condition prevention)**:
+
+All DUT input assignments in the Verilog testbench `initial` block MUST use non-blocking assignment (`<=`).
+The ONLY exception is the reset signal during the dedicated reset sequence.
+
+Why: When a testbench uses blocking assignment (`=`) to drive a DUT input, and the DUT reads that input
+in an `always @(posedge clk)` block with NBA (`<=`), both execute in the same Active region of the
+simulator event queue. The execution order is indeterminate — the DUT may see the old or new value.
+Using `<=` in the testbench moves the assignment to the NBA region, ensuring deterministic behavior.
+
+Before writing the test sequence, re-read the "TESTBENCH TIMING METHODOLOGY" comment block in
+`tb_integration_template.v` — the generated testbench MUST follow those 5 rules.
+
+Race condition review checklist (verify ALL items before writing the file):
+- [ ] All DUT input ports are driven with `<=` (non-blocking) in the initial block, except `rst`/`rst_n` during the reset sequence
+- [ ] Reset sequence holds for at least 2 posedge cycles and waits for `@(negedge clk)` after deassert
+- [ ] Multi-block messages include at least one `@(posedge clk)` gap between blocks
+- [ ] Single-cycle pulse signals are sampled at the same posedge as detection (no intervening `@(negedge clk)`)
+- [ ] Registered outputs are sampled at `@(negedge clk)` after the expected production posedge
+- [ ] After `wait(signal == value)` or polling loop, add `@(posedge clk)` before driving new inputs
 
 ### Step 5: Validate output files
 
