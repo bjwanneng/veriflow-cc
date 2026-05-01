@@ -1189,3 +1189,94 @@ end
 In verify_fix stage, flag any DONE/finalize state that references a `_new`
 combinational signal. These signals are valid ONLY inside CALC-state sequential
 blocks for register updates.
+
+---
+
+## 27. Cycle-First Design Methodology `[CRITICAL]`
+
+### 27.1 The Problem: Software Brain Meets Hardware Clock
+
+LLMs and human developers trained on software naturally think in sequential
+execution: "statement B follows statement A, so B sees A's result." Hardware
+does not work this way.
+
+In hardware with synchronous registers:
+- At posedge T: ALL registers sample their inputs simultaneously
+- A register written at posedge T (`reg_x <= new_val`) does NOT make `new_val`
+  available until posedge T+1
+- Any logic evaluating at posedge T sees the register's value from posedge T-1
+
+This creates a fundamental impedance mismatch between sequential thinking and
+clocked hardware behavior.
+
+### 27.2 The Solution: T/T+1 Thinking
+
+Replace "sequential execution" with "clock-tick propagation":
+
+| Software Thinking (WRONG)          | Hardware Thinking (CORRECT)                |
+|-------------------------------------|--------------------------------------------|
+| "After A is computed, B uses A"    | "A is computed at T, B reads A at T+1"    |
+| "Signal is asserted, module sees it"| "Signal asserted at T, module sees at T+1"|
+| "Load then calculate"               | "Load at T, calculate sees loaded data at T+1"|
+| "if/else if for two enables"        | "Two enables are simultaneous — use two `if` blocks"|
+
+### 27.3 Mandatory Pre-Code Step: Build the Cycle Table
+
+Before writing ANY combinational or sequential always block, the designer MUST
+produce a cycle timing table:
+
+```
+T    | FSM State  | load_en | calc_en | register_X | register_Y | output_valid
+-----|------------|---------|---------|------------|------------|-------------
+T+0  | IDLE       |    0    |    0    |     -      |     -      |      0
+T+1  | LOAD       |    1    |    0    |  input_val |     -      |      0
+T+2  | CALC[0]    |    0    |    1    |  f(input)  |  loaded    |      0
+T+3  | CALC[1]    |    0    |    1    |  f(prev)   |  loaded    |      0
+...  | CALC[N-1]  |    0    |    1    |  f(prev)   |  loaded    |      0
+T+N+1| DONE       |    0    |    0    |  result    |  result    |      1
+```
+
+For each row, verify:
+1. Registered signals: value in this row is what the register HOLDS at this
+   posedge (it was WRITTEN at the previous posedge)
+2. Combinational signals: value in this row is what the wire evaluates to
+   at this posedge (it depends on the current registered values)
+3. Output ports: driven from `_reg` signals — visible to external modules
+   starting the NEXT posedge
+
+### 27.4 Rules Derived From T/T+1 Thinking
+
+1. **`<=` means "next cycle visible"**: Every `<=` assignment in a sequential
+   block defers the value change to the next posedge. Plan accordingly.
+
+2. **Co-asserted load and calc need bypass mux**: If `load_en` and `calc_en`
+   are both high on the same cycle, the datapath must select:
+   `working_data = load_en ? input_data : computed_result`
+   Do NOT use `if/else if` — both paths execute simultaneously.
+
+3. **Co-asserted enables need independent `if` blocks**: If `module_a_en` and
+   `module_b_en` are both asserted by the same FSM state, they MUST appear in
+   separate `if` blocks, not in an `if/else if` chain.
+
+4. **Cross-module registered signals have 1-cycle delay**: If module A produces
+   a registered output and module B consumes it on the same posedge, module B
+   sees the PREVIOUS value. Use combinational bypass (assign from `_next` wire)
+   if same-cycle visibility is required.
+
+5. **FSM output assertion timing**: If a registered output must be active during
+   STATE_B, assert it during STATE_A's transition to STATE_B (one cycle earlier).
+   The register will sample it at the same posedge that transitions to STATE_B,
+   making it visible at STATE_B's first cycle.
+
+### 27.5 Validation Checklist
+
+After completing the cycle timing table and writing the Verilog code:
+
+- [ ] For each registered signal, verify its value in each row matches what the
+      Verilog `<=` assignment would produce
+- [ ] For each cross-module signal, verify the `timing_contract.same_cycle_visible`
+      matches the actual implementation (registered = false, combinational bypass = true)
+- [ ] For each co-asserted pair of enables, verify they are in independent `if` blocks
+- [ ] For the DONE/finalize state, verify only `_reg` signals are used (no `_new` wires)
+- [ ] For the first operational cycle, verify ALL output-path registers have correct
+      initial values (not just "reset to 0")

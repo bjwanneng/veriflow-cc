@@ -1,6 +1,7 @@
 """Pipeline state management - zero external dependencies."""
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -282,6 +283,10 @@ class PipelineState:
     def validate_golden_model(self, project_dir: str) -> tuple[bool, list[str]]:
         """Validate golden_model.py after Stage 1 generation.
 
+        Checks syntax, required function, AND runs the golden model self-test
+        to verify test vectors pass. If the golden model itself has bugs, any
+        RTL comparison is meaningless.
+
         Returns:
             (is_valid, issues) — is_valid=True means golden model is usable.
             Returns (True, []) if golden_model.py does not exist (it is optional).
@@ -289,7 +294,7 @@ class PipelineState:
         import py_compile
 
         issues = []
-        gm_path = Path(project_dir) / "workspace/docs" / "golden_model.py"
+        gm_path = Path(project_dir) / "workspace" / "docs" / "golden_model.py"
 
         if not gm_path.exists():
             return (True, [])  # golden model is optional
@@ -305,6 +310,38 @@ class PipelineState:
         content = gm_path.read_text(encoding="utf-8")
         if "def run(" not in content:
             issues.append("golden_model.py missing run() function")
+            return (False, issues)
+
+        # Run the golden model self-test
+        try:
+            result = subprocess.run(
+                [sys.executable, str(gm_path)],
+                capture_output=True, text=True, timeout=30,
+                cwd=str(gm_path.parent),
+            )
+            output = result.stdout + result.stderr
+
+            # Check for [FAIL] markers
+            fail_lines = [l for l in output.splitlines() if "[FAIL]" in l]
+            if fail_lines:
+                for fl in fail_lines[:5]:
+                    issues.append(f"golden_model.py self-test failed: {fl.strip()}")
+                return (False, issues)
+
+            # If no PASS markers and non-zero exit, something is wrong
+            pass_lines = [l for l in output.splitlines() if "[PASS]" in l]
+            if not pass_lines and result.returncode != 0:
+                issues.append(
+                    f"golden_model.py exited with code {result.returncode} "
+                    f"and produced no [PASS] output"
+                )
+                return (False, issues)
+
+        except subprocess.TimeoutExpired:
+            issues.append("golden_model.py self-test timed out (30s limit)")
+            return (False, issues)
+        except Exception as e:
+            issues.append(f"golden_model.py execution error: {e}")
             return (False, issues)
 
         return (True, [])

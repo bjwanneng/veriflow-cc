@@ -76,23 +76,89 @@ def collect_rtl_sources(rtl_dir: Path) -> list[str]:
     return [str(s) for s in sources]
 
 
+def golden_check(golden_path: str, verbose: bool = False) -> dict:
+    """Run golden_model.py standalone and verify all test vectors pass.
+
+    This runs BEFORE simulation to confirm the reference model is correct.
+    If the golden model itself has bugs, any RTL comparison is meaningless.
+    """
+    golden_path = str(Path(golden_path).resolve())
+    if not Path(golden_path).exists():
+        return {"error": f"Golden model not found: {golden_path}", "passed": False}
+
+    try:
+        result = subprocess.run(
+            [sys.executable, golden_path],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(Path(golden_path).parent),
+        )
+        output = result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        return {"error": "Golden model timed out after 30s", "passed": False}
+    except Exception as e:
+        return {"error": f"Golden model execution error: {e}", "passed": False}
+
+    # Check for [PASS] and [FAIL] markers
+    pass_lines = [l for l in output.splitlines() if "[PASS]" in l]
+    fail_lines = [l for l in output.splitlines() if "[FAIL]" in l]
+
+    if verbose:
+        print(f"[golden_check] Output:\n{output[:3000]}", file=sys.stderr)
+
+    if fail_lines:
+        return {
+            "passed": False,
+            "test_count": len(pass_lines) + len(fail_lines),
+            "pass_count": len(pass_lines),
+            "fail_count": len(fail_lines),
+            "failures": fail_lines[:10],
+            "output": output[:2000],
+        }
+
+    if result.returncode != 0:
+        return {
+            "passed": False,
+            "error": f"Golden model exited with code {result.returncode}",
+            "output": output[:2000],
+        }
+
+    return {
+        "passed": True,
+        "test_count": len(pass_lines),
+        "pass_count": len(pass_lines),
+        "fail_count": 0,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Pure-Verilog simulation runner for VeriFlow-CC pipeline"
     )
-    parser.add_argument("--rtl-dir", required=True,
+    parser.add_argument("--rtl-dir", required=False, default=None,
                         help="Directory containing *.v RTL source files")
-    parser.add_argument("--tb-file", required=True,
+    parser.add_argument("--tb-file", required=False, default=None,
                         help="Path to Verilog testbench file (tb_<design>.v)")
-    parser.add_argument("--module", required=True,
+    parser.add_argument("--module", required=False, default=None,
                         help="Verilog top-level module name (for reference)")
-    parser.add_argument("--build-dir", required=True,
+    parser.add_argument("--build-dir", required=False, default=None,
                         help="Build directory for compilation artifacts")
     parser.add_argument("--no-vcd", action="store_true",
                         help="Disable VCD waveform dump")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed output")
+    parser.add_argument("--golden-check",
+                        help="Run golden model self-check (path to golden_model.py)")
     args = parser.parse_args()
+
+    if args.golden_check:
+        result = golden_check(args.golden_check, verbose=args.verbose)
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if result.get("passed") else 1)
+
+    if not args.golden_check:
+        if not args.rtl_dir or not args.tb_file or not args.module or not args.build_dir:
+            parser.error("--rtl-dir, --tb-file, --module, --build-dir required "
+                         "when not using --golden-check")
 
     rtl_dir = Path(args.rtl_dir).resolve()
     tb_file = Path(args.tb_file).resolve()

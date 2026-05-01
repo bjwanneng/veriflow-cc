@@ -94,7 +94,60 @@
           "default_value": 16,
           "description": "Parameter description"
         }
-      ]
+      ],
+      "cycle_timing": {
+        "fsm_states": [
+          {
+            "name": "STATE_IDLE",
+            "duration_cycles": "variable",
+            "transitions": [
+              {"condition": "start_valid == 1", "next_state": "STATE_LOAD"}
+            ],
+            "asserted_signals": [],
+            "description": "Wait for start signal"
+          },
+          {
+            "name": "STATE_LOAD",
+            "duration_cycles": 1,
+            "transitions": [
+              {"condition": "1", "next_state": "STATE_PROCESS"}
+            ],
+            "asserted_signals": ["load_en"],
+            "description": "Capture input data into internal registers"
+          },
+          {
+            "name": "STATE_PROCESS",
+            "duration_cycles": "N (iterative)",
+            "transitions": [
+              {"condition": "step_cnt == MAX-1", "next_state": "STATE_DONE"}
+            ],
+            "asserted_signals": ["process_en"],
+            "description": "Iterative computation, one step per cycle"
+          },
+          {
+            "name": "STATE_DONE",
+            "duration_cycles": 1,
+            "transitions": [
+              {"condition": "1", "next_state": "STATE_IDLE"}
+            ],
+            "asserted_signals": ["output_valid"],
+            "description": "Output result and return to idle"
+          }
+        ],
+        "signal_timing": [
+          {
+            "signal": "output_valid",
+            "type": "registered",
+            "first_asserted_cycle": "T+N+1",
+            "description": "Registered output, visible at T+N+2 externally"
+          }
+        ],
+        "pipeline_timing": {
+          "input_to_output_latency_cycles": 0,
+          "throughput": "1 result per N cycles",
+          "reset_recovery_cycles": 1
+        }
+      }
     }
   ],
   "module_connectivity": [
@@ -102,7 +155,14 @@
       "source": "module1.port1",
       "destination": "module2.port1",
       "bus_width": 32,
-      "connection_type": "direct"
+      "connection_type": "direct",
+      "timing_contract": {
+        "producer_type": "registered",
+        "consumer_type": "sequential",
+        "same_cycle_visible": false,
+        "pipeline_delay_cycles": 1,
+        "description": "Producer registers output at posedge T, consumer sees OLD value at posedge T, NEW value at T+1"
+      }
     }
   ]
 }

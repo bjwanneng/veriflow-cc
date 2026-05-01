@@ -354,6 +354,52 @@ def build_cycle_table(
 
 # ─── Golden Model Comparison ──────────────────────────────────────────────────
 
+def detect_cycle_offset(
+    cycle_snapshots: list[tuple[int, dict[str, str]]],
+    golden_cycles: dict[int, dict[str, str]],
+    include_signals: list[str],
+) -> int:
+    """Auto-detect the VCD cycle offset where golden cycle 0 should align.
+
+    Strategy: Find the first golden cycle with a non-trivial value, then find
+    the first VCD cycle where a matching signal has the same value.
+    Falls back to 0 offset if no clear alignment point is found.
+    """
+    short_names = {s: s.split(".")[-1] for s in include_signals}
+
+    # Find the first golden cycle that has any non-zero, non-trivial value
+    golden_start = None
+    for gc in sorted(golden_cycles.keys()):
+        vals = golden_cycles[gc]
+        has_active = any(
+            v not in ("0", "0x0", "0x00000000", "")
+            for v in vals.values()
+        )
+        if has_active:
+            golden_start = gc
+            break
+
+    if golden_start is None:
+        return 0
+
+    # Find the first VCD cycle where a signal matches the golden start cycle
+    for vcd_cycle, state in cycle_snapshots:
+        for sig in include_signals:
+            short = short_names[sig]
+            if short not in golden_cycles.get(golden_start, {}):
+                continue
+            vcd_val = state.get(sig, "0")
+            golden_val = golden_cycles[golden_start].get(short, "0")
+            # Normalize both values for comparison
+            vcd_norm = str(vcd_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
+            golden_norm = str(golden_val).lower().replace("_", "").replace("0x", "").lstrip("0") or "0"
+            if vcd_norm == golden_norm and vcd_norm != "0":
+                offset = vcd_cycle - golden_start
+                return max(0, offset)
+
+    return 0
+
+
 def run_golden_model_comparison(
     golden_path: str,
     cycle_snapshots: list[tuple[int, dict[str, str]]],
@@ -435,10 +481,17 @@ def run_golden_model_comparison(
     first_divergence = None
     divergence_count = 0
 
+    # Auto-detect cycle offset between VCD and golden model
+    offset = detect_cycle_offset(cycle_snapshots, golden_cycles, include_signals)
+    if offset != 0:
+        lines.append(f"CYCLE OFFSET DETECTED: +{offset} (golden cycle N aligns to VCD cycle N+{offset})")
+        lines.append("")
+
     for cycle_num, state in cycle_snapshots:
-        if cycle_num not in golden_cycles:
+        golden_cycle = cycle_num - offset
+        if golden_cycle not in golden_cycles:
             continue
-        golden = golden_cycles[cycle_num]
+        golden = golden_cycles[golden_cycle]
 
         for sig in include_signals:
             short = short_names[sig]

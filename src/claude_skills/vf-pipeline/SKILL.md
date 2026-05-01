@@ -126,6 +126,30 @@ Pre-stage:
 source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --start
 ```
 
+### Golden Model Self-Check (BEFORE simulation)
+
+If golden_model.py exists, verify it passes its own test vectors first.
+This catches golden model bugs BEFORE wasting time on RTL debugging.
+
+```bash
+source "$PROJECT_DIR/.veriflow/eda_env.sh"
+cd "$PROJECT_DIR"
+if [ -f workspace/docs/golden_model.py ]; then
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
+        --golden-check workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
+    if [ $? -ne 0 ]; then
+        echo "[GOLDEN] Self-check FAILED — the reference model has bugs."
+        echo "[GOLDEN] Fix golden_model.py FIRST. The problem is NOT in the RTL."
+        # Do NOT consume retry budget — this is a golden model issue
+        state.py "$PROJECT_DIR" "verify_fix" \
+            --hook="test -f workspace/docs/golden_model.py" \
+            --journal-outputs="logs/golden_selfcheck.log" \
+            --journal-notes="Golden model self-check failed — golden model has bugs"
+        # STOP and notify user to fix the golden model before retrying
+    fi
+fi
+```
+
 ### Run simulation
 
 ```bash

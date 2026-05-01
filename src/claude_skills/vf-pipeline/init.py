@@ -88,6 +88,32 @@ def discover_eda() -> tuple[str, str]:
     return "", ""
 
 
+def verify_iverilog(iverilog_path: str) -> tuple[bool, str]:
+    """Actually run iverilog -V to verify it works (catches DLL issues on Windows).
+
+    Returns (success, version_or_error).
+    """
+    if not iverilog_path:
+        return False, "iverilog path is empty"
+    try:
+        result = subprocess.run(
+            [iverilog_path, "-V"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            version = (result.stdout + result.stderr).split("\n")[0]
+            return True, version
+        else:
+            return False, f"iverilog -V returned code {result.returncode}: {(result.stderr or '')[:200]}"
+    except FileNotFoundError:
+        return False, f"iverilog not found at {iverilog_path}"
+    except OSError as e:
+        # On Windows, this catches DLL loading failures (e.g., 0xC0000139)
+        return False, f"Cannot execute iverilog (DLL/library error?): {e}"
+    except subprocess.TimeoutExpired:
+        return False, "iverilog -V timed out"
+
+
 def check_cocotb(python_exe: str) -> bool:
     """Check if cocotb is available."""
     if not python_exe:
@@ -177,6 +203,18 @@ def main():
     eda_bin, eda_lib = discover_eda()
     print(f"[ENV] EDA_BIN={eda_bin}  EDA_LIB={eda_lib}")
 
+    # Detect IVL_HOME (iverilog needs this for its internal preprocessor)
+    ivl_home = ""
+    if eda_bin:
+        eda_base = str(Path(eda_bin).parent)
+        for candidate in [
+            Path(eda_base) / "lib" / "ivl",
+            Path(eda_bin) / ".." / "lib" / "ivl",
+        ]:
+            if candidate.is_dir():
+                ivl_home = str(candidate.resolve())
+                break
+
     # Write eda_env.sh
     veriflow_dir = project_dir / ".veriflow"
     eda_env_path = veriflow_dir / "eda_env.sh"
@@ -184,27 +222,51 @@ def main():
         f.write(f'export PYTHON_EXE="{python_exe}"\n')
         f.write(f'export EDA_BIN="{eda_bin}"\n')
         f.write(f'export EDA_LIB="{eda_lib}"\n')
+        f.write(f'export IVL_HOME="{ivl_home}"\n')
         f.write(f'export COCOTB_AVAILABLE="{"true" if cocotb_available else "false"}"\n')
         f.write(f'export PATH="{eda_bin}:{eda_lib}:$PATH"\n')
     print(f"[ENV] Wrote {eda_env_path}")
+    if ivl_home:
+        print(f"[ENV] IVL_HOME={ivl_home}")
 
-    # Smoke test iverilog
+    # Verify iverilog actually runs (catches DLL issues on Windows)
     if eda_bin:
-        iverilog_path = Path(eda_bin) / "iverilog"
-        if not iverilog_path.exists():
-            iverilog_path = Path(eda_bin) / "iverilog.exe"
-        if iverilog_path.exists():
-            try:
-                result = subprocess.run(
-                    [str(iverilog_path), "-V"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                version_line = (result.stdout + result.stderr).split("\n")[0]
-                print(f"[ENV] iverilog: {version_line}")
-            except (OSError, subprocess.TimeoutExpired):
-                print("[WARN] iverilog smoke test failed")
+        iverilog_path = ""
+        for name in ("iverilog", "iverilog.exe"):
+            p = Path(eda_bin) / name
+            if p.exists():
+                iverilog_path = str(p)
+                break
+
+        if iverilog_path:
+            ok, msg = verify_iverilog(iverilog_path)
+            if ok:
+                print(f"[ENV] iverilog: {msg}")
+            else:
+                print(f"[WARN] iverilog found but verification failed: {msg}")
+                print("[WARN] Simulation may fail. Check DLL/library dependencies.")
+                if sys.platform == "win32":
+                    print("[HINT] On Windows, ensure oss-cad-suite bin/ and lib/ are both on PATH")
+        else:
+            print("[WARN] iverilog binary not found in EDA_BIN")
+
+    # Windows DLL check
+    if sys.platform == "win32" and eda_bin:
+        eda_bin_path = Path(eda_bin)
+        dll_files = list(eda_bin_path.glob("*.dll"))
+        if dll_files:
+            print(f"[ENV] DLLs found in EDA_BIN: {len(dll_files)}")
+        else:
+            lib_dlls = []
+            for lib_dir_str in (eda_lib.split(":") if eda_lib else []):
+                lib_dir = Path(lib_dir_str)
+                if lib_dir.is_dir():
+                    lib_dlls.extend(lib_dir.glob("*.dll"))
+            if lib_dlls:
+                print(f"[WARN] DLLs found in EDA_LIB ({len(lib_dlls)}) but not in EDA_BIN")
+                print("[HINT] Ensure EDA_LIB directories are on PATH for Windows DLL resolution")
+            else:
+                print("[WARN] No DLLs found near iverilog — may fail on Windows")
 
     # Check existing state
     state_path = veriflow_dir / "pipeline_state.json"

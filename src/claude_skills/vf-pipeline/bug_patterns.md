@@ -394,3 +394,82 @@ chaining), verify that the `is_first_block` initialization path covers BOTH sets
 - Two sets of registers exist (working A-H and chaining V0-V7)
 - The `is_first_block` init path only covers one set
 → The other set retains stale state from previous messages.
+
+---
+
+## Pattern 12: FSM Latch-on-Transition Race
+
+**Discovered in**: Generic FSM designs where pre-NBA state values are used to
+make decisions during the same cycle the state is transitioning.
+
+### Symptom
+
+An FSM control signal appears to be "one cycle late" or fails to assert on the
+expected cycle. Specifically, a signal that should be latched when the FSM
+transitions from STATE_A to STATE_B is never captured, because the latch logic
+checks `state_reg == STATE_A` but `state_reg` has already been scheduled to
+update via NBA.
+
+### Root Cause
+
+In a single always block, the FSM updates `state_reg <= next_state` at the
+bottom. All `case (state_reg)` branches above it run with the PRE-NBA value.
+This is normally correct. However, if the designer uses `case (state_reg)` to
+detect a transition (e.g., "when in IDLE and transitioning to CALC, latch the
+input"), the `STATE_IDLE` branch fires with the OLD state value — which IS
+correct for the current cycle. But if the state was already transitioned by a
+combinational `next_state` assignment that ran before the case statement, the
+branch may not match.
+
+The more subtle variant: the designer writes `if (state_reg == STATE_IDLE)`
+inside the sequential block, expecting it to fire on the IDLE→CALC transition
+cycle. It does fire — but `state_reg` still holds STATE_IDLE because the NBA
+hasn't applied yet. The problem arises when the designer ALSO writes the same
+condition in a SECOND sequential block (or expects it NOT to fire in a
+subsequent cycle when state_reg has already advanced).
+
+### Fix
+
+Detect state transitions explicitly using both `state_reg` and `next_state`
+before the state register update:
+
+```verilog
+always @(posedge clk) begin
+    if (rst) begin
+        state_reg <= STATE_IDLE;
+        latched_input <= 'd0;
+    end else begin
+        // Detect transition BEFORE state_reg updates
+        if (state_reg == STATE_IDLE && next_state == STATE_CALC) begin
+            latched_input <= data_input;  // captures input on transition cycle
+        end
+
+        case (state_reg)
+            STATE_IDLE:  counter_reg <= 'd0;
+            STATE_CALC:  counter_reg <= counter_reg + 1'b1;
+            default:     ;
+        endcase
+
+        state_reg <= next_state;
+    end
+end
+```
+
+**Alternative approach** (Mealy-style combinational latch):
+```verilog
+// Combinational block — no registration delay
+wire transition_to_calc = (state_reg == STATE_IDLE) && start_valid;
+```
+
+### Prevention
+
+**codegen stage**: When building the cycle timing table, for each FSM state
+transition A→B where an input must be latched:
+1. Mark the latch as happening "at the A→B boundary"
+2. Use explicit transition detection: `(state_reg == STATE_A && next_state == STATE_B)`
+3. Do NOT rely on `case (state_reg) STATE_A:` alone for transition-time actions
+
+**verify_fix stage**: For any FSM that latches inputs on state transitions:
+- Verify the latch condition uses both `state_reg` and `next_state`
+- Flag conditions that only check `state_reg` for one-shot capture actions
+→ These will either fire at the wrong time or never fire depending on NBA ordering

@@ -18,6 +18,55 @@ You are the VeriFlow Spec Generator Agent. Generate **spec.json only** (interfac
 ### Step 1: Read clarifications.md
 Use Read tool on CLARIFICATIONS path. This contains the user's answers to requirement questions.
 
+### Step 1.5: Build Cycle Timing Model (MANDATORY)
+
+Before writing spec.json, construct a cycle timing model from the requirements.
+This step forces T/T+1 (clock-tick) thinking and prevents the most common class
+of cross-module timing bugs.
+
+#### T/T+1 Thinking Framework
+
+Hardware is NOT software. In software, statement B reads statement A's result
+immediately. In hardware with clocked registers:
+
+- At posedge T: register R takes the value of its NBA input (scheduled at T-1)
+- At posedge T: R's NEW value is NOT visible until posedge T+1
+- Any logic reading R at posedge T sees the value from posedge T-1
+
+Think of every register as: "value computed at T, visible at T+1."
+
+#### Required Output: Cycle Timing Table
+
+For each module with an FSM or multi-cycle behavior, build a timing table:
+
+| Cycle (T) | FSM State     | Key Signals Asserted         | Notes                    |
+|-----------|---------------|------------------------------|--------------------------|
+| T+0       | IDLE          | (none)                       | Waiting for start        |
+| T+1       | LOAD          | load_en=1                    | Capture inputs           |
+| T+2       | PROCESS[0]    | process_en=1, cnt=0          | First computation round  |
+| T+3       | PROCESS[1]    | process_en=1, cnt=1          | Second round             |
+| ...       | PROCESS[N-1]  | process_en=1, cnt=N-1        | Final round              |
+| T+N+2     | DONE          | output_valid=1               | Result available         |
+
+For each signal crossing a module boundary:
+- Mark it as "registered" (1-cycle delay) or "combinational" (same-cycle)
+- If both producer and consumer are clocked on the same posedge, the consumer
+  sees the PREVIOUS value, not the new one (NBA semantics)
+
+#### Populate cycle_timing and timing_contract in spec.json
+
+Use the timing table to populate:
+1. The `cycle_timing` field for each module with FSM or multi-cycle behavior
+2. The `timing_contract` field for every entry in `module_connectivity`
+
+Key rules for timing_contract:
+- If producer_type is "registered" and consumer_type is "sequential" on the same posedge:
+  `same_cycle_visible` MUST be `false` (NBA delay)
+- If producer_type is "combinational" (e.g., assign wire):
+  `same_cycle_visible` CAN be `true`
+- If a combinational bypass wire is needed for same-cycle visibility, document it
+  in the description field
+
 ### Step 2: Write spec.json
 
 Use Read tool on `${TEMPLATES_DIR}/spec_template.json` for the JSON structure, then use Write tool to write `$PROJECT_DIR/workspace/docs/spec.json`.
@@ -36,6 +85,8 @@ Constraints:
   - Ports with `protocol: "reset"` MUST declare `reset_polarity`: `"active_high"` or `"active_low"`
   - Ports with `protocol: "valid"` MUST declare `handshake`: `"hold_until_ack"` | `"single_cycle"` | `"pulse"`
   - If `handshake: "hold_until_ack"`, MUST also declare `ack_port`
+- `cycle_timing` block is REQUIRED for any module with an FSM or multi-cycle behavior. Simple combinational modules may omit it.
+- `timing_contract` is REQUIRED for every entry in `module_connectivity`. At minimum, specify `producer_type`, `consumer_type`, and `same_cycle_visible`.
 
 ### Step 3: Math Validation
 
