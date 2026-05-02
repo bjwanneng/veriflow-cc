@@ -64,8 +64,14 @@ Write a single `compute()` function. Use the `trace` parameter to control output
 
 When `trace=True`, record at each cycle:
 - **Output signals**: Any signal that appears in the design's output ports
-- **Key intermediate registers**: Registers whose values help locate the first divergence point. For iterative algorithms (hash compression, CRC, etc.), include the working registers (e.g., A~H for SM3, accumulator for CRC). Use RTL register names with `_reg` suffix if that's what appears in VCD.
-- **DO NOT record** every sub-expression (SS1, SS2, TT1, TT2, etc.) — those can be recomputed from the register values if needed for debug.
+- **ALL intermediate registers**: Every register that participates in the computation:
+  - Working registers (A-H, accumulator, etc.)
+  - Expansion/message scheduling registers (W words, shift register elements)
+  - Expansion combinational outputs (w_j, w_prime_j)
+  The trace exists to find the FIRST divergence point. Omitting any register
+  creates a blind spot where bugs go undetected until final output comparison.
+- Signal names MUST match RTL register names (use `_reg` suffix) for VPI access.
+- Sub-expressions (SS1, SS2, TT1, TT2) can be excluded — they're recomputable from registers.
 
 ### Size target
 

@@ -473,3 +473,109 @@ transition A→B where an input must be latched:
 - Verify the latch condition uses both `state_reg` and `next_state`
 - Flag conditions that only check `state_reg` for one-shot capture actions
 → These will either fire at the wrong time or never fire depending on NBA ordering
+
+---
+
+## Pattern 13: Bit-Slice Concatenation Width Truncation
+
+**Class**: A (Computation)
+
+### Symptom
+
+ROL/ROR or other bit-manipulation operations produce wrong results starting from
+a specific round or step. The error manifests as unexpected constant bits (often
+upper bits always zero or always one) in the rotated value.
+
+### Root Cause
+
+Verilog concatenation `{a, b}` produces a value whose width is the SUM of the
+widths of `a` and `b`. When this concatenation is assigned to a narrower
+variable, the upper bits are **silently truncated** with NO warning from any
+simulator or synthesis tool.
+
+The most common manifestation is an incorrect ROL (rotate left) implementation:
+
+```verilog
+// WRONG: ROL(x, 7) for 32-bit value
+// x[24:0] = 25 bits, x[31:7] = 25 bits → concatenation = 50 bits!
+// Assigned to 32-bit target → upper 18 bits silently truncated
+assign rol_wrong = {x[24:0], x[31:7]};
+
+// CORRECT: ROL(x, 7) for 32-bit value
+// x[24:0] = 25 bits, x[31:25] = 7 bits → concatenation = 32 bits ✓
+assign rol_correct = {x[24:0], x[31:25]};
+```
+
+General ROL(x, N) for WIDTH-bit value:
+```verilog
+// Correct template: two slices MUST sum to exactly WIDTH bits
+assign rol_result = {x[WIDTH-1-N:0], x[WIDTH-1:WIDTH-N]};
+//   slice widths:    (WIDTH-N)     +     N        = WIDTH ✓
+```
+
+### Verification Rule
+
+After writing ANY `{a, b}` concatenation:
+1. Count the bit width of each slice: `$bits(a)` and `$bits(b)`
+2. Verify `$bits(a) + $bits(b)` equals the target width
+3. If the sum exceeds the target width, bits are silently truncated — wrong result
+
+### Prevention
+
+**codegen stage (vf-coder)**: Internal verification checklist item 15 checks every
+concatenation for width correctness.
+
+**verify_fix stage**: When a computation error is detected at a specific round:
+1. Check ALL concatenation expressions in the datapath
+2. Manually count bit widths of each slice
+3. Look for the pattern `{x[WIDTH-1-N:0], x[WIDTH-1:N]}` where the second slice
+   should be `x[WIDTH-1:WIDTH-N]` (N bits, not WIDTH-N bits)
+
+**Sized literal trap**: `5'd32` silently wraps to 0 in a 5-bit field. Use unsized
+integer literals (just `32`) in width-critical expressions like `32 - n`.
+
+---
+
+## Pattern 14: Multi-Block Valid Signal Not Gated
+
+**Class**: C (Protocol)
+
+### Symptom
+
+In a multi-block message processor (hash core, cipher), the `valid` or `done`
+output fires after EVERY block — including intermediate blocks — instead of only
+after the final block. This causes downstream modules to read partial/incorrect results.
+
+### Root Cause
+
+The valid/done signal is computed from FSM state and round counter only:
+
+```verilog
+// WRONG: fires after every block's last round
+assign done_pending = (state_reg == STATE_CALC) && (round_cnt_reg == MAX_ROUND);
+
+// CORRECT: only fires after the LAST block
+assign done_pending = (state_reg == STATE_CALC) && (round_cnt_reg == MAX_ROUND)
+                      && is_last_reg;
+```
+
+The `is_last` flag (indicating the current block is the final one) was available
+but not included in the gating condition.
+
+### When This Bug Appears
+
+- Multi-block hash algorithms (SM3, SHA-256, SHA-512, MD5)
+- Block cipher modes that process multiple blocks (CBC, CTR chains)
+- Any design where valid output should only assert after ALL input blocks are processed
+
+### Prevention
+
+**codegen stage**: For any design that processes multiple input blocks:
+1. Identify the "final result valid" signal
+2. Verify it includes `is_last` (or equivalent) in its gating condition
+3. Add a comment: `// gated by is_last: only valid after final block`
+
+**verify_fix stage**: Run multi-block test vectors (at least 2 blocks) and verify:
+1. `valid` does NOT assert after intermediate blocks
+2. `valid` DOES assert after the final block
+3. The testbench MUST include multi-block test vectors to catch this bug

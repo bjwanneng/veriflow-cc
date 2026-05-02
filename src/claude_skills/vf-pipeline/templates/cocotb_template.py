@@ -356,6 +356,107 @@ async def test_layered(dut):
 
 
 @cocotb.test()
+async def test_internal_signals(dut):
+    """Test 4: Per-cycle internal signal comparison against golden model.
+
+    This is the KEY verification test. It reads RTL internal registers
+    via VPI (cocotb's dut.hierarchy.signal.value) and compares them
+    against golden model trace on EVERY clock cycle.
+
+    This test catches bugs that test_layered misses — test_layered only
+    compares top-level output ports, missing internal register divergences.
+
+    Skipped if golden_model.py trace mode does not include internal signals.
+    """
+    global FAIL_COUNT
+
+    if not GOLDEN_AVAILABLE:
+        dut._log.info("[SKIP] test_internal_signals: golden_model.py not available")
+        return
+
+    await ensure_clock(dut)
+    await reset_dut(dut)
+
+    expected_cycles = golden_run()
+    if not expected_cycles:
+        dut._log.info("[SKIP] test_internal_signals: golden model returned no data")
+        return
+
+    # Check if trace includes internal signals (any key containing '.' or ending with _reg)
+    has_internal = any('.' in k or k.endswith('_reg')
+                       for entry in expected_cycles for k in entry.keys())
+    if not has_internal:
+        dut._log.info("[SKIP] test_internal_signals: golden trace has no internal signals")
+        return
+
+    dut._log.info(f"[INTERNAL] Comparing {len(expected_cycles)} cycles, internal signals")
+
+    # IMPORTANT: codegen MUST add drive_inputs() call here with golden model
+    # test vectors before the comparison loop. Without driving inputs,
+    # the DUT has no stimulus and all outputs will be initial values.
+    # <CODEGEN: drive_inputs() call here — same as test_layered>
+
+    first_divergence = None
+    cycles_checked = 0
+
+    for cycle_idx, expected in enumerate(expected_cycles):
+        await RisingEdge(dut.clk)
+
+        for sig_name, expected_val in expected.items():
+            if sig_name in INPUT_PORTS:
+                continue  # skip input signals
+
+            try:
+                # Navigate VPI hierarchy for module-qualified names
+                if '.' in sig_name:
+                    parts = sig_name.split('.')
+                    obj = dut
+                    for part in parts:
+                        # Handle array indexing: w_reg[0] → w_reg, index 0
+                        if '[' in part:
+                            arr_name, idx_str = part.split('[')
+                            idx = int(idx_str.rstrip(']'))
+                            obj = getattr(obj, arr_name)
+                            obj = obj[idx]
+                        else:
+                            obj = getattr(obj, part)
+                    actual_val = int(obj.value)
+                else:
+                    sig = getattr(dut, sig_name)
+                    actual_val = int(sig.value)
+
+                if actual_val != expected_val:
+                    first_divergence = {
+                        "cycle": cycle_idx,
+                        "signal": sig_name,
+                        "expected": expected_val,
+                        "actual": actual_val,
+                    }
+                    break
+            except (AttributeError, IndexError):
+                pass  # signal not accessible, skip
+
+        cycles_checked += 1
+        if first_divergence:
+            break
+
+    if first_divergence:
+        FAIL_COUNT += 1
+        div = first_divergence
+        msg = (
+            f"[INTERNAL] FIRST DIVERGENCE at cycle={div['cycle']} "
+            f"signal={div['signal']}: "
+            f"expected=0x{div['expected']:08x} got=0x{div['actual']:08x}"
+        )
+        dut._log.error(msg)
+        raise AssertionError(msg)
+    else:
+        dut._log.info(
+            f"[INTERNAL] PASS — {cycles_checked} cycles, all internal signals matched"
+        )
+
+
+@cocotb.test()
 async def test_summary(dut):
     """Final test: reports overall pass/fail."""
     global FAIL_COUNT

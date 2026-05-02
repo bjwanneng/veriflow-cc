@@ -63,6 +63,15 @@ For each test vector in golden_model.py, add a `@cocotb.test()` function that:
 4. Compares DUT output against expected value
 5. Reports PASS/FAIL with hex values
 
+**CRITICAL — Internal signal comparison**:
+The cocotb testbench template includes `test_internal_signals` which compares
+ALL golden model trace signals (including internal registers) via VPI hierarchy.
+For this to work, the generated cocotb testbench MUST:
+- Include the same `drive_inputs()` call in `test_internal_signals` as in `test_layered`
+- Ensure golden_model.py trace output uses module-qualified signal names
+  (e.g., `"u_sm3_compress.a_reg"`, `"u_sm3_w_gen.w_reg[0]"`) for VPI access
+- The template handles VPI hierarchy navigation automatically (including array indices)
+
 ### Step 4: Write Verilog testbench
 
 Use Write tool to write `$PROJECT_DIR/workspace/tb/tb_<design_name>.v`.

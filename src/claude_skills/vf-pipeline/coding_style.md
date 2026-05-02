@@ -794,6 +794,49 @@ wire [7:0] sum = a[7:0] + b[7:0];
 mem[addr][WORD_SIZE*i +: WORD_SIZE] <= wdata[WORD_SIZE*i +: WORD_SIZE];
 ```
 
+### Bit-Slice Rotation (ROL/ROR) `[CRITICAL]`
+
+ROL (rotate left) and ROR (rotate right) using bit-slice concatenation is a
+common source of silent bugs. The concatenation width MUST equal the target width.
+
+```verilog
+// ROL(x, N) for WIDTH-bit value — CORRECT
+// Two slices: (WIDTH-N) bits + N bits = WIDTH bits ✓
+assign rol_result = {x[WIDTH-1-N:0], x[WIDTH-1:WIDTH-N]};
+
+// WRONG — both slices too wide, concatenation = 2*(WIDTH-N) bits
+assign rol_wrong = {x[WIDTH-1-N:0], x[WIDTH-1:N]};
+// Silently truncated to WIDTH — produces wrong result with NO simulator warning
+```
+
+Concrete example for ROL(x, 7) on 32-bit value:
+```verilog
+// CORRECT: 25 + 7 = 32 bits ✓
+assign rol7 = {x[24:0], x[31:25]};
+
+// WRONG: 25 + 25 = 50 bits, truncated to 32 — upper 18 bits lost!
+assign rol7_wrong = {x[24:0], x[31:7]};
+```
+
+**Verification rule**: After writing ANY `{a, b}` concatenation, manually verify:
+`$bits(a) + $bits(b) == target_width`. If not, bits are silently truncated.
+
+### Unsized Literals in Width-Critical Expressions `[IMPORTANT]`
+
+When using integer expressions as shift amounts or subtraction operands in
+width-sensitive contexts, use **unsized** integer literals, not sized ones:
+
+```verilog
+// WRONG: 5'd32 overflows 5-bit field → silently wraps to 0
+rol32 = (x << 5'd32) | (x >> (5'd32 - n));
+
+// CORRECT: unsized literal, width determined by context
+rol32 = (x << n) | (x >> (32 - n));
+```
+
+Rule: If a sized literal (`N'dV`) could equal or exceed `2^N`, it overflows.
+Use unsized literals (just `32`, not `5'd32`) in these expressions.
+
 ---
 
 ## 19. Signed Arithmetic

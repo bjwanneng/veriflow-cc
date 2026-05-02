@@ -54,7 +54,13 @@ def discover_python() -> str:
 
 def discover_eda() -> tuple[str, str]:
     """Find EDA tools (iverilog, yosys). Returns (eda_bin, eda_lib)."""
+    # Search both Unix-style and Windows-style paths.
+    # On Windows, Python uses native filesystem APIs so /c/oss-cad-suite
+    # resolves to C:\c\oss-cad-suite (wrong). We need C:\oss-cad-suite.
     search_dirs = [
+        r"C:\oss-cad-suite",
+        r"C:\Program Files\iverilog",
+        r"C:\Program Files (x86)\iverilog",
         "/c/oss-cad-suite",
         "/c/Program Files/iverilog",
         "/c/Program Files (x86)/iverilog",
@@ -67,24 +73,32 @@ def discover_eda() -> tuple[str, str]:
     for base in search_dirs:
         base_path = Path(base)
         bin_dir = base_path / "bin"
-        if bin_dir.is_dir() and (bin_dir / "iverilog").exists() or (
-            bin_dir / "iverilog.exe"
-        ).exists():
-            eda_bin = str(bin_dir)
-            eda_lib = ""
-            lib_dir = base_path / "lib"
-            if lib_dir.is_dir():
-                eda_lib = str(lib_dir)
-            ivl_dir = base_path / "lib" / "ivl"
-            if ivl_dir.is_dir():
-                eda_lib = f"{eda_lib}:{ivl_dir}" if eda_lib else str(ivl_dir)
-            return eda_bin, eda_lib
+        # Check for iverilog or iverilog.exe in bin
+        iverilog_path = bin_dir / "iverilog"
+        iverilog_exe_path = bin_dir / "iverilog.exe"
+        if not ((bin_dir.is_dir() and iverilog_path.exists())
+                or iverilog_exe_path.exists()):
+            continue
+        eda_bin = str(bin_dir)
+        eda_lib = ""
+        lib_dir = base_path / "lib"
+        if lib_dir.is_dir():
+            eda_lib = str(lib_dir)
+        ivl_dir = base_path / "lib" / "ivl"
+        if ivl_dir.is_dir():
+            eda_lib = f"{eda_lib}:{ivl_dir}" if eda_lib else str(ivl_dir)
+        return eda_bin, eda_lib
 
     # Fallback: check PATH
     iverilog = shutil.which("iverilog")
     if iverilog:
         eda_bin = str(Path(iverilog).parent)
-        return eda_bin, ""
+        # Also look for lib relative to bin
+        eda_lib = ""
+        lib_dir = Path(eda_bin).parent / "lib"
+        if lib_dir.is_dir():
+            eda_lib = str(lib_dir)
+        return eda_bin, eda_lib
     return "", ""
 
 
@@ -218,13 +232,17 @@ def main():
     # Write eda_env.sh
     veriflow_dir = project_dir / ".veriflow"
     eda_env_path = veriflow_dir / "eda_env.sh"
+    # Build PATH line, skipping empty entries
+    path_entries = [p for p in [eda_bin, eda_lib] if p]
+    path_entries.append("$PATH")
+    path_str = ":".join(path_entries)
     with open(eda_env_path, "w", encoding="utf-8") as f:
         f.write(f'export PYTHON_EXE="{python_exe}"\n')
         f.write(f'export EDA_BIN="{eda_bin}"\n')
         f.write(f'export EDA_LIB="{eda_lib}"\n')
         f.write(f'export IVL_HOME="{ivl_home}"\n')
         f.write(f'export COCOTB_AVAILABLE="{"true" if cocotb_available else "false"}"\n')
-        f.write(f'export PATH="{eda_bin}:{eda_lib}:$PATH"\n')
+        f.write(f'export PATH="{path_str}"\n')
     print(f"[ENV] Wrote {eda_env_path}")
     if ivl_home:
         print(f"[ENV] IVL_HOME={ivl_home}")

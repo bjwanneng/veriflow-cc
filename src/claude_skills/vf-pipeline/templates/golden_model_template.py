@@ -56,7 +56,12 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
     #       if trace:
     #           cycles.append({
     #               "output_signal": output_val,
-    #               "intermediate_reg": reg_val,  # match RTL register names
+    #               "intermediate_reg": reg_val,     # match RTL register names
+    #               # IMPORTANT: include ALL registers that participate in the
+    #               # computation — working regs (A-H), expansion regs (W words),
+    #               # combinational outputs (w_j, w_prime_j). Omitting any register
+    #               # creates a blind spot where bugs go undetected until final output.
+    #               # Signal names should match RTL _reg names for VPI access.
     #           })
     #       # ... continue computation ...
 

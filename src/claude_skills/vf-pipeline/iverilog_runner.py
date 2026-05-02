@@ -357,13 +357,21 @@ def main():
     if args.verbose:
         print(f"[iverilog_runner] Compile cmd: {' '.join(compile_cmd)}", file=sys.stderr)
 
+    # Ensure EDA binary/lib paths are in PATH for DLL resolution on Windows.
+    # eda_env.sh sets these in the shell, but subprocess needs explicit PATH.
+    sim_env = os.environ.copy()
+    eda_bin = os.environ.get("EDA_BIN", "")
+    eda_lib = os.environ.get("EDA_LIB", "")
+    extra_paths = os.pathsep.join(p for p in [eda_bin, eda_lib] if p)
+    if extra_paths:
+        sim_env["PATH"] = extra_paths + os.pathsep + sim_env.get("PATH", "")
     try:
         result = subprocess.run(
             compile_cmd,
             capture_output=True,
             text=True,
             cwd=str(build_dir),
-            env=os.environ.copy(),
+            env=sim_env,
         )
         if result.returncode != 0:
             print(json.dumps({
@@ -400,7 +408,7 @@ def main():
             capture_output=True,
             text=True,
             cwd=str(build_dir),
-            env=os.environ.copy(),
+            env=sim_env,
             timeout=120,  # 2-minute timeout
         )
 

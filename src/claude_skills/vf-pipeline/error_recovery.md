@@ -49,6 +49,13 @@ fi
 
 4. Read the diff/table output — identify first divergence cycle and signal
 
+5. **Cocotb FIRST DIVERGENCE (primary diagnostic)**: If cocotb test_internal_signals
+   reported a FIRST DIVERGENCE, use that as the PRIMARY diagnostic. The divergence
+   cycle and signal name pinpoint exactly where the RTL first differs from golden model.
+   Do NOT guess the root cause — trace from the divergence point backward through the
+   datapath. Example: if divergence is at cycle 14, signal `u_sm3_w_gen.w_reg[0]`,
+   the bug is in W expansion logic, likely in the round BEFORE cycle 14.
+
 ### 0b. Classify bug type
 
 | Type | Symptom | Direction |
@@ -57,6 +64,7 @@ fi
 | **B. Timing** | Correct value but wrong cycle | Check pipeline alignment, register stages |
 | **C. Protocol** | valid/ready timing violates handshake spec | Check handshake protocol, FSM transitions |
 | **D. Initialization** | First output offset by constant | Check register init values, algorithm IV loading |
+| **E. Expansion** | W/message scheduling output wrong from specific round | Trace expansion formula: bit-slice widths, P0/P1 inputs |
 
 **Anti-pattern warning**: Do NOT assume timing issues without data.
 - Zero or constant at divergence → Type A or D (logic/init), NOT timing.

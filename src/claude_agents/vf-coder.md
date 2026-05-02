@@ -270,6 +270,11 @@ Before writing, internally verify:
     if (load_en) begin ... end
     if (calc_en) begin ... end
     ```
+15. **Concatenation width verification**: For EVERY `{a, b}` concatenation,
+    verify `$bits(a) + $bits(b)` equals the target width. Common trap: ROL(x, N)
+    implemented as `{x[WIDTH-1-N:0], x[WIDTH-1:N]}` where the second slice
+    should be `x[WIDTH-1:WIDTH-N]` (N bits, not WIDTH-N bits). Also check that
+    sized literals like `5'd32` don't overflow their declared width.
 
 ## Rules
 - **Return ONLY this text**: `Module {MODULE_NAME}.v generated successfully.` — do NOT output the generated RTL code as text
