@@ -366,6 +366,13 @@ async def test_internal_signals(dut):
     This test catches bugs that test_layered misses — test_layered only
     compares top-level output ports, missing internal register divergences.
 
+    Timing semantics:
+        After `await RisingEdge(dut.clk)`, cocotb reads POST-NBA values —
+        the NEW register values assigned by `<=` at this clock edge.
+        Golden model trace values MUST represent the same post-posedge state.
+        This differs from Verilog `$display` at posedge which reads pre-NBA
+        (old) values.
+
     Skipped if golden_model.py trace mode does not include internal signals.
     """
     global FAIL_COUNT
@@ -398,6 +405,8 @@ async def test_internal_signals(dut):
 
     first_divergence = None
     cycles_checked = 0
+    signals_compared = 0
+    signals_not_found = []
 
     for cycle_idx, expected in enumerate(expected_cycles):
         await RisingEdge(dut.clk)
@@ -425,6 +434,7 @@ async def test_internal_signals(dut):
                     sig = getattr(dut, sig_name)
                     actual_val = int(sig.value)
 
+                signals_compared += 1
                 if actual_val != expected_val:
                     first_divergence = {
                         "cycle": cycle_idx,
@@ -434,11 +444,30 @@ async def test_internal_signals(dut):
                     }
                     break
             except (AttributeError, IndexError):
-                pass  # signal not accessible, skip
+                if sig_name not in signals_not_found:
+                    signals_not_found.append(sig_name)
 
         cycles_checked += 1
         if first_divergence:
             break
+
+    # Warn about signals that could not be found in DUT hierarchy
+    if signals_not_found:
+        dut._log.warning(
+            f"[INTERNAL] {len(signals_not_found)} signal(s) not found in DUT, "
+            f"skipped: {signals_not_found[:5]}"
+            + (f" ... and {len(signals_not_found)-5} more" if len(signals_not_found) > 5 else "")
+        )
+
+    # Safety check: verify we actually compared something
+    if signals_compared == 0:
+        dut._log.error(
+            "[INTERNAL] ZERO signals were compared — golden trace signal names "
+            "do not match any DUT signals. Check naming convention."
+        )
+        raise AssertionError(
+            "test_internal_signals: no signals compared, trace names may not match RTL"
+        )
 
     if first_divergence:
         FAIL_COUNT += 1
@@ -452,7 +481,8 @@ async def test_internal_signals(dut):
         raise AssertionError(msg)
     else:
         dut._log.info(
-            f"[INTERNAL] PASS — {cycles_checked} cycles, all internal signals matched"
+            f"[INTERNAL] PASS — {cycles_checked} cycles, "
+            f"{signals_compared} signal values matched"
         )
 
 

@@ -579,3 +579,55 @@ but not included in the gating condition.
 1. `valid` does NOT assert after intermediate blocks
 2. `valid` DOES assert after the final block
 3. The testbench MUST include multi-block test vectors to catch this bug
+
+---
+
+## Pattern 15: Cocotb-vs-Verilog Timing Divergence
+
+**Class**: B (Timing) — but manifests as false Type A
+
+### Symptom
+
+Cocotb per-cycle comparison reports a FIRST DIVERGENCE, but the RTL is actually
+correct. The divergence is a timing alignment artifact, not a real bug.
+
+Alternatively: a Verilog `$display` at posedge shows value X, but cocotb
+`RisingEdge` + `.value` shows value Y at the "same" cycle. Developer assumes
+one of them is wrong.
+
+### Root Cause
+
+**Cocotb and Verilog read different values at the same posedge:**
+
+| Tool | Read point | Value seen |
+|------|-----------|------------|
+| Verilog `$display` at posedge | Active region (before NBA) | **Pre-NBA** (old value) |
+| Cocotb `await RisingEdge` + `.value` | Reactive region (after NBA) | **Post-NBA** (new value) |
+| Verilog `$display` at negedge | After NBA applied | **Post-NBA** (new value) |
+
+Example at posedge T where `reg_x <= new_value`:
+- Verilog `$display` at posedge T → sees OLD reg_x
+- Cocotb `RisingEdge` + `dut.reg_x.value` → sees NEW reg_x
+
+This means **golden model trace values must represent post-NBA state** to
+align with cocotb. If the golden model records pre-NBA values (or is ambiguous),
+the per-cycle comparison will diverge.
+
+### Prevention
+
+**golden_model_template.py**: Trace convention explicitly states: "Trace cycle N
+records the register state AFTER posedge N completes (post-NBA)."
+
+**vf-golden-gen.md**: Agent is instructed to place `cycles.append()` AFTER the
+computation step, matching cocotb's post-NBA read semantics.
+
+**cocotb_template.py**: `test_internal_signals` docstring documents the post-NBA
+timing semantics.
+
+**verify_fix stage**: If FIRST DIVERGENCE is reported, check whether it could be
+a timing alignment artifact before assuming a real RTL bug:
+1. If the golden model uses a different FSM state count than RTL (e.g., 3-state
+   vs 4-state with LOAD), the cycle indices may be offset
+2. If divergence is at cycle 0 or 1, suspect alignment issue, not RTL bug
+3. Cross-check: does the divergence signal show the correct value shifted by
+   exactly one cycle? If yes, it's a timing convention mismatch
