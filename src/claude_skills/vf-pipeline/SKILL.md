@@ -112,12 +112,12 @@ TaskUpdate complete.
 
 ## Stage 2: codegen
 
-Read spec.json and golden_model.py (parallel Read calls) to include inline in prompts.
+Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to include inline in prompts.
 
 Dispatch ALL agents in parallel (single message):
 
 - **One vf-coder per module** in spec.json (subagent_type: general-purpose)
-  - Prompt includes: MODULE_NAME, OUTPUT_FILE path, spec.json content, golden_model.py content
+  - Prompt includes: MODULE_NAME, OUTPUT_FILE path, spec.json content, golden_model.py content, coding_style.md content
   - For top modules: include submodule port definitions from spec.json
   - For leaf modules: include only that module's spec entry
 - **One vf-tb-gen** (subagent_type: general-purpose)

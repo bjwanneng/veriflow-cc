@@ -89,129 +89,14 @@ KEY RULE: `<=` means "this value will be visible at the NEXT posedge, not this o
 | `interface` | direct port connections |
 | `$clog2` in port declarations | pre-compute with `localparam` |
 
-## Key Coding Rules (condensed from coding_style.md)
+## Key Coding Rules
 
-### File Structure
-- One module per file. File name = module name.
-- File header comment: module name, brief description, port list summary.
+Follow ALL rules in `coding_style.md` (provided inline in the prompt by the orchestrator).
+The rules cover: file structure, formatting, naming, reset, two-block separation,
+output driving, latch elimination, FSM, memory arrays, number literals, module
+instantiation, handshake, pipeline timing, bit-slice rotation, and more.
 
-### Formatting
-- 4-space indent. No tabs.
-- `begin` on same line as keyword (`always @(posedge clk) begin`).
-- `end` aligned with keyword.
-
-### Naming
-- Modules/parameters: `ALL_CAPS` or `snake_case`.
-- Signals: `snake_case`.
-- Active-low signals: `_n` suffix.
-- Register suffix: `_reg` (e.g., `data_reg`). Next-state: `_next`.
-
-### Signal Declaration Order
-1. `clk`, `rst` first
-2. Parameters
-3. Inputs, then outputs
-4. Internal wires, then regs
-5. Assign statements
-6. Always blocks (combinational first, then sequential)
-
-### Reset
-- Synchronous active-high only: `always @(posedge clk) begin if (rst) ... end`
-- Reset block at TOP of sequential always, LAST branch is the operational logic.
-- Selective reset: only reset registers that have a defined initial value. Counters and datapath registers that are always written before read do NOT need reset.
-- **Algorithm caveat**: Registers that participate in output XOR chains (e.g., `data_out = accum_reg ^ result_reg`) MUST be explicitly initialized via init path even if not reset. "Reset to 0" is NOT safe for XOR-based output paths.
-
-### Two-Block Separation
-- Combinational logic in `always @*` blocks.
-- Sequential (registered) logic in `always @(posedge clk)` blocks.
-- NEVER mix blocking (`=`) and non-blocking (`<=`) in the same always block.
-- Combinational block: use blocking `=`.
-- Sequential block: use non-blocking `<=` ONLY. **CRITICAL** — blocking assignments in `always @(posedge clk)` are prohibited.
-
-### Output Driving
-- Outputs driven via `assign` from internal `_reg` signals.
-- `output wire [W:0] data_out;` + `reg [W:0] data_out_reg;` + `assign data_out = data_out_reg;`
-- Do NOT use `output reg`.
-
-### Latch Elimination
-- Every `always @*` block must assign ALL driven signals in EVERY branch.
-- Use default values at top of combinational block: `wire_x = default_val;`
-- `case` must always have `default`.
-
-### FSM
-- State encoding: `localparam [W:0] STATE_IDLE = W'd0, STATE_LOAD = W'd1, ...`
-- Two-process or three-process FSM (state register + next-state combinational + output combinational).
-- ALL states must have explicit transitions (including reset return path).
-- **CRITICAL — Finalize-state register read rule**: In DONE/finalize FSM states, ALWAYS use `_reg` (registered) values for output computation and register updates. NEVER use `_new` (combinational next-state) wires — they represent the NEXT computation round, not the current state. Using `_new` in DONE applies an extra unintended round.
-- **CRITICAL — Merkle-Damgård init**: For iterated hash constructions with dual register sets (working A-H + chaining V0-V7), the `is_first_block` initialization path MUST cover BOTH sets. Chaining registers MUST be re-initialized to IV when starting a new message.
-
-### Memory Arrays
-- `reg [DATA_W-1:0] mem [0:DEPTH-1];`
-- Array index MUST be in range `[0, DEPTH-1]`. Verify loop bounds use `<` not `<=`.
-
-### Number Literals
-- Always specify width: `32'h0000_1234`, `8'd255`, `1'b1`.
-- Width must match assignment target.
-
-### Module Instantiation
-- Named port connections only: `.port(signal)`.
-- Instance name: `u_<module_name>`.
-
-### Handshake
-- `hold_until_ack`: valid stays high until ack received.
-- `single_cycle`: valid high for exactly one clock cycle.
-
-### Pipeline Timing
-- Register values update at `posedge clk`. New value visible starting NEXT cycle.
-- Control signal asserted on cycle N takes effect on cycle N+1.
-- FSM state transitions and control signals in SAME always block.
-
-### Few-Shot: Cycle Timing Template
-
-Before writing each always block, mentally run through this template:
-
-```
-REGISTERED OUTPUT (always @(posedge clk)):
-  At posedge T: reg_x <= next_x;
-  Meaning: reg_x gets next_x's value, but reg_x's new value is not readable
-           until posedge T+1.
-
-COMBINATIONAL NEXT-STATE (always @*):
-  next_x = <expression using reg_y>;
-  Meaning: next_x changes IMMEDIATELY when reg_y changes.
-           But reg_x (the registered version) won't update until next posedge.
-
-CROSS-MODULE SIGNAL:
-  Module A: data_reg <= data_next;       (registered, posedge T)
-  Module B: reads data_reg at posedge T  (sees OLD value from T-1)
-  Module B: sees NEW value at posedge T+1
-
-  If Module B needs the NEW value at posedge T:
-    Use combinational bypass: Module B reads data_next (wire), not data_reg.
-```
-
-EXAMPLE: Iterative computation with load/calc overlap
-
-Cycle table:
-  T+0: IDLE, wait for start
-  T+1: LOAD, capture input_data into working_reg (load_en=1, calc_en=1)
-  T+2..T+N: CALC, process_en=1, step_cnt increments each cycle
-  T+N+1: DONE, output_valid=1, result = working_reg ^ accum_reg
-
-CRITICAL: At T+1, load_en AND calc_en are BOTH high.
-  - working_reg load: `working_reg <= input_data` (via load_en path)
-  - working_reg calc: `working_reg <= f(working_reg)` (via calc_en path)
-  - Since calc_en is last in the sequential block, its NBA wins:
-    `working_reg <= f(input_data)` — the combinational f() must read input_data,
-    NOT the OLD working_reg. This requires a bypass mux:
-    `f_input = load_en ? input_data : working_reg`
-
-  At T+2: working_reg holds f(input_data) (from T+1 calc result)
-  The iterative computation proceeds correctly from this loaded initial value.
-
-DONE state: output_valid MUST use `_reg` values only.
-  `output_valid_reg <= 1'b1;`  (visible at T+N+2 externally)
-  `result = working_reg ^ accum_reg;`  (uses _reg, not _new combinational wires)
-```
+When in doubt about a specific rule, the inline coding_style.md content is authoritative.
 
 ## Module Requirements
 
