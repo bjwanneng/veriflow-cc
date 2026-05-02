@@ -597,31 +597,35 @@ one of them is wrong.
 
 ### Root Cause
 
-**Cocotb and Verilog read different values at the same posedge:**
+**Cocotb (with iverilog) and Verilog read the SAME value at posedge — both pre-NBA:**
 
 | Tool | Read point | Value seen |
 |------|-----------|------------|
 | Verilog `$display` at posedge | Active region (before NBA) | **Pre-NBA** (old value) |
-| Cocotb `await RisingEdge` + `.value` | Reactive region (after NBA) | **Post-NBA** (new value) |
+| Cocotb `await RisingEdge` + `.value` | Reactive region (iverilog) | **Pre-NBA** (old value) |
 | Verilog `$display` at negedge | After NBA applied | **Post-NBA** (new value) |
 
 Example at posedge T where `reg_x <= new_value`:
 - Verilog `$display` at posedge T → sees OLD reg_x
-- Cocotb `RisingEdge` + `dut.reg_x.value` → sees NEW reg_x
+- Cocotb `RisingEdge` + `dut.reg_x.value` → sees OLD reg_x (same!)
+- Both read the value written by posedge T-1's NBA
 
-This means **golden model trace values must represent post-NBA state** to
-align with cocotb. If the golden model records pre-NBA values (or is ambiguous),
-the per-cycle comparison will diverge.
+This means **golden model trace values must represent pre-NBA state** to
+align with cocotb. The golden model must place `cycles.append()` BEFORE the
+computation step, recording the register values as they are BEFORE new values
+are computed. The new values assigned at this cycle become readable at the
+NEXT cycle's RisingEdge.
 
 ### Prevention
 
 **golden_model_template.py**: Trace convention explicitly states: "Trace cycle N
-records the register state AFTER posedge N completes (post-NBA)."
+records the register state AS SEEN by cocotb after `await RisingEdge(dut.clk)` —
+which reads the PRE-NBA value."
 
-**vf-golden-gen.md**: Agent is instructed to place `cycles.append()` AFTER the
-computation step, matching cocotb's post-NBA read semantics.
+**vf-golden-gen.md**: Agent is instructed to place `cycles.append()` BEFORE the
+computation step, matching cocotb's pre-NBA read semantics.
 
-**cocotb_template.py**: `test_internal_signals` docstring documents the post-NBA
+**cocotb_template.py**: `test_internal_signals` docstring documents the pre-NBA
 timing semantics.
 
 **verify_fix stage**: If FIRST DIVERGENCE is reported, check whether it could be

@@ -367,11 +367,11 @@ async def test_internal_signals(dut):
     compares top-level output ports, missing internal register divergences.
 
     Timing semantics:
-        After `await RisingEdge(dut.clk)`, cocotb reads POST-NBA values —
-        the NEW register values assigned by `<=` at this clock edge.
-        Golden model trace values MUST represent the same post-posedge state.
-        This differs from Verilog `$display` at posedge which reads pre-NBA
-        (old) values.
+        After `await RisingEdge(dut.clk)`, cocotb reads PRE-NBA values —
+        the OLD register values (written by the PREVIOUS posedge's NBA),
+        NOT the values being assigned at this clock edge.
+        Golden model trace values MUST record the state BEFORE the computation
+        step, matching what cocotb reads at RisingEdge.
 
     Skipped if golden_model.py trace mode does not include internal signals.
     """

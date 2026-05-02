@@ -43,17 +43,18 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
         trace=True  -> list[dict]: [{signal: value, ...}, ...] indexed by cycle
 
     Trace timing convention (CRITICAL):
-        Trace cycle N records the register state AFTER posedge N completes
-        (post-NBA / post-computation). This matches what cocotb reads via
-        `dut.signal.value` after `await RisingEdge(dut.clk)` — the NEW value
-        assigned by `<=` at this clock edge.
+        Trace cycle N records the register state AS SEEN by cocotb after
+        `await RisingEdge(dut.clk)` — which reads the PRE-NBA value (the value
+        assigned by the PREVIOUS posedge's NBA, NOT the current posedge's NBA).
 
-        This is DIFFERENT from Verilog `$display` at posedge, which reads
-        the OLD (pre-NBA) value. If porting trace values to a Verilog TB,
-        shift by one cycle: trace[N] = what $display shows at posedge N+1.
+        This means: for a register written via `<=` at posedge N, cocotb at
+        posedge N reads the value written at posedge N-1 (the old value).
+        The new value assigned at posedge N becomes readable at posedge N+1.
 
-        Implementation: place `cycles.append({...})` AFTER the computation
-        step for each cycle, so it captures the post-computation register state.
+        Implementation: record register values BEFORE the computation step,
+        so the trace captures the state that cocotb RisingEdge reads.
+        Example: CALC cycle j should record A = value_before_computation,
+        not A = new_value_after_computation.
 
     Implementation note:
         Write ONE algorithm implementation. When trace=True, record intermediate

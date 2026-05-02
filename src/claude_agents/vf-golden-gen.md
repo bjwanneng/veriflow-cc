@@ -33,11 +33,12 @@ Rules:
 - If a timing detail is missing from SPEC_JSON, do not invent a different timing
   model. Add a warning in the result summary and use the most conservative
   registered-output interpretation.
-- **CRITICAL — Post-NBA timing convention**: Trace cycle N MUST represent the
-  register state AFTER posedge N completes (post-NBA). This matches what cocotb
-  reads via `dut.signal.value` after `await RisingEdge(dut.clk)`. Place
-  `cycles.append({...})` AFTER the computation step, not before. This is
-  different from Verilog `$display` at posedge which reads pre-NBA (old) values.
+- **CRITICAL — Pre-NBA timing convention (cocotb + iverilog)**: Trace cycle N
+  MUST represent the register state as cocotb reads it after `await RisingEdge(dut.clk)`
+  — which is the PRE-NBA value (the value written by the PREVIOUS posedge's NBA).
+  Place `cycles.append({...})` BEFORE the computation step, recording the current
+  register state. The new values computed at this cycle will be readable at the
+  next cycle's RisingEdge.
 
 ### Step 2: Write golden_model.py
 
