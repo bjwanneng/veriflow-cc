@@ -597,41 +597,51 @@ one of them is wrong.
 
 ### Root Cause
 
-**Cocotb (with iverilog) and Verilog read the SAME value at posedge — both pre-NBA:**
+**Cocotb + iverilog VPI reads values from the PREVIOUS posedge's NBA.** After
+`await RisingEdge(dut.clk)` at posedge N, cocotb reads the register values
+produced by posedge N-1's NBA (i.e., POST-NBA of N-1 = PRE-NBA of N):
 
 | Tool | Read point | Value seen |
 |------|-----------|------------|
-| Verilog `$display` at posedge | Active region (before NBA) | **Pre-NBA** (old value) |
-| Cocotb `await RisingEdge` + `.value` | Reactive region (iverilog) | **Pre-NBA** (old value) |
-| Verilog `$display` at negedge | After NBA applied | **Post-NBA** (new value) |
+| Verilog `$display` at posedge N | Active region (before NBA) | Pre-NBA of N (= Post-NBA of N-1) |
+| Cocotb `await RisingEdge` at posedge N | After Active+NBA regions | **Post-NBA of N-1** (previous posedge) |
+| Verilog `$display` at negedge N | After NBA applied | Post-NBA of N |
 
 Example at posedge T where `reg_x <= new_value`:
-- Verilog `$display` at posedge T → sees OLD reg_x
-- Cocotb `RisingEdge` + `dut.reg_x.value` → sees OLD reg_x (same!)
-- Both read the value written by posedge T-1's NBA
+- Verilog `$display` at posedge T → sees OLD reg_x (pre-NBA of T)
+- Cocotb `RisingEdge` at posedge T → sees reg_x from posedge T-1's NBA
+- At posedge T+1's RisingEdge → sees NEW reg_x (posedge T's NBA applied)
 
-This means **golden model trace values must represent pre-NBA state** to
-align with cocotb. The golden model must place `cycles.append()` BEFORE the
-computation step, recording the register values as they are BEFORE new values
-are computed. The new values assigned at this cycle become readable at the
-NEXT cycle's RisingEdge.
+**Three common timing misalignments:**
+
+1. **Golden model offset**: Golden trace cycle K is compared against DUT state
+   that is actually cycle K+1 or K-1. Fix: adjust DRIVE_PHASE_CYCLES or block_start.
+
+2. **Registered output delay**: Signals like `ready_reg` and `hash_valid_reg`
+   are registered outputs. They reflect the combinational `_next` signal from
+   the PREVIOUS posedge. For example:
+   - IDLE state always sets `ready_next=1`, even when transitioning to CALC
+   - So at the IDLE→CALC posedge: `ready_reg <= 1` (from IDLE's ready_next=1)
+   - At the next CALC posedge: `ready_reg <= 0` (from CALC's ready_next=0)
+   - Golden model must track this 1-cycle delay, not set ready=0 at the transition
+
+3. **Held registers in DONE state**: Registers like `round_cnt` that are not
+   explicitly updated in the DONE state hold their last value (default: hold).
+   Golden model must not reset these to 0 unless the RTL actually does so.
 
 ### Prevention
 
-**golden_model_template.py**: Trace convention explicitly states: "Trace cycle N
-records the register state AS SEEN by cocotb after `await RisingEdge(dut.clk)` —
-which reads the PRE-NBA value."
+**golden_model_template.py**: Trace convention documents the 1-cycle read delay
+and the registered output behavior. Golden model must track `_next` vs `_reg`
+for registered outputs (ready, valid, etc.).
 
-**vf-golden-gen.md**: Agent is instructed to place `cycles.append()` BEFORE the
-computation step, matching cocotb's pre-NBA read semantics.
+**cocotb_template.py**:
+- Clock is restarted in each test (cocotb v2.0 kills background tasks between tests)
+- DRIVE_PHASE_CYCLES=0 when block_trace already skips cycle 0 (reset)
+- test_layered uses GOLDEN_TO_PORT mapping for register-to-port name translation
 
-**cocotb_template.py**: `test_internal_signals` docstring documents the pre-NBA
-timing semantics.
-
-**verify_fix stage**: If FIRST DIVERGENCE is reported, check whether it could be
-a timing alignment artifact before assuming a real RTL bug:
-1. If the golden model uses a different FSM state count than RTL (e.g., 3-state
-   vs 4-state with LOAD), the cycle indices may be offset
-2. If divergence is at cycle 0 or 1, suspect alignment issue, not RTL bug
-3. Cross-check: does the divergence signal show the correct value shifted by
-   exactly one cycle? If yes, it's a timing convention mismatch
+**verify_fix stage**: If FIRST DIVERGENCE is reported:
+1. Check if it's at cycle 0 or 1 → likely alignment issue, not RTL bug
+2. Check if the divergent value is off by exactly 1 cycle → timing convention mismatch
+3. Check if it's a registered output (ready, valid) at a state transition → golden model must account for 1-cycle register delay
+4. Check if a register is 0 in golden model but non-zero in DUT → golden model may incorrectly reset a held register

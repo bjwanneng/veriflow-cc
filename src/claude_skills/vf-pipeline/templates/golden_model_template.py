@@ -43,18 +43,38 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
         trace=True  -> list[dict]: [{signal: value, ...}, ...] indexed by cycle
 
     Trace timing convention (CRITICAL):
-        Trace cycle N records the register state AS SEEN by cocotb after
-        `await RisingEdge(dut.clk)` — which reads the PRE-NBA value (the value
-        assigned by the PREVIOUS posedge's NBA, NOT the current posedge's NBA).
+        Trace cycle N records the register state that cocotb reads AFTER
+        `await RisingEdge(dut.clk)`.
 
-        This means: for a register written via `<=` at posedge N, cocotb at
-        posedge N reads the value written at posedge N-1 (the old value).
-        The new value assigned at posedge N becomes readable at posedge N+1.
+        With cocotb + iverilog VPI, after `await RisingEdge`, cocotb reads
+        values produced by the PREVIOUS posedge's NBA. Equivalently:
+        at RisingEdge N, cocotb sees POST-NBA of posedge N-1 = PRE-NBA of
+        posedge N.
 
-        Implementation: record register values BEFORE the computation step,
-        so the trace captures the state that cocotb RisingEdge reads.
-        Example: CALC cycle j should record A = value_before_computation,
-        not A = new_value_after_computation.
+        The practical effect: each trace entry should record register values
+        AFTER the NBA of each posedge (i.e., the NEW values computed in this
+        cycle). The cocotb test comparison loop reads these values at the
+        NEXT RisingEdge.
+
+        Implementation: record register values AFTER the computation step,
+        so the trace captures the state AFTER the NBA fires.
+        Example: computation cycle j should record A = new_value_after_computation,
+        not A = value_before_computation.
+
+    CRITICAL: Registered outputs (ready, valid, etc.):
+        Signals that are registered outputs (driven by a _reg flip-flop, not
+        combinational assign) have a 1-cycle delay from the FSM state that
+        computes them. For example, if IDLE state sets ready_next=1 and CALC
+        state sets ready_next=0, the ready_reg transitions:
+        - At IDLE→CALC posedge: ready_next=1 (from IDLE), so ready_reg becomes 1
+        - At next CALC posedge: ready_next=0 (from CALC), so ready_reg becomes 0
+
+        The golden model trace must record ready_reg=1 at the IDLE→CALC
+        transition cycle, NOT ready_reg=0. The "0" appears one cycle later.
+
+        Similarly, at DONE→IDLE transition: if DONE state sets ready_next=0,
+        the trace records ready_reg=0 at the DONE→IDLE cycle. ready_reg=1
+        appears one cycle later when IDLE sets ready_next=1.
 
     Implementation note:
         Write ONE algorithm implementation. When trace=True, record intermediate
@@ -72,8 +92,8 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
     #               "output_signal": output_val,
     #               "intermediate_reg": reg_val,     # match RTL register names
     #               # IMPORTANT: include ALL registers that participate in the
-    #               # computation — working regs (A-H), expansion regs (W words),
-    #               # combinational outputs (w_j, w_prime_j). Omitting any register
+    #               # computation — working regs, expansion regs,
+    #               # combinational outputs. Omitting any register
     #               # creates a blind spot where bugs go undetected until final output.
     #               # Signal names should match RTL _reg names for VPI access.
     #           })
