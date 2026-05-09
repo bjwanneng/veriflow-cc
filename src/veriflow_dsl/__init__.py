@@ -23,6 +23,7 @@ from ._spec import (
     reg_next, mux, cat, slice_,
     vf_block, vf_fsm,
 )
+from ._adapter import from_timing_model
 
 __all__ = [
     # v1 DSL core
@@ -35,4 +36,6 @@ __all__ = [
     "RegT", "WireT", "RegAssign",
     "reg_next", "mux", "cat", "slice_",
     "vf_block", "vf_fsm",
+    # v2 adapter
+    "from_timing_model",
 ]

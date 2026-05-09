@@ -57,6 +57,19 @@ class Expr:
             return f"Expr({self.op})"
 
 
+def _to_expr(obj: "RegT | WireT | _Coerced") -> Expr:
+    """Convert a RegT, WireT, or _Coerced to an Expr for nested storage."""
+    if isinstance(obj, RegT):
+        return Expr("signal", obj.width, (obj.name,))
+    if isinstance(obj, WireT):
+        if obj.expr is not None:
+            return obj.expr
+        return Expr("signal", obj.width, (obj.name,))
+    if isinstance(obj, _Coerced):
+        return Expr("const", obj.width, (int(obj.name),))
+    raise TypeError(f"Cannot convert {type(obj).__name__} to Expr")
+
+
 # ---------------------------------------------------------------------------
 # RegT — read-only register value at cycle T
 # ---------------------------------------------------------------------------
@@ -164,7 +177,7 @@ class WireT:
         return cls(
             name=f"({left.name} {op} {r.name})",
             width=w,
-            expr=Expr("binop", w, (left.name, op, r.name)),
+            expr=Expr("binop", w, (_to_expr(left), op, _to_expr(r))),
         )
 
     @classmethod
@@ -173,7 +186,7 @@ class WireT:
         return cls(
             name=f"({op}{operand.name})",
             width=w,
-            expr=Expr("unaryop", w, (op, operand.name)),
+            expr=Expr("unaryop", w, (op, _to_expr(operand))),
         )
 
     @classmethod
@@ -182,7 +195,7 @@ class WireT:
         return cls(
             name=f"{operand.name}[{high}:{low}]",
             width=w,
-            expr=Expr("slice", w, (operand.name, high, low)),
+            expr=Expr("slice", w, (_to_expr(operand), high, low)),
         )
 
     # --- Operators: WireT + X -> WireT -------------------------------------
@@ -298,7 +311,7 @@ def mux(cond: "WireT | RegT | int", t: "WireT | RegT | int", f: "WireT | RegT | 
     return WireT(
         name=f"mux({cond_v.name}, {t_v.name}, {f_v.name})",
         width=w,
-        expr=Expr("mux", w, (cond_v.name, t_v.name, f_v.name)),
+        expr=Expr("mux", w, (_to_expr(cond_v), _to_expr(t_v), _to_expr(f_v))),
     )
 
 
@@ -311,11 +324,10 @@ def cat(*parts: "RegT | WireT | int") -> WireT:
         raise ValueError("cat() requires at least one argument")
     coerced = [_coerce(p) for p in parts]
     w = sum(p.width for p in coerced)
-    names = [p.name for p in coerced]
     return WireT(
-        name=f"cat({', '.join(names)})",
+        name=f"cat({', '.join(p.name for p in coerced)})",
         width=w,
-        expr=Expr("cat", w, tuple(names)),
+        expr=Expr("cat", w, tuple(_to_expr(p) for p in coerced)),
     )
 
 
