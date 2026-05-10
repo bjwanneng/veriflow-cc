@@ -1,26 +1,9 @@
-// -----------------------------------------------------------------------------
-// File   : sm3_compress.v
-// Author : VeriFlow-CC
-// Date   : 2026-04-27
-// -----------------------------------------------------------------------------
-// Description:
-//   SM3 compression function datapath. Computes one round of SM3 compression
-//   (FF, GG, P0, P1, SS1, SS2, TT1, TT2) per cycle and updates A~H working
-//   registers. Maintains V0~V7 chaining value registers with SM3 IV as reset
-//   default. Responds to load_en, calc_en, and update_v_en from sm3_fsm.
-// -----------------------------------------------------------------------------
-// Change Log:
-//   2026-04-27  VeriFlow-CC  v1.0  Initial release
-// -----------------------------------------------------------------------------
+// sm3_compress.v — SM3 Compression Function Datapath
+// Verilog-2001
 
-`resetall
-`timescale 1ns / 1ps
-`default_nettype none
-
-module sm3_compress
-(
+module sm3_compress (
     input  wire         clk,
-    input  wire         rst,
+    input  wire         rst_n,
     input  wire         load_en,
     input  wire         calc_en,
     input  wire         update_v_en,
@@ -30,11 +13,9 @@ module sm3_compress
     output wire [255:0] hash_out
 );
 
-    ////////////////////////////////////////////////////////////////////////////////
-    // Constants                                                                   //
-    ////////////////////////////////////////////////////////////////////////////////
-
-    // SM3 Initial Value (IV) per GM/T 0004-2012
+    //==========================================================================
+    // SM3 IV constants
+    //==========================================================================
     localparam [31:0] IV0 = 32'h7380166f;
     localparam [31:0] IV1 = 32'h4914b2b9;
     localparam [31:0] IV2 = 32'h172442d7;
@@ -44,248 +25,188 @@ module sm3_compress
     localparam [31:0] IV6 = 32'he38dee4d;
     localparam [31:0] IV7 = 32'hb0fb0e4e;
 
-    // Round constants T_j
-    localparam [31:0] T_EARLY = 32'h79cc4519;
-    localparam [31:0] T_LATE  = 32'h7a879d8a;
+    //==========================================================================
+    // T_j constants
+    //==========================================================================
+    localparam [31:0] T_EARLY = 32'h79cc4519;  // j <= 15
+    localparam [31:0] T_LATE  = 32'h7a879d8a;  // j >= 16
 
-    ////////////////////////////////////////////////////////////////////////////////
-    // Registers                                                                   //
-    ////////////////////////////////////////////////////////////////////////////////
+    //==========================================================================
+    // Working registers A-H
+    //==========================================================================
+    reg [31:0] a_reg;
+    reg [31:0] b_reg;
+    reg [31:0] c_reg;
+    reg [31:0] d_reg;
+    reg [31:0] e_reg;
+    reg [31:0] f_reg;
+    reg [31:0] g_reg;
+    reg [31:0] h_reg;
 
-    // Chaining value registers V0~V7
-    reg [31:0] V0_reg = IV0, V0_next;
-    reg [31:0] V1_reg = IV1, V1_next;
-    reg [31:0] V2_reg = IV2, V2_next;
-    reg [31:0] V3_reg = IV3, V3_next;
-    reg [31:0] V4_reg = IV4, V4_next;
-    reg [31:0] V5_reg = IV5, V5_next;
-    reg [31:0] V6_reg = IV6, V6_next;
-    reg [31:0] V7_reg = IV7, V7_next;
+    //==========================================================================
+    // IV chaining registers V0-V7
+    //==========================================================================
+    reg [31:0] v0_reg;
+    reg [31:0] v1_reg;
+    reg [31:0] v2_reg;
+    reg [31:0] v3_reg;
+    reg [31:0] v4_reg;
+    reg [31:0] v5_reg;
+    reg [31:0] v6_reg;
+    reg [31:0] v7_reg;
 
-    // Working registers A~H
-    reg [31:0] A_reg = 32'd0, A_next;
-    reg [31:0] B_reg = 32'd0, B_next;
-    reg [31:0] C_reg = 32'd0, C_next;
-    reg [31:0] D_reg = 32'd0, D_next;
-    reg [31:0] E_reg = 32'd0, E_next;
-    reg [31:0] F_reg = 32'd0, F_next;
-    reg [31:0] G_reg = 32'd0, G_next;
-    reg [31:0] H_reg = 32'd0, H_next;
+    //==========================================================================
+    // hash_out register
+    //==========================================================================
+    reg [255:0] hash_out_reg;
 
-    ////////////////////////////////////////////////////////////////////////////////
-    // Combinational signals                                                       //
-    ////////////////////////////////////////////////////////////////////////////////
+    //==========================================================================
+    // ROL function
+    //==========================================================================
+    function [31:0] rol;
+        input [31:0] data;
+        input [5:0]  n;
+    begin
+        rol = (data << n) | (data >> (6'd32 - n));
+    end
+    endfunction
 
-    // Intermediate round computation signals
-    reg [31:0] a_rot12;
-    reg [31:0] b_rot9;
-    reg [31:0] f_rot19;
-    reg [31:0] ff_result;
-    reg [31:0] gg_result;
-    reg [31:0] T_sel;
-    reg [31:0] T_rot;
-    reg [5:0]  rot_amt;
-    reg [31:0] sum_ae;
-    reg [31:0] sum_aet;
-    reg [31:0] ss1;
-    reg [31:0] ss2;
-    reg [31:0] sum_ff_d;
-    reg [31:0] sum_ss2_wp;
-    reg [31:0] sum_gg_h;
-    reg [31:0] sum_ss1_wj;
-    reg [31:0] tt1;
-    reg [31:0] tt2;
-    reg [31:0] a_new,  b_new,  c_new,  d_new;
-    reg [31:0] e_new,  f_new,  g_new,  h_new;
+    //==========================================================================
+    // T_j selection
+    //==========================================================================
+    wire [31:0] tj = (round_cnt <= 6'd15) ? T_EARLY : T_LATE;
 
-    ////////////////////////////////////////////////////////////////////////////////
-    // Combinational logic: compute all _next signals                              //
-    ////////////////////////////////////////////////////////////////////////////////
+    //==========================================================================
+    // Input bypass mux: load_en=1 uses V values as A-H inputs (for round 0)
+    //==========================================================================
+    wire [31:0] a_in = load_en ? v0_reg : a_reg;
+    wire [31:0] b_in = load_en ? v1_reg : b_reg;
+    wire [31:0] c_in = load_en ? v2_reg : c_reg;
+    wire [31:0] d_in = load_en ? v3_reg : d_reg;
+    wire [31:0] e_in = load_en ? v4_reg : e_reg;
+    wire [31:0] f_in = load_en ? v5_reg : f_reg;
+    wire [31:0] g_in = load_en ? v6_reg : g_reg;
+    wire [31:0] h_in = load_en ? v7_reg : h_reg;
 
-    always @* begin
-        // Defaults: hold current values
-        V0_next = V0_reg;
-        V1_next = V1_reg;
-        V2_next = V2_reg;
-        V3_next = V3_reg;
-        V4_next = V4_reg;
-        V5_next = V5_reg;
-        V6_next = V6_reg;
-        V7_next = V7_reg;
+    //==========================================================================
+    // Boolean functions FF_j and GG_j (using bypassed inputs)
+    //==========================================================================
+    wire [31:0] ff_j = (round_cnt <= 6'd15) ?
+                        (a_in ^ b_in ^ c_in) :
+                        ((a_in & b_in) | (a_in & c_in) | (b_in & c_in));
 
-        A_next = A_reg;
-        B_next = B_reg;
-        C_next = C_reg;
-        D_next = D_reg;
-        E_next = E_reg;
-        F_next = F_reg;
-        G_next = G_reg;
-        H_next = H_reg;
+    wire [31:0] gg_j = (round_cnt <= 6'd15) ?
+                        (e_in ^ f_in ^ g_in) :
+                        ((e_in & f_in) | (~e_in & g_in));
 
-        // Intermediate signal defaults (don't-care when not in calc_en)
-        a_rot12    = {32{1'b0}};
-        b_rot9     = {32{1'b0}};
-        f_rot19    = {32{1'b0}};
-        ff_result  = {32{1'b0}};
-        gg_result  = {32{1'b0}};
-        T_sel      = {32{1'b0}};
-        T_rot      = {32{1'b0}};
-        rot_amt    = 6'd0;
-        sum_ae     = {32{1'b0}};
-        sum_aet    = {32{1'b0}};
-        ss1        = {32{1'b0}};
-        ss2        = {32{1'b0}};
-        sum_ff_d   = {32{1'b0}};
-        sum_ss2_wp = {32{1'b0}};
-        sum_gg_h   = {32{1'b0}};
-        sum_ss1_wj = {32{1'b0}};
-        tt1        = {32{1'b0}};
-        tt2        = {32{1'b0}};
-        a_new      = {32{1'b0}};
-        b_new      = {32{1'b0}};
-        c_new      = {32{1'b0}};
-        d_new      = {32{1'b0}};
-        e_new      = {32{1'b0}};
-        f_new      = {32{1'b0}};
-        g_new      = {32{1'b0}};
-        h_new      = {32{1'b0}};
+    //==========================================================================
+    // Intermediate computations (using bypassed inputs)
+    //==========================================================================
+    wire [31:0] rol_a12  = rol(a_in, 6'd12);
+    wire [31:0] rol_tj_j = rol(tj, round_cnt[4:0]);  // j mod 32
+    wire [31:0] ss1      = rol(rol_a12 + e_in + rol_tj_j, 6'd7);
+    wire [31:0] ss2      = ss1 ^ rol_a12;
 
-        if (load_en) begin
-            // Load working registers from current chaining value
-            A_next = V0_reg;
-            B_next = V1_reg;
-            C_next = V2_reg;
-            D_next = V3_reg;
-            E_next = V4_reg;
-            F_next = V5_reg;
-            G_next = V6_reg;
-            H_next = V7_reg;
+    // Balanced addition trees for critical path optimization
+    wire [31:0] tt1 = (ff_j + d_in) + (ss2 + w_prime_j);
+    wire [31:0] tt2 = (gg_j + h_in) + (ss1 + w_j);
+
+    // P0(TT2) = TT2 ^ ROL(TT2,9) ^ ROL(TT2,17)
+    wire [31:0] e_next = tt2 ^ rol(tt2, 6'd9) ^ rol(tt2, 6'd17);
+
+    //==========================================================================
+    // A-H next values (combinational)
+    //==========================================================================
+    wire [31:0] a_next = tt1;
+    wire [31:0] b_next = a_in;
+    wire [31:0] c_next = rol(b_in, 6'd9);
+    wire [31:0] d_next = c_in;
+    wire [31:0] f_next = e_in;
+    wire [31:0] g_next = rol(f_in, 6'd19);
+    wire [31:0] h_next = g_in;
+
+    //==========================================================================
+    // V next values (for hash_out capture, computed from XOR)
+    //==========================================================================
+    wire [31:0] v0_next = v0_reg ^ a_reg;
+    wire [31:0] v1_next = v1_reg ^ b_reg;
+    wire [31:0] v2_next = v2_reg ^ c_reg;
+    wire [31:0] v3_next = v3_reg ^ d_reg;
+    wire [31:0] v4_next = v4_reg ^ e_reg;
+    wire [31:0] v5_next = v5_reg ^ f_reg;
+    wire [31:0] v6_next = v6_reg ^ g_reg;
+    wire [31:0] v7_next = v7_reg ^ h_reg;
+
+    //==========================================================================
+    // Sequential: A-H registers
+    // calc_en triggers all 64 rounds (round 0 uses V bypass inputs)
+    // Reset at end of block for highest priority
+    //==========================================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            a_reg <= 32'd0;
+            b_reg <= 32'd0;
+            c_reg <= 32'd0;
+            d_reg <= 32'd0;
+            e_reg <= 32'd0;
+            f_reg <= 32'd0;
+            g_reg <= 32'd0;
+            h_reg <= 32'd0;
         end else if (calc_en) begin
-            // ---- Select round constant T_j ----
-            if (round_cnt < 6'd16) begin
-                T_sel = T_EARLY;
-            end else begin
-                T_sel = T_LATE;
-            end
+            a_reg <= a_next;
+            b_reg <= b_next;
+            c_reg <= c_next;
+            d_reg <= d_next;
+            e_reg <= e_next;
+            f_reg <= f_next;
+            g_reg <= g_next;
+            h_reg <= h_next;
+        end
+    end
 
-            // ---- ROL(T_sel, round_cnt mod 32) ----
-            rot_amt = {1'b0, round_cnt[4:0]};
-            T_rot   = (T_sel << rot_amt) | (T_sel >> (6'd32 - rot_amt));
-
-            // ---- Fixed ROL operations (wiring) ----
-            a_rot12 = {A_reg[19:0], A_reg[31:20]};    // ROL(A, 12)
-            b_rot9  = {B_reg[22:0], B_reg[31:23]};    // ROL(B, 9)
-            f_rot19 = {F_reg[12:0], F_reg[31:13]};    // ROL(F, 19)
-
-            // ---- Boolean functions FF and GG ----
-            if (round_cnt < 6'd16) begin
-                ff_result = A_reg ^ B_reg ^ C_reg;
-                gg_result = E_reg ^ F_reg ^ G_reg;
-            end else begin
-                ff_result = (A_reg & B_reg) | (A_reg & C_reg) | (B_reg & C_reg);
-                gg_result = (E_reg & F_reg) | ((~E_reg) & G_reg);
-            end
-
-            // ---- SS1 = ROL(A_rot12 + E + T_rot, 7) ----
-            sum_ae  = a_rot12 + E_reg;
-            sum_aet = sum_ae + T_rot;
-            ss1     = {sum_aet[24:0], sum_aet[31:25]};   // ROL(..., 7)
-
-            // ---- SS2 = SS1 XOR A_rot12 ----
-            ss2 = ss1 ^ a_rot12;
-
-            // ---- TT1 = FF + D + SS2 + w_prime_j (adder tree balanced) ----
-            sum_ff_d   = ff_result + D_reg;
-            sum_ss2_wp = ss2 + w_prime_j;
-            tt1 = sum_ff_d + sum_ss2_wp;
-
-            // ---- TT2 = GG + H + SS1 + w_j (adder tree balanced) ----
-            sum_gg_h   = gg_result + H_reg;
-            sum_ss1_wj = ss1 + w_j;
-            tt2 = sum_gg_h + sum_ss1_wj;
-
-            // ---- Next working register values ----
-            a_new = tt1;
-            b_new = A_reg;
-            c_new = b_rot9;
-            d_new = C_reg;
-            e_new = tt2 ^ {tt2[22:0], tt2[31:23]} ^ {tt2[14:0], tt2[31:15]}; // P0(TT2)
-            f_new = E_reg;
-            g_new = f_rot19;
-            h_new = G_reg;
-
-            // Drive next-state outputs
-            A_next = a_new;
-            B_next = b_new;
-            C_next = c_new;
-            D_next = d_new;
-            E_next = e_new;
-            F_next = f_new;
-            G_next = g_new;
-            H_next = h_new;
+    //==========================================================================
+    // Sequential: V registers (IV chaining)
+    // IV initialization on reset; XOR with A-H on update_v_en
+    // Reset at end of block for highest priority
+    //==========================================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            v0_reg <= IV0;
+            v1_reg <= IV1;
+            v2_reg <= IV2;
+            v3_reg <= IV3;
+            v4_reg <= IV4;
+            v5_reg <= IV5;
+            v6_reg <= IV6;
+            v7_reg <= IV7;
         end else if (update_v_en) begin
-            // Update chaining value: V_new = V_old XOR {A,B,C,D,E,F,G,H}
-            V0_next = V0_reg ^ A_reg;
-            V1_next = V1_reg ^ B_reg;
-            V2_next = V2_reg ^ C_reg;
-            V3_next = V3_reg ^ D_reg;
-            V4_next = V4_reg ^ E_reg;
-            V5_next = V5_reg ^ F_reg;
-            V6_next = V6_reg ^ G_reg;
-            V7_next = V7_reg ^ H_reg;
+            v0_reg <= v0_next;
+            v1_reg <= v1_next;
+            v2_reg <= v2_next;
+            v3_reg <= v3_next;
+            v4_reg <= v4_next;
+            v5_reg <= v5_next;
+            v6_reg <= v6_next;
+            v7_reg <= v7_next;
         end
     end
 
-    ////////////////////////////////////////////////////////////////////////////////
-    // Sequential logic: register update                                           //
-    ////////////////////////////////////////////////////////////////////////////////
-
-    always @(posedge clk) begin
-        V0_reg <= V0_next;
-        V1_reg <= V1_next;
-        V2_reg <= V2_next;
-        V3_reg <= V3_next;
-        V4_reg <= V4_next;
-        V5_reg <= V5_next;
-        V6_reg <= V6_next;
-        V7_reg <= V7_next;
-
-        A_reg <= A_next;
-        B_reg <= B_next;
-        C_reg <= C_next;
-        D_reg <= D_next;
-        E_reg <= E_next;
-        F_reg <= F_next;
-        G_reg <= G_next;
-        H_reg <= H_next;
-
-        if (rst) begin
-            V0_reg <= IV0;
-            V1_reg <= IV1;
-            V2_reg <= IV2;
-            V3_reg <= IV3;
-            V4_reg <= IV4;
-            V5_reg <= IV5;
-            V6_reg <= IV6;
-            V7_reg <= IV7;
-
-            A_reg <= 32'd0;
-            B_reg <= 32'd0;
-            C_reg <= 32'd0;
-            D_reg <= 32'd0;
-            E_reg <= 32'd0;
-            F_reg <= 32'd0;
-            G_reg <= 32'd0;
-            H_reg <= 32'd0;
+    //==========================================================================
+    // Sequential: hash_out register (captures XOR'd V on update_v_en)
+    // Reset at end of block for highest priority
+    //==========================================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hash_out_reg <= 256'd0;
+        end else if (update_v_en) begin
+            hash_out_reg <= {v0_next, v1_next, v2_next, v3_next,
+                             v4_next, v5_next, v6_next, v7_next};
         end
     end
 
-    ////////////////////////////////////////////////////////////////////////////////
-    // Output assignment                                                           //
-    ////////////////////////////////////////////////////////////////////////////////
-
-    assign hash_out = {V0_reg, V1_reg, V2_reg, V3_reg, V4_reg, V5_reg, V6_reg, V7_reg};
+    //==========================================================================
+    // Output
+    //==========================================================================
+    assign hash_out = hash_out_reg;
 
 endmodule
-
-`resetall

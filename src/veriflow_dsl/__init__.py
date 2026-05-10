@@ -20,7 +20,7 @@ from ._emitter import VerilogEmitter
 from ._trace import diff_traces, TraceDiff
 from ._spec import (
     RegT, WireT, RegAssign,
-    reg_next, mux, cat, slice_,
+    reg_next, mux, cat, slice_, rotate_left, rotate_right,
     vf_block, vf_fsm,
 )
 from ._adapter import from_timing_model
@@ -34,7 +34,7 @@ __all__ = [
     "diff_traces", "TraceDiff",
     # v2 spec protocol
     "RegT", "WireT", "RegAssign",
-    "reg_next", "mux", "cat", "slice_",
+    "reg_next", "mux", "cat", "slice_", "rotate_left", "rotate_right",
     "vf_block", "vf_fsm",
     # v2 adapter
     "from_timing_model",

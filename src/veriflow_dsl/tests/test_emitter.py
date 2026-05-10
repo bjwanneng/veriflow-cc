@@ -216,5 +216,123 @@ class TestEmitterBarrelShifter(unittest.TestCase):
                         f"Barrel shifter should use data_reg but got: {barrel_lines}")
 
 
+class TestEmitterTemporaries(unittest.TestCase):
+    """Test intermediate wire generation for complex expressions."""
+
+    def test_complex_rol_emits_temp_wire(self):
+        """Constant rotation on a non-trivial expression needs a temp wire."""
+        m = Module("rol_temp")
+        a = Signal(32, name="a")
+        b = Signal(32, name="b")
+        out = Signal(32, name="out")
+        m.add_input(a)
+        m.add_input(b)
+        m.add_output(out)
+        m.add_signal(out)
+        # ROL on a binop expression — Verilog-2005 forbids part-select on expr
+        m.d.comb += out.eq((a + b).rotate_left(7))
+
+        emitter = VerilogEmitter()
+        code = emitter.emit(m)
+
+        # Must emit a temp wire and assign the expression to it
+        self.assertIn("wire [32:0] _vf_tmp_0", code)
+        self.assertIn("assign _vf_tmp_0 = (a + b)", code)
+        # Rotation must use the temp wire, not the expression directly
+        # 33-bit operand rotated by 7: {operand[25:0], operand[32:26]}
+        self.assertIn("{_vf_tmp_0[25:0], _vf_tmp_0[32:26]}", code)
+
+    def test_dedup_same_expr_reuses_temp(self):
+        """Same complex expression used twice should reuse one temp wire."""
+        m = Module("rol_dedup")
+        a = Signal(32, name="a")
+        out1 = Signal(32, name="out1")
+        out2 = Signal(32, name="out2")
+        m.add_input(a)
+        m.add_output(out1)
+        m.add_signal(out1)
+        m.add_output(out2)
+        m.add_signal(out2)
+        expr = a + Const(1, 32)
+        m.d.comb += out1.eq(expr.rotate_left(3))
+        m.d.comb += out2.eq(expr.rotate_left(5))
+
+        emitter = VerilogEmitter()
+        code = emitter.emit(m)
+
+        # Only one temp wire for the shared expression
+        # decl(1) + assign(1) + two rotations each using it twice(4) = 6
+        self.assertEqual(code.count("_vf_tmp_0"), 6)
+        self.assertNotIn("_vf_tmp_1", code)
+
+    def test_slice_on_complex_expr_emits_temp(self):
+        """Part-select on a non-trivial expression needs a temp wire."""
+        m = Module("slice_temp")
+        a = Signal(16, name="a")
+        b = Signal(16, name="b")
+        out = Signal(8, name="out")
+        m.add_input(a)
+        m.add_input(b)
+        m.add_output(out)
+        m.add_signal(out)
+        m.d.comb += out.eq((a + b)[7:0])
+
+        emitter = VerilogEmitter()
+        code = emitter.emit(m)
+
+        self.assertIn("wire [16:0] _vf_tmp_0", code)
+        self.assertIn("assign _vf_tmp_0 = (a + b)", code)
+        self.assertIn("_vf_tmp_0[7:0]", code)
+
+    def test_simple_signal_no_temp(self):
+        """Rotation on a simple signal should NOT emit a temp wire."""
+        m = Module("rol_simple")
+        a = Signal(32, name="a")
+        out = Signal(32, name="out")
+        m.add_input(a)
+        m.add_output(out)
+        m.add_signal(out)
+        m.d.comb += out.eq(a.rotate_left(7))
+
+        emitter = VerilogEmitter()
+        code = emitter.emit(m)
+
+        self.assertNotIn("_vf_tmp", code)
+        # 32-bit operand rotated by 7: {a[24:0], a[31:25]}
+        self.assertIn("{a[24:0], a[31:25]}", code)
+
+    def test_no_temp_wire_name_collision_across_blocks(self):
+        """Comb and seq blocks with temp wires must use distinct names."""
+        from veriflow_dsl._types import Mux
+        m = Module("collision_test")
+        a = Signal(16, name="a")
+        cnt = Signal(16, name="cnt", reset=0)
+        out = Signal(16, name="out")
+        m.add_input(a)
+        m.add_signal(cnt)
+        m.add_output(cnt)
+        m.add_output(out)
+        m.add_signal(out)
+        # Comb block: temp wire for (a + Const) under slice
+        m.d.comb += out.eq((a + Const(1, 16))[7:0])
+        # Seq block: temp wire for (cnt + Const) under rotation
+        m.d.sync += cnt.eq((cnt + Const(1, 16)).rotate_left(3))
+
+        emitter = VerilogEmitter()
+        code = emitter.emit(m)
+
+        # Collect all _vf_tmp_N names
+        import re
+        tmp_names = set(re.findall(r'_vf_tmp_\d+', code))
+        # Each name should appear in exactly one wire declaration
+        decl_lines = [l for l in code.split("\n") if l.strip().startswith("wire ") and "_vf_tmp_" in l]
+        decl_names = [re.search(r'(_vf_tmp_\d+)', l).group(1) for l in decl_lines]
+        # No duplicate declarations
+        self.assertEqual(len(decl_names), len(set(decl_names)),
+                         f"Duplicate wire declarations: {decl_names}")
+        # Both blocks contributed temp wires
+        self.assertGreaterEqual(len(decl_names), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,8 +2,8 @@
 """
 VeriFlow-CC Installer
 
-Installs to ~/.claude/:
-  - skills/vf-pipeline/SKILL.md   — Pipeline orchestration skill (/vf-pipeline)
+Symlinks to ~/.claude/:
+  - skills/vf-rtl/SKILL.md   — Pipeline orchestration skill (/vf-rtl)
   - agents/vf-architect.md        — Specification + golden model generation (Stage 1)
   - agents/vf-coder.md            — RTL code generation sub-agent (Stage 2)
   - agents/vf-linter.md           — Lint sub-agent (Stage 4)
@@ -11,11 +11,10 @@ Installs to ~/.claude/:
 
 Pipeline: spec_golden → codegen → verify_fix → lint_synth
 
-After installation, use /vf-pipeline <project_dir> in Claude Code to drive the full RTL design pipeline.
+After installation, use /vf-rtl <project_dir> in Claude Code to drive the full RTL design pipeline.
 """
 
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -23,13 +22,20 @@ PROJECT_DIR = Path(__file__).parent
 CLAUDE_DIR = Path.home() / ".claude"
 
 # --- Skill ---
-SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
-SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-pipeline"
+SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl"
+SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-rtl"
 SKILL_FILES = ["SKILL.md", "state.py", "init.py", "vcd2table.py", "cocotb_runner.py", "iverilog_runner.py", "timing_contract_checker.py", "bug_patterns.md", "design_rules.md", "error_recovery.md"]
 TEMPLATES_DIR = "templates"
 
+# --- veriflow_dsl Python package ---
+# Symlinked into SKILL_DST_DIR/veriflow_dsl so that skill scripts and the
+# user's project (which sources eda_env.sh, exporting PYTHONPATH=$SKILL_DIR)
+# can `from veriflow_dsl import ...` and `python -m veriflow_dsl.trace_export`.
+VERIFLOW_DSL_SRC = PROJECT_DIR / "src" / "veriflow_dsl"
+VERIFLOW_DSL_DST_NAME = "veriflow_dsl"
+
 # Source for coding_style.md is now in the skill directory itself
-CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline" / "coding_style.md"
+CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl" / "coding_style.md"
 CODING_STYLE_DST_NAME = "coding_style.md"
 
 # --- Sub-agents ---
@@ -60,21 +66,35 @@ def main():
                 removed += 1
             stages_dst.rmdir()
 
-        # Remove skill
+        # Remove skill (symlinks or copies)
         for name in SKILL_FILES + [CODING_STYLE_DST_NAME]:
             dst = SKILL_DST_DIR / name
-            if dst.exists():
+            if dst.exists() or dst.is_symlink():
                 dst.unlink()
-                print(f"  Removed skill: vf-pipeline/{name}")
+                print(f"  Removed skill: vf-rtl/{name}")
                 removed += 1
         # Remove templates
         templates_dst = SKILL_DST_DIR / TEMPLATES_DIR
         if templates_dst.exists():
             for f in templates_dst.iterdir():
-                f.unlink()
-                print(f"  Removed template: {f.name}")
-                removed += 1
+                if f.is_file() or f.is_symlink():
+                    f.unlink()
+                    print(f"  Removed template: {f.name}")
+                    removed += 1
             templates_dst.rmdir()
+
+        # Remove veriflow_dsl/ symlink (or directory copy fallback)
+        dsl_dst = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME
+        if dsl_dst.is_symlink() or dsl_dst.exists():
+            if dsl_dst.is_symlink() or dsl_dst.is_file():
+                dsl_dst.unlink()
+            else:
+                # Directory copy fallback (Windows without symlink permission)
+                import shutil as _sh
+                _sh.rmtree(dsl_dst)
+            print(f"  Removed package: veriflow_dsl/")
+            removed += 1
+
         if SKILL_DST_DIR.exists():
             try:
                 SKILL_DST_DIR.rmdir()
@@ -85,10 +105,10 @@ def main():
             except OSError:
                 pass
 
-        # Remove agents
+        # Remove agents (symlinks or copies)
         for name in AGENT_FILES:
             dst = AGENTS_DST_DIR / name
-            if dst.exists():
+            if dst.exists() or dst.is_symlink():
                 dst.unlink()
                 print(f"  Removed agent: {name}")
                 removed += 1
@@ -129,29 +149,34 @@ def main():
         if cleaned:
             print()
 
-    # 1. Install skill (SKILL.md + state.py + support files)
+    def _symlink(src: Path, dst: Path, label: str):
+        """Create or overwrite a symlink from dst → src."""
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        dst.symlink_to(src.resolve())
+        print(f"  [{label}]  {src.name}  →  {dst}")
+
+    # 1. Install skill (symlink: SKILL.md + state.py + support files)
     SKILL_DST_DIR.mkdir(parents=True, exist_ok=True)
     skill_installed = 0
     for name in SKILL_FILES:
         src = SKILL_SRC_DIR / name
         dst = SKILL_DST_DIR / name
         if src.exists():
-            shutil.copy2(src, dst)
-            print(f"  [skill]  vf-pipeline/{name}  →  {dst}")
+            _symlink(src, dst, "skill")
             skill_installed += 1
         else:
-            print(f"  [skip]   vf-pipeline/{name} not found at {src}")
+            print(f"  [skip]   vf-rtl/{name} not found at {src}")
 
-    # 1b. Install coding_style.md to skill directory
+    # 1b. Install coding_style.md (symlink)
     if CODING_STYLE_SRC.exists():
         dst = SKILL_DST_DIR / CODING_STYLE_DST_NAME
-        shutil.copy2(CODING_STYLE_SRC, dst)
-        print(f"  [skill]  vf-pipeline/{CODING_STYLE_DST_NAME}  →  {dst}")
+        _symlink(CODING_STYLE_SRC, dst, "skill")
         skill_installed += 1
     else:
-        print(f"  [skip]   vf-pipeline/{CODING_STYLE_DST_NAME} not found at {CODING_STYLE_SRC}")
+        print(f"  [skip]   vf-rtl/{CODING_STYLE_DST_NAME} not found at {CODING_STYLE_SRC}")
 
-    # 1c. Install templates
+    # 1c. Install templates (symlink each template file)
     templates_src = SKILL_SRC_DIR / TEMPLATES_DIR
     templates_dst = SKILL_DST_DIR / TEMPLATES_DIR
     if templates_src.exists():
@@ -159,13 +184,36 @@ def main():
         for f in sorted(templates_src.iterdir()):
             if f.is_file():
                 dst = templates_dst / f.name
-                shutil.copy2(f, dst)
-                print(f"  [tmpl]   vf-pipeline/{TEMPLATES_DIR}/{f.name}  →  {dst}")
+                _symlink(f, dst, "tmpl")
                 skill_installed += 1
     else:
-        print(f"  [skip]   vf-pipeline/{TEMPLATES_DIR}/ not found at {templates_src}")
+        print(f"  [skip]   vf-rtl/{TEMPLATES_DIR}/ not found at {templates_src}")
 
-    # 2. Install sub-agents
+    # 1d. Install veriflow_dsl/ as a sibling package under SKILL_DST_DIR.
+    # `python -m veriflow_dsl.<x>` must resolve once SKILL_DST_DIR is on
+    # PYTHONPATH (init.py wires that into eda_env.sh).
+    dsl_dst = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME
+    if VERIFLOW_DSL_SRC.is_dir():
+        # Remove anything previously placed here (file, symlink, or stale dir).
+        if dsl_dst.is_symlink() or dsl_dst.is_file():
+            dsl_dst.unlink()
+        elif dsl_dst.is_dir():
+            import shutil as _sh
+            _sh.rmtree(dsl_dst)
+        try:
+            dsl_dst.symlink_to(VERIFLOW_DSL_SRC.resolve(), target_is_directory=True)
+            print(f"  [pkg]    veriflow_dsl/  →  {dsl_dst}")
+            skill_installed += 1
+        except (OSError, NotImplementedError) as e:
+            # Windows non-admin: fall back to directory copy.
+            import shutil as _sh
+            _sh.copytree(VERIFLOW_DSL_SRC, dsl_dst)
+            print(f"  [pkg]    veriflow_dsl/  copied to {dsl_dst} (symlink unavailable: {e})")
+            skill_installed += 1
+    else:
+        print(f"  [skip]   veriflow_dsl/ source missing at {VERIFLOW_DSL_SRC}")
+
+    # 2. Install sub-agents (symlink)
     AGENTS_DST_DIR.mkdir(parents=True, exist_ok=True)
     installed = 0
     missing = 0
@@ -176,8 +224,7 @@ def main():
             print(f"  [skip]   {name}  (source not found)")
             missing += 1
             continue
-        shutil.copy2(src, dst)
-        print(f"  [agent]  {name}  →  {dst}")
+        _symlink(src, dst, "agent")
         installed += 1
 
     print(f"\n{'='*50}")
@@ -254,15 +301,26 @@ def main():
     else:
         verify_errors.append(f"  [FAIL] iverilog_runner.py missing at {iverilog_runner_dst}")
 
+    # 3g. Check veriflow_dsl/__init__.py reachable through skill dir
+    dsl_init = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME / "__init__.py"
+    dsl_trace = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME / "trace_export.py"
+    if dsl_init.exists() and dsl_trace.exists():
+        print(f"  [OK]   veriflow_dsl/ package present")
+    else:
+        verify_errors.append(
+            f"  [FAIL] veriflow_dsl/ package missing under {SKILL_DST_DIR}/ "
+            f"(__init__.py={dsl_init.exists()}, trace_export.py={dsl_trace.exists()})"
+        )
+
     if verify_errors:
         print(f"\n[verify] Issues found:")
         for err in verify_errors:
             print(err)
-        print(f"\n[verify] Fix the above issues before running /vf-pipeline")
+        print(f"\n[verify] Fix the above issues before running /vf-rtl")
     else:
         print(f"\n[verify] All checks passed.")
 
-    print(f"\nUsage: /vf-pipeline <project_dir>")
+    print(f"\nUsage: /vf-rtl <project_dir>")
     return 0
 
 

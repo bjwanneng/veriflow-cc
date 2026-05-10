@@ -41,12 +41,43 @@ def _expr_name_for_key(expr: Value) -> str:
 # Expression → Verilog string converter
 # ---------------------------------------------------------------------------
 
+def _needs_temp_wire(expr: Value) -> bool:
+    """Return True if expr is not a simple Signal/Const and needs a temp wire
+    before part-select or rotation in Verilog-2005."""
+    return not isinstance(expr, (Signal, Const))
+
+
 class _ExprEmitter:
     """Convert a DSL expression tree to a Verilog expression string."""
 
-    def __init__(self, signal_names: dict[str, str] | None = None):
+    def __init__(self, signal_names: dict[str, str] | None = None, *, tmp_start: int = 0):
         # Maps DSL signal names to Verilog signal names (e.g., "counter" -> "counter_reg")
         self._renames = signal_names or {}
+        # Temporaries needed for complex expressions under slice/rol
+        # Each entry: (wire_name, expr_str, width)
+        self._temporaries: list[tuple[str, str, int]] = []
+        self._tmp_counter = 0
+        self._tmp_start = tmp_start
+
+    def _next_tmp_name(self) -> str:
+        name = f"_vf_tmp_{self._tmp_start + self._tmp_counter}"
+        self._tmp_counter += 1
+        return name
+
+    def _get_or_create_tmp(self, expr_str: str, width: int) -> str:
+        """Return existing temp wire name if expr_str already seen, else create new."""
+        for tmp_name, existing_expr, existing_width in self._temporaries:
+            if existing_expr == expr_str and existing_width == width:
+                return tmp_name
+        tmp_name = self._next_tmp_name()
+        self._temporaries.append((tmp_name, expr_str, width))
+        return tmp_name
+
+    def temporaries(self) -> list[tuple[str, str, int]]:
+        """Return collected temporaries and reset the list."""
+        result = list(self._temporaries)
+        self._temporaries = []
+        return result
 
     def emit(self, expr: Value) -> str:
         """Convert expression tree to Verilog expression string."""
@@ -102,7 +133,11 @@ class _ExprEmitter:
     def _emit_slice(self, s: _Slice) -> str:
         operand = self.emit(s._operand)
         if s._high == s._low:
+            # Single-bit select is allowed on expressions in Verilog-2005
             return f"{operand}[{s._high}]"
+        # Verilog-2005 does not allow part-select on expression results.
+        if _needs_temp_wire(s._operand):
+            operand = self._get_or_create_tmp(operand, s._operand.width)
         return f"{operand}[{s._high}:{s._low}]"
 
     def _emit_concat(self, c: _Concat) -> str:
@@ -125,6 +160,10 @@ class _ExprEmitter:
             n = amount.value % w
             if n == 0:
                 return operand
+            # Verilog-2005 does not allow part-select on expression results.
+            # Introduce a temporary wire if the operand is complex.
+            if _needs_temp_wire(r._operand):
+                operand = self._get_or_create_tmp(operand, w)
             return f"{{{operand}[{w-1-n}:{0}], {operand}[{w-1}:{w-n}]}}"
 
         # Variable rotation: emit barrel shifter reference
@@ -155,12 +194,14 @@ class VerilogEmitter:
 
     def __init__(self):
         self._indent = "    "
+        self._tmp_offset = 0
 
     def emit(self, module: Module) -> str:
         """Emit complete Verilog-2005 source for the module.
 
         Delegates to module.analyze() which caches internally.
         """
+        self._tmp_offset = 0  # reset per module
         analysis = module.analyze()
         signals = analysis["signals"]
         comb_asns = analysis["comb_assignments"]
@@ -287,9 +328,25 @@ class VerilogEmitter:
         comb_asns = analysis["comb_assignments"]
         signals = analysis["signals"]
         renames = self._build_signal_renames(analysis)
-        ee = _ExprEmitter(signal_names=renames)
+        ee = _ExprEmitter(signal_names=renames, tmp_start=self._tmp_offset)
+
+        # Emit expressions to discover needed temporaries
+        expr_strs = []
+        for target_name, value_expr in comb_asns:
+            expr_strs.append(ee.emit(value_expr))
 
         lines = ["// Combinational logic"]
+
+        # Emit temporaries for complex expressions under slice/rol
+        temps = ee.temporaries()
+        self._tmp_offset += ee._tmp_counter
+        for tmp_name, tmp_expr, tmp_width in temps:
+            wstr = f"[{tmp_width-1}:0] " if tmp_width > 1 else ""
+            lines.append(f"wire {wstr}{tmp_name};")
+            lines.append(f"assign {tmp_name} = {tmp_expr};")
+        if temps:
+            lines.append("")
+
         lines.append("always @* begin")
 
         # Default values at top to prevent latches (Section 12)
@@ -301,9 +358,8 @@ class VerilogEmitter:
                 )
 
         # Assignments
-        for target_name, value_expr in comb_asns:
+        for target_name, verilog_expr in zip((t for t, _ in comb_asns), expr_strs):
             sig_info = signals[target_name]
-            verilog_expr = ee.emit(value_expr)
             # Wire outputs use _next (intermediate) naming
             next_name = f"{target_name}_next" if sig_info["timing"] == "wire" else target_name
             lines.append(
@@ -323,34 +379,104 @@ class VerilogEmitter:
         sync_asns = analysis["sync_assignments"]
         signals = analysis["signals"]
         renames = self._build_signal_renames(analysis)
-        ee = _ExprEmitter(signal_names=renames)
+        ee = _ExprEmitter(signal_names=renames, tmp_start=self._tmp_offset)
+
+        # Pre-emit expressions once to discover needed temporaries
+        expr_strs = []
+        for target_name, value_expr in sync_asns:
+            expr_strs.append(ee.emit(value_expr))
 
         lines = ["// Sequential logic (register update)"]
+
+        # Emit temporaries for complex expressions under slice/rol
+        temps = ee.temporaries()
+        self._tmp_offset += ee._tmp_counter
+        for tmp_name, tmp_expr, tmp_width in temps:
+            wstr = f"[{tmp_width-1}:0] " if tmp_width > 1 else ""
+            lines.append(f"wire {wstr}{tmp_name};")
+            lines.append(f"assign {tmp_name} = {tmp_expr};")
+        if temps:
+            lines.append("")
+
         lines.append("always @(posedge clk) begin")
 
-        lines.append(f"{self._indent}if (rst) begin")
-        for target_name, value_expr in sync_asns:
+        # Normal assignments (always applied)
+        for target_name, verilog_expr in zip((t for t, _ in sync_asns), expr_strs):
+            lines.append(
+                f"{self._indent}{target_name}_reg <= {verilog_expr};"
+            )
+
+        # Reset overrides (last-assignment-wins — matches coding_style.md Section 6)
+        reset_lines = []
+        for target_name, verilog_expr in zip((t for t, _ in sync_asns), expr_strs):
             sig_info = signals[target_name]
-            if sig_info["reset_less"]:
-                # reset_less: still compute normally during reset
-                verilog_expr = ee.emit(value_expr)
-                lines.append(
-                    f"{self._indent}{self._indent}{target_name}_reg <= {verilog_expr};"
-                )
-            else:
-                lines.append(
+            if not sig_info["reset_less"]:
+                reset_lines.append(
                     f"{self._indent}{self._indent}{target_name}_reg <= {sig_info['width']}'d{sig_info['reset']};"
                 )
-        lines.append(f"{self._indent}end else begin")
-        for target_name, value_expr in sync_asns:
-            verilog_expr = ee.emit(value_expr)
-            lines.append(
-                f"{self._indent}{self._indent}{target_name}_reg <= {verilog_expr};"
-            )
-        lines.append(f"{self._indent}end")
+        if reset_lines:
+            lines.append(f"{self._indent}if (rst) begin")
+            lines.extend(reset_lines)
+            lines.append(f"{self._indent}end")
 
         lines.append("end")
         return "\n".join(lines)
+
+    def emit_block(self, func) -> str:
+        """Emit a Verilog fragment from a @vf_block function.
+
+        Unlike emit() which produces a complete module, emit_block() produces
+        an embeddable fragment — either assign statements for combinational
+        blocks, or always @* + always @(posedge clk) pairs for sequential blocks.
+
+        The fragment is wrapped in BEGIN/END EMIT markers so the AI translator
+        can inject it into a larger hand-written module skeleton.
+
+        Args:
+            func: A function decorated with @vf_block
+
+        Returns:
+            Verilog source fragment string.
+        """
+        from ._adapter import from_timing_model
+
+        if not hasattr(func, "_vf_block_type"):
+            raise TypeError(f"{func.__name__} must be decorated with @vf_block")
+
+        block_type = func._vf_block_type
+        module = from_timing_model(func)
+        analysis = module.analyze()
+
+        self._tmp_offset = 0
+        parts = [f"// --- BEGIN EMIT: {func.__name__} ({block_type}) ---"]
+
+        if block_type == "sequential":
+            # Emit temporaries + always @* (combinational) + always @(posedge clk) (sequential)
+            comb_asns = analysis["comb_assignments"]
+            sync_asns = analysis["sync_assignments"]
+
+            if comb_asns:
+                parts.append(self.emit_combinational_block(module, analysis))
+            if sync_asns:
+                parts.append(self.emit_sequential_block(module, analysis))
+
+            # Emit barrel shifters if any variable rotations
+            barrel = self._emit_barrel_shifters(module, analysis)
+            if barrel:
+                parts.extend(barrel)
+
+        elif block_type == "combinational":
+            # Emit the combinational block (always @* with defaults)
+            comb_asns = analysis["comb_assignments"]
+            if comb_asns:
+                parts.append(self.emit_combinational_block(module, analysis))
+                # Output wire assigns
+                assigns = self._emit_output_assigns(module, analysis)
+                if assigns:
+                    parts.extend(assigns)
+
+        parts.append(f"// --- END EMIT: {func.__name__} ---")
+        return "\n".join(parts)
 
     def emit_timing_contract(self, module: Module) -> dict:
         """Produce timing_contract dict for cocotb GOLDEN_TO_PORT mapping.

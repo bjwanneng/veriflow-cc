@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 
-_SKILLS_DIR = Path(__file__).parent.parent / "src" / "claude_skills" / "vf-pipeline"
+_SKILLS_DIR = Path(__file__).parent.parent / "src" / "claude_skills" / "vf-rtl"
 sys.path.insert(0, str(_SKILLS_DIR))
 
 from iverilog_runner import _parse_fail_line, classify_failure  # noqa: E402

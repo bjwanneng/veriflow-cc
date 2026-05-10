@@ -14,6 +14,42 @@ Usage in timing_model.py:
     def round_step(*, a_reg: RegT, b_reg: RegT, calc_en: RegT) -> list[RegAssign]:
         ss1 = rotate_left(a_reg + b_reg, 1)   # WireT
         return [reg_next(a_reg, ss1)]          # RegAssign
+
+VeriFlow Translatable Subset
+----------------------------
+A timing_model.py @vf_block body is mechanically lowered to Verilog by the
+adapter + emitter. To keep that lowering deterministic, restrict yourself
+to the following five rules — anything outside this subset is rejected at
+adapter time, not at simulation:
+
+1. **Types only**: every parameter is annotated `RegT` or `WireT`; every
+   return element of a sequential block is a `RegAssign` produced by
+   `reg_next()`. Plain Python objects (lists, ints, strings) cannot cross
+   the function boundary as signals — they are not lowerable.
+
+2. **No Python control flow over runtime values**: `if`, `for`, `while` may
+   appear ONLY when their condition / iterable depends on Python constants
+   (e.g. `for stage in range(5):` to unroll cascaded muxes). Any branch on
+   a `RegT`/`WireT` value must use `mux(cond, t, f)` instead.
+
+3. **No comprehension producing variable-length signal lists**: list/dict
+   comprehensions are fine for building constant tables, but the adapter
+   walks parameters and `RegAssign` elements positionally, so the count
+   must be statically known at adapter time.
+
+4. **Bit-widths are int constants**: every `RegT(name, W)`, `WireT(name, W)`,
+   and `slice_(sig, msb, lsb)` width/index must be a Python int literal or
+   `Final[int]` constant. Widths derived from a signal value are not lowerable.
+
+5. **Conditional updates use `enable=` OR `mux(cond, t, f)`, not Python `if`**:
+   either `reg_next(target, value, en=cond)` or
+   `reg_next(target, mux(cond, value, target))` is fine — the adapter
+   lowers both. What you must NOT do is branch on `cond` and call
+   `reg_next` from one side of an `if`; every `reg_next` must fire
+   unconditionally so the adapter sees a deterministic list of updates.
+
+Anything that breaks these rules belongs in `golden_model.py` (pure
+algorithm reference), not in `timing_model.py` (the translatable contract).
 """
 
 from __future__ import annotations
@@ -145,6 +181,41 @@ class RegT:
     def __invert__(self) -> "WireT":
         return WireT._from_unaryop("~", self)
 
+    # --- Comparison operators ----------------------------------------------
+
+    def __eq__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("==", self, other)
+
+    def __ne__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("!=", self, other)
+
+    def __lt__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("<", self, other)
+
+    def __le__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("<=", self, other)
+
+    def __gt__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop(">", self, other)
+
+    def __ge__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop(">=", self, other)
+
+    # Preserve dataclass hash despite custom __eq__
+    __hash__ = object.__hash__
+
     # --- Immutability checks -----------------------------------------------
 
     def __bool__(self) -> bool:
@@ -196,6 +267,17 @@ class WireT:
             name=f"{operand.name}[{high}:{low}]",
             width=w,
             expr=Expr("slice", w, (_to_expr(operand), high, low)),
+        )
+
+    @classmethod
+    def _from_identity(cls, val: "RegT | WireT") -> "WireT":
+        """Passthrough: return the WireT unchanged, or wrap a RegT as a WireT."""
+        if isinstance(val, WireT):
+            return val
+        return cls(
+            name=val.name,
+            width=val.width,
+            expr=Expr("signal", val.width, (val.name,)),
         )
 
     # --- Operators: WireT + X -> WireT -------------------------------------
@@ -253,6 +335,40 @@ class WireT:
 
     def __invert__(self) -> "WireT":
         return WireT._from_unaryop("~", self)
+
+    # --- Comparison operators ----------------------------------------------
+
+    def __eq__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("==", self, other)
+
+    def __ne__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("!=", self, other)
+
+    def __lt__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("<", self, other)
+
+    def __le__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("<=", self, other)
+
+    def __gt__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop(">", self, other)
+
+    def __ge__(self, other) -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop(">=", self, other)
+
+    __hash__ = object.__hash__
 
     def __bool__(self) -> bool:
         raise TypeError("Cannot convert WireT to bool. Use explicit comparison.")
@@ -334,6 +450,39 @@ def cat(*parts: "RegT | WireT | int") -> WireT:
 def slice_(sig: "RegT | WireT", msb: int, lsb: int) -> WireT:
     """Bit slice: sig[msb:lsb]. Equivalent to Verilog part-select."""
     return WireT._from_slice(sig, msb, lsb)
+
+
+def rotate_left(x: "RegT | WireT", n: int) -> WireT:
+    """Left rotate by n bits: {x[W-1-n:0], x[W-1:W-n]}.
+
+    n must be a constant integer (not a signal).
+    Maps to Verilog concatenation for constant n.
+    """
+    w = x.width
+    n = n % w
+    if n == 0:
+        return WireT._from_identity(x)
+    return WireT(
+        name=f"ROL({x.name}, {n})",
+        width=w,
+        expr=Expr("rol", w, (_to_expr(x), n)),
+    )
+
+
+def rotate_right(x: "RegT | WireT", n: int) -> WireT:
+    """Right rotate by n bits: {x[n-1:0], x[W-1:n]}.
+
+    n must be a constant integer (not a signal).
+    """
+    w = x.width
+    n = n % w
+    if n == 0:
+        return WireT._from_identity(x)
+    return WireT(
+        name=f"ROR({x.name}, {n})",
+        width=w,
+        expr=Expr("ror", w, (_to_expr(x), n)),
+    )
 
 
 # ---------------------------------------------------------------------------

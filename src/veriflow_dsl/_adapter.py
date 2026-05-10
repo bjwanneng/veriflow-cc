@@ -12,7 +12,7 @@ from __future__ import annotations
 import inspect
 from typing import get_type_hints
 
-from ._types import Signal, Const, Cat, Mux, Value
+from ._types import Signal, Const, Cat, Mux, Value, _ROL
 from ._module import Module
 from ._spec import RegT, WireT, RegAssign, vf_block
 
@@ -104,6 +104,16 @@ def _expr_to_dsl(expr, signal_map: dict[str, Signal]) -> Value:
         low = expr.parts[2]
         return operand[high:low]
 
+    if expr.op in ("rol", "ror"):
+        operand = _expr_to_dsl(expr.parts[0], signal_map)
+        amount = int(expr.parts[1])
+        amount_width = max(1, operand.width.bit_length())
+        if expr.op == "rol":
+            return _ROL(operand, Const(amount, amount_width), operand.width)
+        else:  # ror
+            actual_amount = (operand.width - amount) % operand.width
+            return _ROL(operand, Const(actual_amount, amount_width), operand.width)
+
     raise NotImplementedError(f"Unsupported expr op: {expr.op}")
 
 
@@ -182,6 +192,22 @@ def from_timing_model(func) -> Module:
     m = Module(func.__name__)
     signal_map: dict[str, Signal] = {}
 
+    if block_type == "combinational":
+        # Combinational blocks have all inputs + one or more output wires.
+        # Create an output signal named after the function.
+        if isinstance(result, WireT):
+            out_width = result.width
+        elif isinstance(result, tuple):
+            out_width = sum(
+                r.width if isinstance(r, (WireT, RegT)) else 32
+                for r in result
+            )
+        else:
+            out_width = 32
+        out_sig = Signal(out_width, name=f"{func.__name__}_out")
+        m.add_output(out_sig)
+        signal_map[f"{func.__name__}_out"] = out_sig
+
     for param_name, meta in param_meta.items():
         s = Signal(meta["width"], name=param_name, reset=0 if meta["kind"] == "reg" else None)
 
@@ -238,6 +264,9 @@ def from_timing_model(func) -> Module:
             m.d.sync += target_sig.eq(next_val)
 
     elif block_type == "combinational":
-        raise NotImplementedError("Combinational block adapter not yet implemented")
+        out_sig = signal_map[f"{func.__name__}_out"]
+        if isinstance(result, WireT):
+            val = _wire_to_dsl(result, signal_map)
+            m.d.comb += out_sig.eq(val)
 
     return m

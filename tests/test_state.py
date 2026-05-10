@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 # Resolve the skills directory relative to this test file
-_SKILLS_DIR = Path(__file__).parent.parent / "src" / "claude_skills" / "vf-pipeline"
+_SKILLS_DIR = Path(__file__).parent.parent / "src" / "claude_skills" / "vf-rtl"
 import sys
 sys.path.insert(0, str(_SKILLS_DIR))
 

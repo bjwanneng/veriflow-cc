@@ -163,7 +163,7 @@ if __name__ == "__main__":
     assert abc_result == expected_abc, f"'abc' FAIL"
     print("  PASS")
 
-    # Golden model interface for vcd2table.py / vf-pipeline
+    # Golden model interface for vcd2table.py / vf-rtl
     def run() -> list[dict]:
         """Standard VeriFlow pipeline interface: returns list[dict] of per-cycle
         expected outputs. For sha256_core, the output only materializes at the

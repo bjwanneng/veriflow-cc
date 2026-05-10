@@ -15,10 +15,9 @@ reg [7:0] count_reg_reg = 8'd0;
 
 // Sequential logic (register update)
 always @(posedge clk) begin
+    count_reg_reg <= (en ? (count_reg_reg + 1'd1) : count_reg_reg);
     if (rst) begin
         count_reg_reg <= 8'd0;
-    end else begin
-        count_reg_reg <= (en ? (count_reg_reg + 1'd1) : count_reg_reg);
     end
 end
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Resolve directories relative to this test file
 _PROJECT_DIR = Path(__file__).parent.parent
-_SKILLS_DIR = _PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
+_SKILLS_DIR = _PROJECT_DIR / "src" / "claude_skills" / "vf-rtl"
 _TEMPLATES_DIR = _SKILLS_DIR / "templates"
 import sys
 sys.path.insert(0, str(_SKILLS_DIR))

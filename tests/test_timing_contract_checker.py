@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 _PROJECT_DIR = Path(__file__).parent.parent
-_SKILLS_DIR = _PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
+_SKILLS_DIR = _PROJECT_DIR / "src" / "claude_skills" / "vf-rtl"
 sys.path.insert(0, str(_SKILLS_DIR))
 
 from timing_contract_checker import (  # noqa: E402
@@ -187,3 +187,108 @@ def test_cli_valid_spec_returns_0():
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["passed"] is True
+
+
+def test_cli_fix_registered_combinational():
+    """--fix should auto-correct registered->combinational timing contracts."""
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = _minimal_spec(module_connectivity=[{
+            "source": "fsm.load_en",
+            "destination": "datapath.load_en",
+            "bus_width": 1,
+            "timing_contract": {
+                "producer_type": "registered",
+                "consumer_type": "combinational",
+                "same_cycle_visible": True,
+                "pipeline_delay_cycles": 0,
+                "visible_cycle": "T",
+                "consumer_cycle": "T",
+            },
+        }])
+        spec_path = _write_spec(tmp, spec)
+
+        # Without --fix: should fail
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        data = json.loads(result.stdout)
+        assert data["passed"] is False
+        assert len(data["errors"]) > 0
+
+        # With --fix: should succeed and modify file
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--fix", "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, f"--fix failed: {result.stderr}"
+
+        # Re-check: should now pass
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        data = json.loads(result.stdout)
+        assert data["passed"] is True, f"Expected pass after fix: {data}"
+
+        # Verify actual values in file
+        fixed = json.loads(Path(spec_path).read_text())
+        tc = fixed["module_connectivity"][0]["timing_contract"]
+        assert tc["same_cycle_visible"] is False
+        assert tc["pipeline_delay_cycles"] == 1
+        assert tc["visible_cycle"] == "T+1"
+        assert tc["consumer_cycle"] == "T+1"
+
+
+def test_cli_fix_valid_handshake():
+    """--fix should auto-fill missing handshake for valid protocol ports."""
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = _minimal_spec()
+        spec["modules"][0]["ports"] = [
+            {"name": "msg_valid", "protocol": "valid", "ack_port": "ready"}
+        ]
+        spec_path = _write_spec(tmp, spec)
+
+        # Without --fix: port semantic error
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        data = json.loads(result.stdout)
+        assert data["passed"] is False
+
+        # With --fix
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--fix", "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0
+
+        fixed = json.loads(Path(spec_path).read_text())
+        assert fixed["modules"][0]["ports"][0]["handshake"] == "valid_ready"
+
+
+def test_cli_fix_latency_mismatch():
+    """--fix should bump latency to match connectivity delay sum."""
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = _minimal_spec(module_connectivity=[
+            {"source": "m1.a", "destination": "top_mod.b",
+             "timing_contract": {"producer_type": "registered", "pipeline_delay_cycles": 3}},
+        ])
+        spec_path = _write_spec(tmp, spec)
+
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--fix", "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0
+
+        fixed = json.loads(Path(spec_path).read_text())
+        latency = fixed["modules"][0]["cycle_timing"]["pipeline_timing"]["input_to_output_latency_cycles"]
+        assert latency >= 3

@@ -109,7 +109,7 @@ veriflow-cc/
 │   │   ├── lint_nba.py                  [新增] NBA 静态检查器
 │   │   └── tests/                       [迁移]
 │   │
-│   ├── claude_skills/vf-pipeline/
+│   ├── claude_skills/vf-rtl/
 │   │   ├── SKILL.md                     [改] Stage 2 增加双路径分发
 │   │   ├── coding_style.md              [瘦身] 1324 → ~150 行
 │   │   ├── coding_style_archive.md      [新增] 旧 1324 行归档（备查）
@@ -394,7 +394,7 @@ def from_timing_model(func) -> "Module":
 
 ### 4.4 锚点库
 
-**位置**：`src/claude_skills/vf-pipeline/anchors/`
+**位置**：`src/claude_skills/vf-rtl/anchors/`
 
 **7 个核心锚点**（每个含 `timing_model.py` + `module.v`）：
 
@@ -674,11 +674,11 @@ NBA 自检（写完前必须心算确认）：
 
 - [ ] `src/claude_agents/vf-architect.md` 改：增加 timing_model.py 输出步骤、anchor_hints 打标规则
 - [ ] `src/claude_agents/vf-coder.md` 重写：从 170 行瘦到 ~80 行
-- [ ] `src/claude_skills/vf-pipeline/coding_style.md` 重写：1324 → ~150 行
+- [ ] `src/claude_skills/vf-rtl/coding_style.md` 重写：1324 → ~150 行
 - [ ] `coding_style_archive.md` 归档旧版
-- [ ] `src/claude_skills/vf-pipeline/SKILL.md` Stage 2 改：双路径分发（DSL emit / vf-coder + lint）
-- [ ] `src/claude_skills/vf-pipeline/templates/timing_model_template.py` 新增
-- [ ] `src/claude_skills/vf-pipeline/templates/spec_template.json` 增加字段
+- [ ] `src/claude_skills/vf-rtl/SKILL.md` Stage 2 改：双路径分发（DSL emit / vf-coder + lint）
+- [ ] `src/claude_skills/vf-rtl/templates/timing_model_template.py` 新增
+- [ ] `src/claude_skills/vf-rtl/templates/spec_template.json` 增加字段
 
 **验收**：
 - 主 Claude 主导跑通：用户输入需求 → vf-architect 产 timing_model.py → vf-coder 翻译单个模块 → lint 通过
@@ -733,9 +733,9 @@ NBA 自检（写完前必须心算确认）：
 
 | 源 | 目标 | 改动 |
 |---|---|---|
-| `templates/design_spec_template.py` | `src/claude_skills/vf-pipeline/templates/timing_model_template.py` | 用新协议重写 |
+| `templates/design_spec_template.py` | `src/claude_skills/vf-rtl/templates/timing_model_template.py` | 用新协议重写 |
 | `skill/stages/stage1_design_spec.md` | `src/claude_agents/vf-architect.md` 内集成 | 子代理形态 |
-| `skill/stages/stage2_codegen.md` | `src/claude_skills/vf-pipeline/SKILL.md` Stage 2 | 双路径分发 |
+| `skill/stages/stage2_codegen.md` | `src/claude_skills/vf-rtl/SKILL.md` Stage 2 | 双路径分发 |
 | `docs/coding_style_core.md` | 合并入新 `coding_style.md` | ~150 行总量 |
 
 ### 6.3 不迁移（功能由 veriflow-cc 已有部分覆盖）

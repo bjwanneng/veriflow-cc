@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 _PROJECT_DIR = Path(__file__).parent.parent
-_SKILL_DIR = _PROJECT_DIR / "src" / "claude_skills" / "vf-pipeline"
+_SKILL_DIR = _PROJECT_DIR / "src" / "claude_skills" / "vf-rtl"
 _AGENTS_DIR = _PROJECT_DIR / "src" / "claude_agents"
 
 

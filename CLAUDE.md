@@ -38,9 +38,9 @@ All non-trivial changes must follow this cycle:
 ## Architecture Notes
 
 - `state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER = ["spec_golden", "codegen", "verify_fix", "lint_synth"]` and `STAGE_PREREQUISITES` enforce strict execution order.
-- `src/claude_skills/vf-pipeline/SKILL.md` — Pipeline orchestrator. Contains Step 0 (init + batch clarification), 4-stage dispatch, and Error Recovery. Installed to `~/.claude/skills/vf-pipeline/`. Invoked via `/vf-pipeline <project_dir>`.
-- `src/claude_skills/vf-pipeline/templates/` — Template files loaded on demand by subagents: spec_template.json, golden_model_template.py, cocotb_template.py, tb_integration_template.v.
-- `src/claude_skills/vf-pipeline/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
+- `src/claude_skills/vf-rtl/SKILL.md` — Pipeline orchestrator. Contains Step 0 (init + batch clarification), 4-stage dispatch, and Error Recovery. Installed to `~/.claude/skills/vf-rtl/`. Invoked via `/vf-rtl <project_dir>`.
+- `src/claude_skills/vf-rtl/templates/` — Template files loaded on demand by subagents: spec_template.json, golden_model_template.py, cocotb_template.py, tb_integration_template.v.
+- `src/claude_skills/vf-rtl/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
 - `src/claude_agents/vf-architect.md` — Sub-agent for spec.json + golden_model.py generation (Stage 1: spec_golden).
 - `src/claude_agents/vf-coder.md` — Sub-agent for RTL code generation (Stage 2: codegen).
 - `src/claude_agents/vf-linter.md` — Sub-agent for lint (Stage 4: lint_synth, parallel).
