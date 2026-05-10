@@ -115,6 +115,52 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
 ```
 Re-run the checker after `--fix` to confirm all errors are resolved. Only if errors remain after auto-fix, review `logs/timing_check.json` and manually fix spec.json or golden_model.py. Errors indicate timing contradictions that will cause RTL bugs.
 
+**Model consistency check** (pre-codegen gate):
+
+Before proceeding to Stage 2, verify that timing_model.py and golden_model.py
+produce aligned traces for the same inputs. This catches algorithmic
+mismatches, missing ports, and pipeline delay disagreements BEFORE RTL
+is generated.
+
+```bash
+if [ -f workspace/docs/timing_model.py ] && [ -f workspace/docs/golden_model.py ]; then
+    cd "$PROJECT_DIR"
+    PYTHONPATH=src $PYTHON_EXE - <<'PY' 2>&1 | tee logs/model_consistency.log
+import importlib.util, sys, os
+sys.path.insert(0, "src")
+spec = importlib.util.spec_from_file_location("_tm", "workspace/docs/timing_model.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+blocks = [name for name, fn in vars(m).items()
+          if callable(fn) and hasattr(fn, "_vf_block_type")]
+from veriflow_dsl.model_consistency_checker import check_consistency
+all_pass = True
+for name in blocks:
+    report = check_consistency(
+        "workspace/docs/timing_model.py",
+        "workspace/docs/golden_model.py",
+        "workspace/docs/spec.json",
+        block_name=name,
+        num_cycles=16,
+    )
+    if report.passed:
+        print(f"[consistency] {name}: PASS")
+    else:
+        all_pass = False
+        print(f"[consistency] {name}: FAIL")
+        for err in report.errors:
+            print(f"  [{err.category}] {err.message}")
+print(f"[consistency] overall={'PASS' if all_pass else 'FAIL'}")
+PY
+fi
+```
+
+If FAIL: read `logs/model_consistency.log`, identify whether the mismatch is
+**algorithmic** (fix golden_model.py or timing_model.py formula),
+**timing** (fix pipeline_delay_cycles in spec.json), or
+**missing_port** (add port to golden_model trace). **Do NOT proceed to Stage 2**
+until consistency is resolved — generating RTL from a mismatched timing_model
+will produce a broken design that wastes simulation cycles to discover.
+
 ```bash
 state.py "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py && (test -f workspace/docs/timing_model.py || true)" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py, workspace/docs/timing_model.py" --journal-notes="Specification generated; timing_model.py captures NBA structure; golden model is pure algorithm"
 ```
@@ -168,7 +214,10 @@ Collect all emitted block fragments for this module.
   - `EMITTED_BLOCKS`: all emitted Verilog fragments from Step B1 (between BEGIN/END EMIT markers)
   - `HANDWRITTEN_PARTS`: FSM logic, module wiring not covered by DSL blocks
   - `MODULE_SPEC`: this module's ports/parameters/timing_contract from spec.json
-  - `ANCHOR_1`, `ANCHOR_2`: select from `${CLAUDE_SKILL_DIR}/anchors/` based on `anchor_hints` in spec.
+  - `ANCHOR_1`, `ANCHOR_2`: auto-selected by `${CLAUDE_SKILL_DIR}/anchors/_selector.py`.
+    Priority: (1) explicit `anchor_hints` in spec.json, (2) auto-inferred from
+    module ports/cycle_timing (fsm, shift, pipeline, hash, handshake, barrel),
+    (3) generic fallback (`fsm_4state` for control, `pipeline_register` for data-path).
     For each picked anchor, **inline the contents of all three files**:
     `timing_model.py`, `module.v`, AND `trace.md`. Pass them as a triple — the
     trace.md gives the agent concrete cycle values that anchor the Python↔Verilog mapping.
@@ -263,6 +312,29 @@ fi
 
 If cocotb is not available, proceed with Verilog simulation as before.
 
+### Optional: Yosys Formal Equivalence Check
+
+Before running full simulation, a quick Yosys `equiv_make` check can prove
+combinational equivalence between the DSL-emitted reference (if available) and
+the AI-assembled RTL.  This catches width mismatches and logic errors in
+seconds without writing a testbench.
+
+```bash
+if command -v yosys &>/dev/null; then
+    REF_V=$(ls "$PROJECT_DIR/workspace/rtl/"*_from_tm.v 2>/dev/null | head -1)
+    IMPL_V=$(ls "$PROJECT_DIR/workspace/rtl/"*.v 2>/dev/null | grep -v _from_tm | head -1)
+    if [ -n "$REF_V" ] && [ -n "$IMPL_V" ]; then
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/yosys_equiv.py" \
+            --ref "$REF_V" --impl "$IMPL_V" --top "$TOP_MODULE" \
+            2>&1 | tee "$PROJECT_DIR/logs/yosys_equiv.log"
+    fi
+fi
+```
+
+If Yosys is not installed or no reference exists, this step is skipped
+gracefully.  A FAIL here means the RTL is not combinational-equivalent to
+the structural reference — investigate before running simulation.
+
 ### Run simulation
 
 ```bash
@@ -312,12 +384,17 @@ if [ -f workspace/docs/timing_model.py ]; then
 import json
 try:
     spec = json.load(open('workspace/docs/spec.json'))
-    delays = []
-    for m in spec.get('modules', []):
-        d = m.get('timing_contract', {}).get('pipeline_delay_cycles')
-        if isinstance(d, (int, float)):
-            delays.append(int(d))
-    print(max(delays) + 4 if delays else 16)
+    # P1: explicit override takes precedence
+    explicit = spec.get('constraints', {}).get('verification', {}).get('trace_cycles')
+    if isinstance(explicit, int):
+        print(explicit)
+    else:
+        delays = []
+        for m in spec.get('modules', []):
+            d = m.get('timing_contract', {}).get('pipeline_delay_cycles')
+            if isinstance(d, (int, float)):
+                delays.append(int(d))
+        print(max(delays) + 4 if delays else 16)
 except Exception:
     print(16)
 ")

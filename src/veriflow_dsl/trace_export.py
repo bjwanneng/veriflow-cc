@@ -85,7 +85,7 @@ def _column_order(analysis: dict) -> list[str]:
 # Markdown table builder
 # ---------------------------------------------------------------------------
 
-def _build_meta_block(module: Module, cycles: int) -> str:
+def _build_meta_block(module: Module, cycles: int, mode: str) -> str:
     """Header lines describing the module and signal widths."""
     analysis = module.analyze()
     sigs = analysis["signals"]
@@ -98,6 +98,9 @@ def _build_meta_block(module: Module, cycles: int) -> str:
               if sigs[n]["direction"] == "input"]
 
     lines = [f"## {module.name} — {cycles}-cycle trace", ""]
+    if mode == "diff":
+        lines.append('> **diff mode**: `"` means *same as previous cycle*.')
+        lines.append("")
     if regs:
         reg_str = ", ".join(f"{n}[{w}]" for n, w in regs)
         lines.append(f"- registers: {reg_str}")
@@ -111,8 +114,17 @@ def _build_meta_block(module: Module, cycles: int) -> str:
     return "\n".join(lines)
 
 
-def _build_table(module: Module, trace: list[dict[str, int]]) -> str:
-    """Build the markdown table from a CycleSimulator trace."""
+def _build_table(
+    module: Module,
+    trace: list[dict[str, int]],
+    mode: str = "full",
+) -> str:
+    """Build the markdown table from a CycleSimulator trace.
+
+    Args:
+        mode: "full" shows every value; "diff" uses '"' when a signal
+            hasn't changed since the previous cycle.
+    """
     analysis = module.analyze()
     sigs = analysis["signals"]
     columns = _column_order(analysis)
@@ -126,11 +138,17 @@ def _build_table(module: Module, trace: list[dict[str, int]]) -> str:
     lines.append("| " + " | ".join(header_cells) + " |")
     lines.append("|" + "|".join(sep_cells) + "|")
 
+    prev: dict[str, str] = {}
     for cycle, snap in enumerate(trace):
         row = [str(cycle)]
         for col in columns:
             width = sigs[col]["width"]
-            row.append(_format_value(snap.get(col, 0), width))
+            val = _format_value(snap.get(col, 0), width)
+            if mode == "diff" and col in prev and prev[col] == val:
+                row.append('"')
+            else:
+                row.append(val)
+            prev[col] = val
         lines.append("| " + " | ".join(row) + " |")
 
     return "\n".join(lines)
@@ -145,6 +163,7 @@ def export_trace(
     *,
     cycles: int,
     inputs: list[dict[str, int]] | None = None,
+    mode: str = "full",
 ) -> str:
     """Run *module* for *cycles* and return a markdown trace string.
 
@@ -154,18 +173,22 @@ def export_trace(
         inputs: optional list of input dicts, one per cycle.
             If omitted or shorter than *cycles*, missing cycles drive 0
             on every input port.
+        mode: "full" shows every value; "diff" compresses unchanged
+            signals with '"' (same as previous cycle).
 
     Returns:
         Markdown string with a meta block followed by a cycle-indexed table.
     """
     if cycles <= 0:
         raise ValueError(f"cycles must be > 0, got {cycles}")
+    if mode not in ("full", "diff"):
+        raise ValueError(f"mode must be 'full' or 'diff', got {mode!r}")
 
     sim = CycleSimulator(module)
     trace = sim.run(cycles, inputs)
 
-    meta = _build_meta_block(module, cycles)
-    table = _build_table(module, trace)
+    meta = _build_meta_block(module, cycles, mode)
+    table = _build_table(module, trace, mode)
     return meta + table + "\n"
 
 
@@ -174,6 +197,7 @@ def export_trace_for_block(
     *,
     cycles: int,
     inputs: list[dict[str, int]] | None = None,
+    mode: str = "full",
 ) -> str:
     """Adapter: take a @vf_block function, build a Module, return markdown trace."""
     if not hasattr(block_func, "_vf_block_type"):
@@ -181,7 +205,7 @@ def export_trace_for_block(
             f"{block_func.__name__} must be decorated with @vf_block"
         )
     module = from_timing_model(block_func)
-    return export_trace(module, cycles=cycles, inputs=inputs)
+    return export_trace(module, cycles=cycles, inputs=inputs, mode=mode)
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Path to a JSON file: list[dict[str,int]] of per-cycle inputs.")
     parser.add_argument("--output", required=True,
                         help="Path to write the markdown trace.")
+    parser.add_argument("--mode", choices=["full", "diff"], default="full",
+                        help="Output format: full (default) or diff (compress repeated values).")
 
     args = parser.parse_args(argv)
 
@@ -246,7 +272,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: --inputs file must contain a JSON list", file=sys.stderr)
             return 2
 
-    md = export_trace_for_block(block_func, cycles=args.cycles, inputs=inputs)
+    md = export_trace_for_block(
+        block_func, cycles=args.cycles, inputs=inputs, mode=args.mode
+    )
     Path(args.output).write_text(md)
     return 0
 

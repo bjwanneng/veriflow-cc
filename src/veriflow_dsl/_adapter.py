@@ -194,19 +194,16 @@ def from_timing_model(func) -> Module:
 
     if block_type == "combinational":
         # Combinational blocks have all inputs + one or more output wires.
-        # Create an output signal named after the function.
         if isinstance(result, WireT):
-            out_width = result.width
+            out_sig = Signal(result.width, name=f"{func.__name__}_out")
+            m.add_output(out_sig)
+            signal_map[f"{func.__name__}_out"] = out_sig
         elif isinstance(result, tuple):
-            out_width = sum(
-                r.width if isinstance(r, (WireT, RegT)) else 32
-                for r in result
-            )
-        else:
-            out_width = 32
-        out_sig = Signal(out_width, name=f"{func.__name__}_out")
-        m.add_output(out_sig)
-        signal_map[f"{func.__name__}_out"] = out_sig
+            for i, r in enumerate(result):
+                if isinstance(r, (WireT, RegT)):
+                    out_sig = Signal(r.width, name=f"{func.__name__}_out_{i}")
+                    m.add_output(out_sig)
+                    signal_map[f"{func.__name__}_out_{i}"] = out_sig
 
     for param_name, meta in param_meta.items():
         s = Signal(meta["width"], name=param_name, reset=0 if meta["kind"] == "reg" else None)
@@ -264,9 +261,15 @@ def from_timing_model(func) -> Module:
             m.d.sync += target_sig.eq(next_val)
 
     elif block_type == "combinational":
-        out_sig = signal_map[f"{func.__name__}_out"]
         if isinstance(result, WireT):
+            out_sig = signal_map[f"{func.__name__}_out"]
             val = _wire_to_dsl(result, signal_map)
             m.d.comb += out_sig.eq(val)
+        elif isinstance(result, tuple):
+            for i, r in enumerate(result):
+                if isinstance(r, (WireT, RegT)):
+                    out_sig = signal_map[f"{func.__name__}_out_{i}"]
+                    val = _wire_to_dsl(r, signal_map)
+                    m.d.comb += out_sig.eq(val)
 
     return m

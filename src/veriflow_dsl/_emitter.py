@@ -50,7 +50,7 @@ def _needs_temp_wire(expr: Value) -> bool:
 class _ExprEmitter:
     """Convert a DSL expression tree to a Verilog expression string."""
 
-    def __init__(self, signal_names: dict[str, str] | None = None, *, tmp_start: int = 0):
+    def __init__(self, signal_names: dict[str, str] | None = None, *, tmp_start: int = 0, auto_temp: bool = False):
         # Maps DSL signal names to Verilog signal names (e.g., "counter" -> "counter_reg")
         self._renames = signal_names or {}
         # Temporaries needed for complex expressions under slice/rol
@@ -58,6 +58,8 @@ class _ExprEmitter:
         self._temporaries: list[tuple[str, str, int]] = []
         self._tmp_counter = 0
         self._tmp_start = tmp_start
+        self._auto_temp = auto_temp
+        self._in_emit = False  # recursion guard for auto_temp
 
     def _next_tmp_name(self) -> str:
         name = f"_vf_tmp_{self._tmp_start + self._tmp_counter}"
@@ -81,6 +83,14 @@ class _ExprEmitter:
 
     def emit(self, expr: Value) -> str:
         """Convert expression tree to Verilog expression string."""
+        # When auto_temp is enabled, wrap non-trivial expressions in a tmp wire
+        # so they can be referenced by name instead of being inlined.
+        if self._auto_temp and not isinstance(expr, (Const, Signal)):
+            inner = self._emit_core(expr)
+            return self._get_or_create_tmp(inner, expr.width)
+        return self._emit_core(expr)
+
+    def _emit_core(self, expr: Value) -> str:
         if isinstance(expr, Const):
             return self._emit_const(expr)
         elif isinstance(expr, Signal):
@@ -328,7 +338,7 @@ class VerilogEmitter:
         comb_asns = analysis["comb_assignments"]
         signals = analysis["signals"]
         renames = self._build_signal_renames(analysis)
-        ee = _ExprEmitter(signal_names=renames, tmp_start=self._tmp_offset)
+        ee = _ExprEmitter(signal_names=renames, tmp_start=self._tmp_offset, auto_temp=True)
 
         # Emit expressions to discover needed temporaries
         expr_strs = []

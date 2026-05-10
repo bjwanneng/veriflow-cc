@@ -7,6 +7,9 @@ Checks:
   L5: Co-asserted enable signals must use independent if blocks, not if/else if.
   L6: case statements must include a default branch.
   L7: Concatenation width must match assignment target width.
+  L8: always @(*) blocks with if-without-else may infer latches.
+  L9: assign statements must not self-reference (combinational loop).
+  L10: Internal wires must be driven by an assign or always block.
 
 Usage:
     python -m veriflow_dsl.lint_nba <rtl_path> [<spec_path>]
@@ -588,6 +591,189 @@ def _check_concat_width(src: str) -> list[LintError]:
 
 
 # ---------------------------------------------------------------------------
+# L8: Latch detection — incomplete assignments in always @(*)
+# ---------------------------------------------------------------------------
+
+
+def _check_latch_from_incomplete_assign(src: str) -> list[LintError]:
+    """Flag always @(*) blocks where an if lacks an else (latch risk).
+
+    Simplified heuristic: inside an always @(*) block, any if statement
+    that does not have a matching else branch at the same begin/end level
+    is flagged.  This catches the most common LLM latch bug.
+    """
+    errors: list[LintError] = []
+    clean_src = _strip_comments(src)
+    lines = clean_src.split("\n")
+
+    in_comb = False
+    begin_depth = 0
+    # Stack of (depth_when_if_seen, line_num, has_else) for open ifs
+    if_stack: list[tuple[int, int, bool]] = []
+
+    for line_idx, raw_line in enumerate(lines):
+        line_num = line_idx + 1
+        line = raw_line.strip()
+
+        # Detect always block start
+        if line.startswith("always") and "@" in line:
+            in_comb = "posedge" not in line
+            begin_depth = 0
+            if_stack = []
+            continue
+
+        if not in_comb:
+            continue
+
+        line_no_strings = _strip_strings(line)
+        # Track begin/end depth
+        begin_count = len(re.findall(r'\bbegin\b', line_no_strings))
+        end_count = len(re.findall(r'\bend\b', line_no_strings))
+        depth_before = begin_depth
+        begin_depth += begin_count - end_count
+
+        # Pop ifs that were closed by end (depth strictly greater than current)
+        while if_stack and if_stack[-1][0] > begin_depth:
+            depth, if_line, has_else = if_stack.pop()
+            if not has_else:
+                errors.append(
+                    LintError(
+                        line=if_line,
+                        rule="L8_latch_detect",
+                        message=f"if statement at line {if_line} in always @(*) has no else — may infer a latch.",
+                        suggested_fix="Add an else branch or default assignment to avoid latch inference.",
+                        severity="warning",
+                    )
+                )
+
+        if begin_depth < 0:
+            # Block ended — report any remaining unclosed ifs before reset
+            while if_stack:
+                depth, if_line, has_else = if_stack.pop()
+                if not has_else:
+                    errors.append(
+                        LintError(
+                            line=if_line,
+                            rule="L8_latch_detect",
+                            message=f"if statement at line {if_line} in always @(*) has no else — may infer a latch.",
+                            suggested_fix="Add an else branch or default assignment to avoid latch inference.",
+                            severity="warning",
+                        )
+                    )
+            in_comb = False
+            begin_depth = 0
+            continue
+
+        # Detect if / else if / else
+        if re.search(r'\bif\s*\(', line_no_strings):
+            if_stack.append((begin_depth, line_num, False))
+        elif re.search(r'\belse\s+if\s*\(', line_no_strings):
+            # Convert previous if to "has_else=True" (it's chained)
+            if if_stack and if_stack[-1][0] == depth_before:
+                d, ln, _ = if_stack.pop()
+                if_stack.append((d, ln, True))
+            # Also push a new if frame
+            if_stack.append((begin_depth, line_num, False))
+        elif re.search(r'\belse\b', line_no_strings):
+            if if_stack and if_stack[-1][0] == depth_before:
+                d, ln, _ = if_stack.pop()
+                if_stack.append((d, ln, True))
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# L9: Combinational loop detection
+# ---------------------------------------------------------------------------
+
+_ASSIGN_RE = re.compile(r'assign\s+(\w+)\s*=\s*(.*);')
+
+
+def _check_combinational_loop(src: str) -> list[LintError]:
+    """Flag assign statements where LHS appears on RHS (self-reference)."""
+    errors: list[LintError] = []
+    clean_src = _strip_comments(src)
+    lines = clean_src.split("\n")
+
+    for line_idx, raw_line in enumerate(lines):
+        line_num = line_idx + 1
+        line = raw_line.strip()
+        m = _ASSIGN_RE.match(line)
+        if not m:
+            continue
+        lhs = m.group(1)
+        rhs = m.group(2)
+        # Check if lhs name appears as a whole-word in rhs
+        if re.search(r'\b' + re.escape(lhs) + r'\b', rhs):
+            errors.append(
+                LintError(
+                    line=line_num,
+                    rule="L9_comb_loop",
+                    message=f"Combinational loop: '{lhs}' assigned from an expression that references '{lhs}'.",
+                    suggested_fix="Break the loop with a register (posedge clk) or restructure logic.",
+                )
+            )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# L10: Undriven wire detection
+# ---------------------------------------------------------------------------
+
+_WIRE_DECL_RE = re.compile(r'\bwire\s+(?:\[([^\]]+)\]\s+)?(\w+)')
+_ASSIGN_LHS_RE = re.compile(r'assign\s+(\w+)\s*=')
+_ALWAYS_LHS_RE = re.compile(r'\b(\w+)\s*(?:<=|=)\s*')
+
+
+def _check_undriven_wire(src: str) -> list[LintError]:
+    """Flag internal wires that are declared but never assigned."""
+    errors: list[LintError] = []
+    clean_src = _strip_comments(src)
+    lines = clean_src.split("\n")
+
+    # Collect declared wires (excluding ports — handled by direction)
+    wires: set[str] = set()
+    inputs: set[str] = set()
+
+    for line in lines:
+        # Input ports are driven externally
+        m = re.match(r'\s*input\s+(?:wire\s+)?(?:\[[^\]]+\]\s+)?(\w+)', line)
+        if m:
+            inputs.add(m.group(1))
+            continue
+
+        # Wire declarations inside module body
+        for m in _WIRE_DECL_RE.finditer(line):
+            wires.add(m.group(2))
+
+    # Collect assigned signals
+    driven: set[str] = set()
+    for line in lines:
+        # assign lhs = ...
+        for m in _ASSIGN_LHS_RE.finditer(line):
+            driven.add(m.group(1))
+        # always block lhs
+        for m in _ALWAYS_LHS_RE.finditer(line):
+            driven.add(m.group(1))
+
+    # Wires that are never driven (and not inputs)
+    for w in wires:
+        if w not in driven and w not in inputs:
+            errors.append(
+                LintError(
+                    line=0,
+                    rule="L10_undriven_wire",
+                    message=f"Wire '{w}' is declared but never driven.",
+                    suggested_fix=f"Add an assign statement driving '{w}', or remove the declaration.",
+                    severity="warning",
+                )
+            )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -610,6 +796,9 @@ def lint_module_v(rtl_path: Path, spec_module: dict | None = None) -> list[LintE
     errors.extend(_check_coasserted_if_elif(src))
     errors.extend(_check_missing_default(src))
     errors.extend(_check_concat_width(src))
+    errors.extend(_check_latch_from_incomplete_assign(src))
+    errors.extend(_check_combinational_loop(src))
+    errors.extend(_check_undriven_wire(src))
 
     if spec_module is not None:
         errors.extend(_check_port_alignment(src, spec_module))

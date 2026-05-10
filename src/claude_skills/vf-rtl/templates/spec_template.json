@@ -41,7 +41,8 @@
     },
     "verification": {
       "coverage_target_pct": 95,
-      "formal_verification": false
+      "formal_verification": false,
+      "trace_cycles": 16
     }
   },
   "timing_convention": {

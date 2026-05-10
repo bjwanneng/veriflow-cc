@@ -13,6 +13,7 @@
 | `handshake_hold_until_ack/` | Hold handshake | Valid stays high until ack, set/clear on separate conditions |
 | `handshake_single_cycle/` | Pulse handshake | One-shot valid for exactly 1 cycle, companion last signal |
 | `barrel_shifter_var_n/` | Variable rotation | log2(W) cascaded mux stages, **no variable part-select** |
+| `priority_encoder_8bit/` | Priority encoder | Combinational tuple return (multi-output), cat() for bit assembly |
 
 ## Selection Rules (for vf-architect)
 
@@ -27,6 +28,7 @@ vf-architect generates `anchor_hints` in spec.json based on module features:
 | Handshake with `valid` held until `ack` | `handshake_hold_until_ack` |
 | Handshake with single-cycle `valid` + `last` | `handshake_single_cycle` |
 | Variable rotation amount (signal, not constant) | `barrel_shifter_var_n` |
+| Priority encoder with `encoded` + `valid` outputs | `priority_encoder_8bit` |
 
 Each module gets **at most 2** anchors in its prompt (most relevant first).
 

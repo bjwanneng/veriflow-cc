@@ -24,7 +24,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 # --- Skill ---
 SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-rtl"
-SKILL_FILES = ["SKILL.md", "state.py", "init.py", "vcd2table.py", "cocotb_runner.py", "iverilog_runner.py", "timing_contract_checker.py", "bug_patterns.md", "design_rules.md", "error_recovery.md"]
+SKILL_FILES = ["SKILL.md", "state.py", "init.py", "vcd2table.py", "cocotb_runner.py", "iverilog_runner.py", "timing_contract_checker.py", "yosys_equiv.py", "bug_patterns.md", "design_rules.md", "error_recovery.md"]
 TEMPLATES_DIR = "templates"
 
 # --- veriflow_dsl Python package ---
@@ -200,15 +200,37 @@ def main():
         elif dsl_dst.is_dir():
             import shutil as _sh
             _sh.rmtree(dsl_dst)
+        installed_ok = False
+        # Tier 1: native symlink (Unix / Windows with Developer Mode)
         try:
             dsl_dst.symlink_to(VERIFLOW_DSL_SRC.resolve(), target_is_directory=True)
             print(f"  [pkg]    veriflow_dsl/  →  {dsl_dst}")
-            skill_installed += 1
-        except (OSError, NotImplementedError) as e:
-            # Windows non-admin: fall back to directory copy.
+            installed_ok = True
+        except (OSError, NotImplementedError):
+            pass
+
+        # Tier 2: Windows directory junction (no admin required on Win10+)
+        if not installed_ok and sys.platform == "win32":
+            try:
+                import subprocess as _sp
+                _sp.run(
+                    ["cmd", "/c", "mklink", "/J", str(dsl_dst), str(VERIFLOW_DSL_SRC.resolve())],
+                    check=True,
+                    capture_output=True,
+                )
+                print(f"  [pkg]    veriflow_dsl/  →  {dsl_dst} (junction)")
+                installed_ok = True
+            except Exception:
+                pass
+
+        # Tier 3: directory copy fallback
+        if not installed_ok:
             import shutil as _sh
             _sh.copytree(VERIFLOW_DSL_SRC, dsl_dst)
-            print(f"  [pkg]    veriflow_dsl/  copied to {dsl_dst} (symlink unavailable: {e})")
+            print(f"  [pkg]    veriflow_dsl/  copied to {dsl_dst}")
+            installed_ok = True
+
+        if installed_ok:
             skill_installed += 1
     else:
         print(f"  [skip]   veriflow_dsl/ source missing at {VERIFLOW_DSL_SRC}")
