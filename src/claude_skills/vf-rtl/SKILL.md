@@ -47,7 +47,6 @@ allow = s.setdefault('permissions', {}).setdefault('allow', [])
 # - Bash(test*): agents run 'test -f ...' for file existence checks
 # - Write: agents write output files (spec.json, golden_model.py, etc.)
 needed = [
-    'WebSearch',
     'Bash(python*)',
     'Bash(python3*)',
     'Bash(test*)',
@@ -117,30 +116,58 @@ Then: `TaskUpdate` mark the stage task as completed.
 
 ## Stage 1: spec_golden
 
-Three agents run **sequentially** (spec-gen → golden-gen → architect). The
-cycle_timing and timing_contract fields in spec.json are the timing source of
-truth for both golden_model.py and RTL.
+### Pre-stage: Web Research + Template Pre-read
 
-### Agent 1: vf-spec-gen
+**Web Research** (run in main session, results passed inline to sub-agents):
+1. Read `requirement.md` to extract the algorithm/design name.
+2. Use WebSearch to find:
+   - `"<algorithm_name> specification test vectors"` — for spec.json constraints
+   - `"<algorithm_name> Verilog RTL reference"` — for coder patterns
+3. Store results in `$PROJECT_DIR/.veriflow/web_research.md`
 
-Run **vf-spec-gen** first.
+**Template Pre-read** (run in main session, content passed inline to sub-agents):
+Read these files in parallel (single message with multiple Read calls):
+- `${CLAUDE_SKILL_DIR}/templates/spec_template.json` → passed as `SPEC_TEMPLATE`
+- `${CLAUDE_SKILL_DIR}/templates/golden_model_template.py` → passed as `GOLDEN_TEMPLATE`
+- `${CLAUDE_SKILL_DIR}/templates/timing_model_template.py` → passed as `TIMING_TEMPLATE`
+
+Also read all input files in parallel:
+- `$PROJECT_DIR/requirement.md`
+- `$PROJECT_DIR/constraints.md` (if exists)
+- `$PROJECT_DIR/design_intent.md` (if exists)
+- `$PROJECT_DIR/context/*.md` (if exists)
+- `$PROJECT_DIR/.veriflow/clarifications.md`
+
+### Agent Dispatch: Parallel spec-gen + golden-gen, then architect
+
+**Run vf-spec-gen and vf-golden-gen in parallel** (single message, two Agent calls):
 
 - **vf-spec-gen** (subagent_type: general-purpose)
-  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, `${CLAUDE_SKILL_DIR}/templates` path, all input file contents inline
-
-After vf-spec-gen returns, read `workspace/docs/spec.json`.
-
-### Agent 2: vf-golden-gen
+  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, SPEC_TEMPLATE content,
+    WEB_RESEARCH content, all input file contents inline
 
 - **vf-golden-gen** (subagent_type: general-purpose)
-  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, SPEC_JSON content (from step above), `${CLAUDE_SKILL_DIR}/templates` path, all input file contents inline
+  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, GOLDEN_TEMPLATE content,
+    WEB_RESEARCH content, all input file contents inline
+  - **NOTE**: golden-gen does NOT receive SPEC_JSON. It generates pure algorithm +
+    test vectors without timing alignment. Timing alignment is done by the main
+    session below.
 
-After vf-golden-gen returns, read `workspace/docs/golden_model.py`.
+After both return:
 
-### Agent 3: vf-architect
+1. Read `workspace/docs/spec.json` and `workspace/docs/golden_model.py`.
+2. **Timing alignment** (inline in main session): Read spec.json's `cycle_timing`
+   and `timing_contract`. Use Edit tool to update golden_model.py's trace cycles
+   so cycle indices and signal names match spec.json timing semantics:
+   - `cycles.append({...})` must go BEFORE the computation step (PRE-NBA convention)
+   - Signal names must use `_reg` suffix matching RTL
+   - Cycle count must match spec.json `input_to_output_latency_cycles`
+
+Then run **vf-architect** sequentially:
 
 - **vf-architect** (subagent_type: vf-architect)
-  - Prompt includes: PROJECT_DIR, SPEC_JSON content, GOLDEN_MODEL content, TEMPLATES_DIR path, all input file contents inline
+  - Prompt includes: PROJECT_DIR, SPEC_JSON content, GOLDEN_MODEL content,
+    TIMING_TEMPLATE content, all input file contents inline
   - Outputs: timing_model.py ONLY
 
 After vf-architect returns, proceed to post-stage checks below.
@@ -261,6 +288,7 @@ Collect all emitted block fragments for this module.
   - `EMITTED_BLOCKS`: all emitted Verilog fragments from Step B1 (between BEGIN/END EMIT markers)
   - `HANDWRITTEN_PARTS`: FSM logic, module wiring not covered by DSL blocks
   - `MODULE_SPEC`: this module's ports/parameters/timing_contract from spec.json
+  - `WEB_RESEARCH`: content from `.veriflow/web_research.md` (if exists)
   - `ANCHOR_1`, `ANCHOR_2`: auto-selected by `${CLAUDE_SKILL_DIR}/anchors/_selector.py`.
     Priority: (1) explicit `anchor_hints` in spec.json, (2) auto-inferred from
     module ports/cycle_timing (fsm, shift, pipeline, hash, handshake, barrel),

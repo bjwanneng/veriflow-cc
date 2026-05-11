@@ -37,9 +37,9 @@ def test_stage1_uses_spec_timing_as_golden_input():
     skill = _read(_SKILL_DIR / "SKILL.md")
     golden_agent = _read(_AGENTS_DIR / "vf-golden-gen.md")
 
-    assert "Run **vf-spec-gen** first" in skill
-    assert "SPEC_JSON" in golden_agent
-    assert "cycle_timing in spec.json is the timing source of truth" in golden_agent
+    assert "Run **vf-spec-gen** first" not in skill  # No longer says this
+    assert "SPEC_JSON" not in golden_agent or "NOT provided" in golden_agent
+    assert "cycle_timing" in skill  # timing alignment still referenced
 
 
 def test_skill_init_does_not_require_preexisting_python_exe():
@@ -61,38 +61,42 @@ def test_architect_receives_spec_and_golden_as_inputs():
     assert "SPEC_JSON" in architect
     assert "GOLDEN_MODEL" in architect
     assert "timing_model.py only" in architect.lower()
-    # Should NOT generate spec.json or golden_model.py
     assert "do NOT regenerate them" in architect
 
 
-def test_spec_gen_and_golden_gen_have_websearch():
-    spec_gen = _read(_AGENTS_DIR / "vf-spec-gen.md")
-    golden_gen = _read(_AGENTS_DIR / "vf-golden-gen.md")
+def test_agents_do_not_have_websearch():
+    """WebSearch moved to main session — sub-agents must not have it."""
+    for agent_name in ("vf-spec-gen.md", "vf-golden-gen.md", "vf-coder.md"):
+        content = _read(_AGENTS_DIR / agent_name)
+        assert "WebSearch" not in content, f"{agent_name} still has WebSearch in tools"
 
-    assert "WebSearch" in spec_gen
-    assert "WebSearch" in golden_gen
 
-
-def test_stage1_is_sequential_pipeline():
+def test_stage1_websearch_in_main_session():
     skill = _read(_SKILL_DIR / "SKILL.md")
 
-    assert "Run **vf-spec-gen** first" in skill
-    assert "Agent 2: vf-golden-gen" in skill
-    assert "Agent 3: vf-architect" in skill
-    assert "timing_model.py ONLY" in skill
+    # SKILL.md must have WebSearch in the Stage 1 pre-stage section
+    assert "Web Research" in skill
+    assert "web_research.md" in skill
 
 
-def test_coder_has_websearch():
-    coder = _read(_AGENTS_DIR / "vf-coder.md")
+def test_stage1_parallel_spec_and_golden():
+    skill = _read(_SKILL_DIR / "SKILL.md")
 
-    assert "WebSearch" in coder
-    assert "Web Research" in coder
+    assert "parallel" in skill.lower()
+    assert "vf-spec-gen" in skill
+    assert "vf-golden-gen" in skill
+
+
+def test_stage1_templates_preread():
+    skill = _read(_SKILL_DIR / "SKILL.md")
+
+    assert "SPEC_TEMPLATE" in skill
+    assert "GOLDEN_TEMPLATE" in skill
+    assert "TIMING_TEMPLATE" in skill
 
 
 def test_step0_auto_approves_subagent_tools():
     skill = _read(_SKILL_DIR / "SKILL.md")
 
-    # Step 0 must auto-add WebSearch and Bash(python*) to avoid sub-agent hangs
-    assert "WebSearch" in skill
     assert "Bash(python*)" in skill
     assert "Permission Check" in skill
