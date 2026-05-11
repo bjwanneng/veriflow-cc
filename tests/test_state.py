@@ -208,6 +208,106 @@ def test_cli_blocks_prereq_violation():
         assert "blocked" in result.stderr.lower() or "BLOCKED" in result.stdout
 
 
+# ── validate_spec_completeness ──────────────────────────────────────────
+
+
+def _make_spec_dir(tmp, spec_dict):
+    """Write spec.json into tmp/workspace/docs/ and return tmp."""
+    docs = Path(tmp) / "workspace" / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "spec.json").write_text(json.dumps(spec_dict))
+    return tmp
+
+
+def _minimal_spec():
+    """A spec that passes all completeness checks."""
+    return {
+        "design_name": "test_mod",
+        "modules": [
+            {
+                "module_name": "test_mod",
+                "module_type": "top",
+                "ports": [{"name": "clk", "direction": "input", "width": 1}],
+            }
+        ],
+        "constraints": {"timing": {"target_frequency_mhz": 100}},
+        "timing_convention": {
+            "golden_model": "software_instantaneous",
+            "rtl": "post_nba_registered",
+            "golden_to_rtl_offset_cycles": 1,
+        },
+    }
+
+
+def test_validate_spec_complete_passes():
+    """Minimal valid spec should pass completeness check."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _make_spec_dir(tmp, _minimal_spec())
+        s = PipelineState(project_dir=tmp)
+        ok, missing = s.validate_spec_completeness(tmp)
+        assert ok, f"Expected complete but missing: {missing}"
+
+
+def test_validate_spec_catches_missing_timing_convention():
+    """Spec without timing_convention should be flagged."""
+    spec = _minimal_spec()
+    del spec["timing_convention"]
+    with tempfile.TemporaryDirectory() as tmp:
+        _make_spec_dir(tmp, spec)
+        s = PipelineState(project_dir=tmp)
+        ok, missing = s.validate_spec_completeness(tmp)
+        assert not ok
+        assert any("timing_convention" in m for m in missing)
+
+
+def test_validate_spec_catches_missing_timing_contract():
+    """Multi-module spec with connectivity missing timing_contract should be flagged."""
+    spec = _minimal_spec()
+    spec["modules"].append({
+        "module_name": "sub_mod",
+        "module_type": "leaf",
+        "ports": [{"name": "clk", "direction": "input", "width": 1}],
+    })
+    spec["module_connectivity"] = [
+        {"source": "test_mod", "destination": "sub_mod", "bus_width": 8}
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        _make_spec_dir(tmp, spec)
+        s = PipelineState(project_dir=tmp)
+        ok, missing = s.validate_spec_completeness(tmp)
+        assert not ok
+        assert any("timing_contract" in m for m in missing)
+
+
+def test_validate_spec_catches_invalid_fanout_groups():
+    """fanout_groups with missing fields should be flagged."""
+    spec = _minimal_spec()
+    spec["fanout_groups"] = [{"common_source": "fsm.STATE"}]  # missing name and signals
+    with tempfile.TemporaryDirectory() as tmp:
+        _make_spec_dir(tmp, spec)
+        s = PipelineState(project_dir=tmp)
+        ok, missing = s.validate_spec_completeness(tmp)
+        assert not ok
+        assert any("fanout_groups" in m for m in missing)
+
+
+def test_validate_spec_accepts_valid_fanout_groups():
+    """fanout_groups with correct structure should pass."""
+    spec = _minimal_spec()
+    spec["fanout_groups"] = [{
+        "name": "ctrl_group",
+        "common_source": "fsm.STATE_DONE",
+        "signals": [{"name": "sig_a", "path": "a -> b"}],
+        "constraint": "same_arrival",
+        "max_delay_skew_cycles": 0,
+    }]
+    with tempfile.TemporaryDirectory() as tmp:
+        _make_spec_dir(tmp, spec)
+        s = PipelineState(project_dir=tmp)
+        ok, missing = s.validate_spec_completeness(tmp)
+        assert ok, f"Expected complete but missing: {missing}"
+
+
 if __name__ == "__main__":
     # Run all tests
     import traceback

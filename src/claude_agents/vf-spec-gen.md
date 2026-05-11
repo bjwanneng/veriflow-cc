@@ -65,6 +65,10 @@ Constraints:
   - If `handshake: "hold_until_ack"`, MUST also declare `ack_port`
 - `cycle_timing` REQUIRED for any module with FSM or multi-cycle behavior
 - `timing_contract` REQUIRED for every `module_connectivity` entry
+- `fanout_groups` is OPTIONAL but recommended for multi-module designs with shared control signals.
+  Each group must have: `name`, `common_source`, `signals` (array of `{name, path}`),
+  `constraint` (`"same_arrival"` or `"max_skew"`), and `max_delay_skew_cycles`.
+  Skip if design has no fanout concern.
 
 ### Step 3: Math Validation
 

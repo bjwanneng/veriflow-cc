@@ -36,7 +36,8 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles, Timer
 
-CLK_PERIOD_NS = 5   # 200 MHz default
+CLK_PERIOD_NS = None  # codegen: MUST set from spec.timing.target_frequency_mhz
+RESET_CYCLE_SKIP = 1  # Golden cycle 0 is the reset state; comparison starts at cycle 1
 TIMEOUT_CYCLES = 500
 FAIL_COUNT = 0
 
@@ -77,6 +78,9 @@ DRIVE_PHASE_CYCLES = 0    # codegen: set from spec.timing_convention.golden_to_r
 
 async def ensure_clock(dut):
     """Start clock. Must be called at the start of every test."""
+    assert CLK_PERIOD_NS is not None, (
+        "CLK_PERIOD_NS not populated — codegen must set from spec.timing.target_frequency_mhz"
+    )
     clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
     cocotb.start_soon(clock.start())
     await RisingEdge(dut.clk)
@@ -326,9 +330,11 @@ async def test_layered(dut):
     GOLDEN_TO_PORT = {}  # {"ready_reg": "ready", "hash_valid_reg": "hash_valid", ...}
 
     # Skip golden cycle 0 (reset state) + DRIVE_PHASE_CYCLES offset.
-    # Golden cycle 0 is the reset state; comparison starts at the IDLE->active
-    # transition cycle (cycle 1), which matches the first comparison RisingEdge.
-    compare_cycles = expected_cycles[1 + DRIVE_PHASE_CYCLES:]
+    # RESET_CYCLE_SKIP (1) skips the reset state cycle.
+    # DRIVE_PHASE_CYCLES accounts for the golden-to-RTL pipeline offset
+    # (from spec.timing_convention.golden_to_rtl_offset_cycles).
+    # These are NOT the same — do NOT add them again elsewhere.
+    compare_cycles = expected_cycles[RESET_CYCLE_SKIP + DRIVE_PHASE_CYCLES:]
 
     for cycle_idx, expected in enumerate(compare_cycles):
         # Wait one cycle for DUT to produce output
@@ -448,12 +454,9 @@ async def test_internal_signals(dut):
     signals_not_found = []
 
     # Align golden trace with DUT state after drive phase.
-    # drive_inputs() consumes 1 RisingEdge that reads POST-NBA of the previous
-    # posedge (before drive). The comparison loop's first RisingEdge reads
-    # POST-NBA of the drive posedge. With block_trace starting after cycle 0
-    # (reset), DRIVE_PHASE_CYCLES=0 aligns correctly.
-    # For designs where codegen uses the full trace (including cycle 0),
-    # set DRIVE_PHASE_CYCLES=1.
+    # Block traces exclude the reset cycle, so only DRIVE_PHASE_CYCLES is needed
+    # (no RESET_CYCLE_SKIP here). DRIVE_PHASE_CYCLES accounts for the pipeline
+    # offset from spec.timing_convention.golden_to_rtl_offset_cycles.
     compare_cycles = expected_cycles[DRIVE_PHASE_CYCLES:]
 
     for cycle_idx, expected in enumerate(compare_cycles):

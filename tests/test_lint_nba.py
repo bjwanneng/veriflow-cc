@@ -233,6 +233,156 @@ endmodule
         self.assertEqual(len(errors), 0)
 
 
+class TestL3SpecModuleExtraction(unittest.TestCase):
+    """L3: main() must extract the correct module from top-level spec.json."""
+
+    def _write_spec(self, tmpdir, spec_dict):
+        spec_path = os.path.join(tmpdir, "spec.json")
+        import json
+        with open(spec_path, "w") as f:
+            json.dump(spec_dict, f)
+        return spec_path
+
+    def test_extracts_module_from_top_level_dict(self):
+        """Top-level spec.json with modules list — main() must extract the matching module."""
+        import tempfile, subprocess
+        rtl_src = """
+module good_counter(
+    input  wire clk,
+    input  wire rst,
+    input  wire en,
+    output reg [7:0] count
+);
+    always @(posedge clk) count <= count + 1;
+endmodule
+"""
+        spec = {
+            "design_name": "test",
+            "modules": [
+                {
+                    "module_name": "good_counter",
+                    "module_type": "leaf",
+                    "ports": [
+                        {"name": "clk", "direction": "input", "width": 1},
+                        {"name": "rst", "direction": "input", "width": 1},
+                        {"name": "en", "direction": "input", "width": 1},
+                        {"name": "count", "direction": "output", "width": 8},
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            rtl_path = os.path.join(td, "good_counter.v")
+            with open(rtl_path, "w") as f:
+                f.write(rtl_src)
+            spec_path = self._write_spec(td, spec)
+            result = subprocess.run(
+                [sys.executable, "-m", "veriflow_dsl.lint_nba", rtl_path, spec_path],
+                capture_output=True, text=True,
+                cwd=os.path.join(os.path.dirname(__file__), "..", "src"),
+            )
+            self.assertEqual(result.returncode, 0, f"Expected exit 0 but got {result.returncode}: {result.stdout}\nstderr: {result.stderr}")
+            self.assertNotIn("L3_port_align", result.stdout, "Should have no L3 errors when spec module is correctly extracted")
+
+    def test_extracts_module_by_module_name_key(self):
+        """Module matching should use module_name (not name)."""
+        import tempfile, subprocess
+        rtl_src = """
+module my_mod(input wire clk, output reg [3:0] out);
+    always @(posedge clk) out <= 0;
+endmodule
+"""
+        spec = {
+            "design_name": "test",
+            "modules": [
+                {
+                    "module_name": "my_mod",
+                    "ports": [
+                        {"name": "clk", "direction": "input", "width": 1},
+                        {"name": "out", "direction": "output", "width": 4},
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            rtl_path = os.path.join(td, "my_mod.v")
+            with open(rtl_path, "w") as f:
+                f.write(rtl_src)
+            spec_path = self._write_spec(td, spec)
+            result = subprocess.run(
+                [sys.executable, "-m", "veriflow_dsl.lint_nba", rtl_path, spec_path],
+                capture_output=True, text=True,
+                cwd=os.path.join(os.path.dirname(__file__), "..", "src"),
+            )
+            self.assertEqual(result.returncode, 0, f"Expected exit 0 but got {result.returncode}: {result.stdout}\nstderr: {result.stderr}")
+            self.assertNotIn("L3_port_align", result.stdout)
+
+    def test_detects_missing_port_from_top_level_spec(self):
+        """Top-level spec.json — missing port in RTL should produce L3 error."""
+        import tempfile, subprocess
+        rtl_src = """
+module my_mod(input wire clk);
+endmodule
+"""
+        spec = {
+            "design_name": "test",
+            "modules": [
+                {
+                    "module_name": "my_mod",
+                    "ports": [
+                        {"name": "clk", "direction": "input", "width": 1},
+                        {"name": "data", "direction": "input", "width": 8},
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            rtl_path = os.path.join(td, "my_mod.v")
+            with open(rtl_path, "w") as f:
+                f.write(rtl_src)
+            spec_path = self._write_spec(td, spec)
+            result = subprocess.run(
+                [sys.executable, "-m", "veriflow_dsl.lint_nba", rtl_path, spec_path, "--json"],
+                capture_output=True, text=True,
+                cwd=os.path.join(os.path.dirname(__file__), "..", "src"),
+            )
+            self.assertNotEqual(result.returncode, 0, "Should fail when port is missing")
+            import json
+            errors = json.loads(result.stdout)
+            l3 = [e for e in errors if e["rule"] == "L3_port_align"]
+            self.assertGreaterEqual(len(l3), 1, "Should report L3 error for missing 'data' port")
+
+    def test_list_format_with_module_name(self):
+        """spec.json as a list of module dicts — should match by module_name."""
+        import tempfile, subprocess
+        rtl_src = """
+module foo(input wire a, output reg b);
+    always @(*) b <= a;
+endmodule
+"""
+        spec = [
+            {
+                "module_name": "foo",
+                "ports": [
+                    {"name": "a", "direction": "input", "width": 1},
+                    {"name": "b", "direction": "output", "width": 1},
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            rtl_path = os.path.join(td, "foo.v")
+            with open(rtl_path, "w") as f:
+                f.write(rtl_src)
+            spec_path = self._write_spec(td, spec)
+            result = subprocess.run(
+                [sys.executable, "-m", "veriflow_dsl.lint_nba", rtl_path, spec_path],
+                capture_output=True, text=True,
+                cwd=os.path.join(os.path.dirname(__file__), "..", "src"),
+            )
+            self.assertEqual(result.returncode, 0, f"Expected exit 0 but got {result.returncode}: {result.stdout}\nstderr: {result.stderr}")
+            self.assertNotIn("L3_port_align", result.stdout)
+
+
 class TestIntegration(unittest.TestCase):
     """End-to-end lint_module_v tests."""
 

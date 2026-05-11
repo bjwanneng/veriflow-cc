@@ -42,7 +42,7 @@ import json
 s = json.load(open('$SETTINGS'))
 allow = s.setdefault('permissions', {}).setdefault('allow', [])
 # Tools that sub-agents need (must not trigger permission dialog):
-# - WebSearch: vf-spec-gen, vf-golden-gen, vf-coder (reference lookup)
+# - WebSearch: main session only (sub-agents do not have it)
 # - Bash(python*): all agents run python for hook validation
 # - Bash(test*): agents run 'test -f ...' for file existence checks
 # - Write: agents write output files (spec.json, golden_model.py, etc.)
@@ -118,59 +118,44 @@ Then: `TaskUpdate` mark the stage task as completed.
 
 ### Pre-stage: Web Research + Template Pre-read
 
-**Web Research** (run in main session, results passed inline to sub-agents):
-1. Read `requirement.md` to extract the algorithm/design name.
-2. Use WebSearch to find:
-   - `"<algorithm_name> specification test vectors"` — for spec.json constraints
-   - `"<algorithm_name> Verilog RTL reference"` — for coder patterns
-3. Store results in `$PROJECT_DIR/.veriflow/web_research.md`
-
-**Template Pre-read** (run in main session, content passed inline to sub-agents):
-Read these files in parallel (single message with multiple Read calls):
+**Read all input files first** (run in main session, parallel Read calls):
 - `${CLAUDE_SKILL_DIR}/templates/spec_template.json` → passed as `SPEC_TEMPLATE`
 - `${CLAUDE_SKILL_DIR}/templates/golden_model_template.py` → passed as `GOLDEN_TEMPLATE`
-- `${CLAUDE_SKILL_DIR}/templates/timing_model_template.py` → passed as `TIMING_TEMPLATE`
-
-Also read all input files in parallel:
 - `$PROJECT_DIR/requirement.md`
 - `$PROJECT_DIR/constraints.md` (if exists)
 - `$PROJECT_DIR/design_intent.md` (if exists)
 - `$PROJECT_DIR/context/*.md` (if exists)
 - `$PROJECT_DIR/.veriflow/clarifications.md`
 
-### Agent Dispatch: Parallel spec-gen + golden-gen, then architect
+**Web Research** (run in main session, results passed inline to sub-agents):
 
-**Run vf-spec-gen and vf-golden-gen in parallel** (single message, two Agent calls):
+After reading all input files above, judge whether WebSearch is needed:
+- If `requirement.md` + `context/*.md` already contain: algorithm specification, test vectors,
+  pin/protocol definitions, and enough detail to build spec.json and golden_model.py →
+  **skip WebSearch**. Write a note to `$PROJECT_DIR/.veriflow/web_research.md`:
+  ```
+  # Web research skipped — input files provide sufficient detail
+  Algorithm: <name>, source: <which files had the info>
+  ```
+- Otherwise, extract the algorithm/design name from `requirement.md`, then use WebSearch:
+  - `"<algorithm_name> specification test vectors"` — for spec.json constraints
+  - `"<algorithm_name> Verilog RTL reference"` — for coder patterns
+  Store results in `$PROJECT_DIR/.veriflow/web_research.md`
 
-- **vf-spec-gen** (subagent_type: general-purpose)
+### Agent Dispatch: Single spec-golden agent
+
+**Run vf-spec-golden** (single Agent call):
+
+- **vf-spec-golden** (subagent_type: general-purpose)
   - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, SPEC_TEMPLATE content,
-    WEB_RESEARCH content, all input file contents inline
+    GOLDEN_TEMPLATE content, WEB_RESEARCH content, all input file contents inline
+  - The agent generates **both** spec.json and golden_model.py in one pass,
+    with timing alignment done internally (it writes spec.json first, then uses
+    its cycle_timing to align golden_model.py trace cycles).
 
-- **vf-golden-gen** (subagent_type: general-purpose)
-  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, GOLDEN_TEMPLATE content,
-    WEB_RESEARCH content, all input file contents inline
-  - **NOTE**: golden-gen does NOT receive SPEC_JSON. It generates pure algorithm +
-    test vectors without timing alignment. Timing alignment is done by the main
-    session below.
+After it returns:
 
-After both return:
-
-1. Read `workspace/docs/spec.json` and `workspace/docs/golden_model.py`.
-2. **Timing alignment** (inline in main session): Read spec.json's `cycle_timing`
-   and `timing_contract`. Use Edit tool to update golden_model.py's trace cycles
-   so cycle indices and signal names match spec.json timing semantics:
-   - `cycles.append({...})` must go BEFORE the computation step (PRE-NBA convention)
-   - Signal names must use `_reg` suffix matching RTL
-   - Cycle count must match spec.json `input_to_output_latency_cycles`
-
-Then run **vf-architect** sequentially:
-
-- **vf-architect** (subagent_type: vf-architect)
-  - Prompt includes: PROJECT_DIR, SPEC_JSON content, GOLDEN_MODEL content,
-    TIMING_TEMPLATE content, all input file contents inline
-  - Outputs: timing_model.py ONLY
-
-After vf-architect returns, proceed to post-stage checks below.
+1. Read `workspace/docs/spec.json` and `workspace/docs/golden_model.py` to verify.
 
 **Timing contract check** (pre-verification, before codegen):
 ```bash
@@ -189,54 +174,24 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
 ```
 Re-run the checker after `--fix` to confirm all errors are resolved. Only if errors remain after auto-fix, review `logs/timing_check.json` and manually fix spec.json or golden_model.py. Errors indicate timing contradictions that will cause RTL bugs.
 
-**Model consistency check** (pre-codegen gate):
+**Golden model self-check** (pre-codegen gate):
 
-Before proceeding to Stage 2, verify that timing_model.py and golden_model.py
-produce aligned traces for the same inputs. This catches algorithmic
-mismatches, missing ports, and pipeline delay disagreements BEFORE RTL
-is generated.
+Before proceeding to Stage 2, verify that golden_model.py passes its own test
+vectors. This catches algorithmic bugs before RTL is generated.
 
 ```bash
-if [ -f workspace/docs/timing_model.py ] && [ -f workspace/docs/golden_model.py ]; then
-    cd "$PROJECT_DIR"
-    PYTHONPATH=src $PYTHON_EXE - <<'PY' 2>&1 | tee logs/model_consistency.log
-import importlib.util, sys, os
-sys.path.insert(0, "src")
-spec = importlib.util.spec_from_file_location("_tm", "workspace/docs/timing_model.py")
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-blocks = [name for name, fn in vars(m).items()
-          if callable(fn) and hasattr(fn, "_vf_block_type")]
-from veriflow_dsl.model_consistency_checker import check_consistency
-all_pass = True
-for name in blocks:
-    report = check_consistency(
-        "workspace/docs/timing_model.py",
-        "workspace/docs/golden_model.py",
-        "workspace/docs/spec.json",
-        block_name=name,
-        num_cycles=16,
-    )
-    if report.passed:
-        print(f"[consistency] {name}: PASS")
-    else:
-        all_pass = False
-        print(f"[consistency] {name}: FAIL")
-        for err in report.errors:
-            print(f"  [{err.category}] {err.message}")
-print(f"[consistency] overall={'PASS' if all_pass else 'FAIL'}")
-PY
+cd "$PROJECT_DIR"
+if [ -f workspace/docs/golden_model.py ]; then
+    $PYTHON_EXE workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
+    if grep -q "FAIL" logs/golden_selfcheck.log; then
+        echo "[GOLDEN] Self-check FAILED — fix golden_model.py before proceeding."
+        # Do NOT proceed to Stage 2
+    fi
 fi
 ```
 
-If FAIL: read `logs/model_consistency.log`, identify whether the mismatch is
-**algorithmic** (fix golden_model.py or timing_model.py formula),
-**timing** (fix pipeline_delay_cycles in spec.json), or
-**missing_port** (add port to golden_model trace). **Do NOT proceed to Stage 2**
-until consistency is resolved — generating RTL from a mismatched timing_model
-will produce a broken design that wastes simulation cycles to discover.
-
 ```bash
-state.py "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py && (test -f workspace/docs/timing_model.py || true)" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py, workspace/docs/timing_model.py" --journal-notes="Specification generated; timing_model.py captures NBA structure; golden model is pure algorithm"
+state.py "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior; no timing_model.py"
 ```
 TaskUpdate complete.
 
@@ -244,70 +199,44 @@ TaskUpdate complete.
 
 ## Stage 2: codegen
 
-Read spec.json, timing_model.py (if exists), golden_model.py, and coding_style.md (parallel Read calls) to include inline in prompts.
+Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to include inline in prompts.
 
-**Dual-path dispatch**: For each module in spec.json, check `has_dsl_builder` flag:
+**Single-path dispatch**: All modules go through AI Assembly (vf-coder).
 
-### Path A: DSL Emit (has_dsl_builder=true)
-
-For simple modules, emit Verilog directly from the timing_model.py builder function:
-
-```bash
-cd "$PROJECT_DIR" && python -c "
-import sys; sys.path.insert(0, 'workspace/docs')
-from timing_model import build_${MODULE_NAME}
-from veriflow_dsl import VerilogEmitter
-m = build_${MODULE_NAME}()
-print(VerilogEmitter(m).emit())
-" > "workspace/rtl/${MODULE_NAME}.v"
-```
-
-### Path B: Block-Level Emission + AI Assembly (has_dsl_builder=false or not set)
-
-For complex modules, use a hybrid approach:
-
-**Step B1: Emit DSL blocks inline** (before agent dispatch)
-
-For each `@vf_block` function in timing_model.py that belongs to this module:
-
-```bash
-cd "$PROJECT_DIR" && python -c "
-import sys; sys.path.insert(0, 'workspace/docs')
-from timing_model import ${BLOCK_FUNC_NAME}
-from veriflow_dsl import VerilogEmitter
-print(VerilogEmitter().emit_block(${BLOCK_FUNC_NAME}))
-" 2>&1 | tee "workspace/rtl/${MODULE_NAME}_block_${BLOCK_FUNC_NAME}.v"
-```
-
-Collect all emitted block fragments for this module.
-
-**Step B2: Dispatch vf-coder agent** with emitted fragments
+### AI Assembly
 
 - **One vf-coder per module** in spec.json (subagent_type: general-purpose)
   - Prompt includes: MODULE_NAME, OUTPUT_FILE path
-  - `EMITTED_BLOCKS`: all emitted Verilog fragments from Step B1 (between BEGIN/END EMIT markers)
-  - `HANDWRITTEN_PARTS`: FSM logic, module wiring not covered by DSL blocks
+  - `GOLDEN_MODEL`: the relevant Python functions from golden_model.py that
+    describe this module's behavior. The orchestrator extracts these by matching
+    the module name against function names/classes in golden_model.py. Include
+    the full Python implementation — vf-coder translates it into Verilog.
   - `MODULE_SPEC`: this module's ports/parameters/timing_contract from spec.json
-  - `WEB_RESEARCH`: content from `.veriflow/web_research.md` (if exists)
-  - `ANCHOR_1`, `ANCHOR_2`: auto-selected by `${CLAUDE_SKILL_DIR}/anchors/_selector.py`.
+  - `TIMING_TABLE`: main session builds a cycle-accurate timing table from
+    spec.json `cycle_timing` and `timing_contract`, showing:
+    - Registered outputs (use `output wire` + `reg` + `assign`)
+    - Combinational outputs (use `output wire` + `assign` directly)
+    - Pipeline stages and latency
+  - `WEB_RESEARCH`: content from `.veriflow/web_research.md` — **only if the file
+    has substantive content** (more than just "skipped" or "unavailable"). If
+    minimal, omit this field entirely to save prompt tokens.
+  - `ANCHOR_1`: auto-selected by `${CLAUDE_SKILL_DIR}/anchors/_selector.py`.
     Priority: (1) explicit `anchor_hints` in spec.json, (2) auto-inferred from
     module ports/cycle_timing (fsm, shift, pipeline, hash, handshake, barrel),
     (3) generic fallback (`fsm_4state` for control, `pipeline_register` for data-path).
-    For each picked anchor, **inline the contents of all three files**:
-    `timing_model.py`, `module.v`, AND `trace.md`. Pass them as a triple — the
-    trace.md gives the agent concrete cycle values that anchor the Python↔Verilog mapping.
+    **Inline the contents of both files**: `module.v` AND `trace.md`.
+    The trace.md gives concrete cycle values that anchor the expected behavior.
     Example block:
     ```
     ANCHOR_1: hash_round_one_cycle
-    --- timing_model.py ---
-    <contents of anchors/hash_round_one_cycle/timing_model.py>
     --- module.v ---
     <contents of anchors/hash_round_one_cycle/module.v>
     --- trace.md ---
     <contents of anchors/hash_round_one_cycle/trace.md>
     ```
-  - `ANCHOR_1_TRACE`, `ANCHOR_2_TRACE`: same trace.md content extracted as a
-    standalone field, so vf-coder can reference it in Step 1.5 without re-parsing.
+  - `ANCHOR_2`: second anchor (same format as ANCHOR_1). **Only provide for
+    modules with FSM or multi-cycle timing_contract** — simple combinational
+    or single-stage modules need only ANCHOR_1.
   - Condensed coding_style.md content
   - For top modules: include submodule port definitions from spec.json
 
@@ -315,8 +244,7 @@ Collect all emitted block fragments for this module.
 
 Dispatch ALL agents in parallel (single message):
 
-- Path A modules: run DSL emit inline
-- Path B modules: one vf-coder agent per module
+- One vf-coder agent per module
 - **One vf-tb-gen** (subagent_type: general-purpose)
   - Prompt includes: PROJECT_DIR, DESIGN_NAME, spec.json content, golden_model.py content, COCOTB_AVAILABLE flag, `${CLAUDE_SKILL_DIR}/templates` path
   - **DRIVE_PHASE_CYCLES**: Read from `spec.json timing_convention.golden_to_rtl_offset_cycles`. If not set, fall back to `max(pipeline_delay_cycles)` from timing_contract.
@@ -387,29 +315,6 @@ fi
 
 If cocotb is not available, proceed with Verilog simulation as before.
 
-### Optional: Yosys Formal Equivalence Check
-
-Before running full simulation, a quick Yosys `equiv_make` check can prove
-combinational equivalence between the DSL-emitted reference (if available) and
-the AI-assembled RTL.  This catches width mismatches and logic errors in
-seconds without writing a testbench.
-
-```bash
-if command -v yosys &>/dev/null; then
-    REF_V=$(ls "$PROJECT_DIR/workspace/rtl/"*_from_tm.v 2>/dev/null | head -1)
-    IMPL_V=$(ls "$PROJECT_DIR/workspace/rtl/"*.v 2>/dev/null | grep -v _from_tm | head -1)
-    if [ -n "$REF_V" ] && [ -n "$IMPL_V" ]; then
-        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/yosys_equiv.py" \
-            --ref "$REF_V" --impl "$IMPL_V" --top "$TOP_MODULE" \
-            2>&1 | tee "$PROJECT_DIR/logs/yosys_equiv.log"
-    fi
-fi
-```
-
-If Yosys is not installed or no reference exists, this step is skipped
-gracefully.  A FAIL here means the RTL is not combinational-equivalent to
-the structural reference — investigate before running simulation.
-
 ### Run simulation
 
 ```bash
@@ -446,20 +351,17 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_diagnostic.py" \
     --output logs/timing_diagnostic.json
 ```
 
-   Then, if `workspace/docs/timing_model.py` exists, also generate the
-   expected per-cycle register trace. This complements the bug-class
-   output of `timing_diagnostic.py` with concrete `expected[cycle][reg]`
-   values to compare against the VCD-derived `actual[cycle][reg]` table.
-   Cycle count is derived from `spec.json` (max `pipeline_delay_cycles + 4`,
-   fallback 16) so long pipelines aren't truncated:
+   Then, generate the expected per-cycle register trace from golden_model.py.
+   This complements the bug-class output of `timing_diagnostic.py` with
+   concrete `expected[cycle][reg]` values to compare against the VCD-derived
+   `actual[cycle][reg]` table. Cycle count is derived from `spec.json`
+   (max `pipeline_delay_cycles + 4`, fallback 16):
 ```bash
-if [ -f workspace/docs/timing_model.py ]; then
-    cd "$PROJECT_DIR"
-    EXPECTED_TRACE_CYCLES=$($PYTHON_EXE -c "
+cd "$PROJECT_DIR"
+EXPECTED_TRACE_CYCLES=$($PYTHON_EXE -c "
 import json
 try:
     spec = json.load(open('workspace/docs/spec.json'))
-    # P1: explicit override takes precedence
     explicit = spec.get('constraints', {}).get('verification', {}).get('trace_cycles')
     if isinstance(explicit, int):
         print(explicit)
@@ -473,27 +375,63 @@ try:
 except Exception:
     print(16)
 ")
-    EXPECTED_TRACE_CYCLES=$EXPECTED_TRACE_CYCLES $PYTHON_EXE - <<'PY' 2>&1 | tee logs/expected_trace_gen.log
-import importlib.util, sys, os
-spec = importlib.util.spec_from_file_location("_tm", "workspace/docs/timing_model.py")
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-blocks = [name for name, fn in vars(m).items()
-          if callable(fn) and hasattr(fn, "_vf_block_type")]
+EXPECTED_TRACE_CYCLES=$EXPECTED_TRACE_CYCLES $PYTHON_EXE - <<'PY' 2>&1 | tee logs/expected_trace_gen.log
+import importlib.util, sys, os, json
+sys.path.insert(0, "workspace/docs")
+spec = importlib.util.spec_from_file_location("_gm", "workspace/docs/golden_model.py")
+gm = importlib.util.module_from_spec(spec); spec.loader.exec_module(gm)
 cycles = int(os.environ.get("EXPECTED_TRACE_CYCLES", 16))
-print(f"[expected-trace] @vf_block functions: {blocks}  cycles={cycles}")
-for name in blocks:
-    rc = os.system(
-        f"{sys.executable} -m veriflow_dsl.trace_export "
-        f"--timing-model workspace/docs/timing_model.py --block {name} "
-        f"--cycles {cycles} --output logs/expected_trace_{name}.md"
-    )
-    print(f"[expected-trace] {name} -> logs/expected_trace_{name}.md (rc={rc})")
+print(f"[expected-trace] cycles={cycles}")
+
+trace = None
+
+# Try multiple golden model interfaces (not all projects use the same names)
+try:
+    # Interface 1: compute(inputs_dict, trace=True) + TEST_VECTORS
+    if hasattr(gm, "compute") and hasattr(gm, "TEST_VECTORS"):
+        tv = gm.TEST_VECTORS[0]
+        inputs = tv.get("inputs", tv)
+        trace = gm.compute(inputs, trace=True)
+        print("[expected-trace] used gm.compute(inputs, trace=True)")
+except Exception as e:
+    print(f"[expected-trace] compute() failed: {e}")
+
+if trace is None:
+    try:
+        # Interface 2: run(index) -> list of per-cycle dicts
+        if hasattr(gm, "run"):
+            trace = gm.run(0)
+            print("[expected-trace] used gm.run(0)")
+    except Exception as e:
+        print(f"[expected-trace] run() failed: {e}")
+
+if trace is None:
+    try:
+        # Interface 3: simulate(inputs, trace=True)
+        if hasattr(gm, "simulate") and hasattr(gm, "TEST_VECTORS"):
+            tv = gm.TEST_VECTORS[0]
+            inputs = tv.get("inputs", tv)
+            trace = gm.simulate(inputs, trace=True)
+            print("[expected-trace] used gm.simulate(inputs, trace=True)")
+    except Exception as e:
+        print(f"[expected-trace] simulate() failed: {e}")
+
+if trace:
+    with open("logs/expected_trace_golden.md", "w") as f:
+        f.write("## Golden Model Expected Trace\n\n")
+        f.write("| cycle | signals |\n")
+        f.write("|------:|---------|\n")
+        for i, entry in enumerate(trace[:cycles]):
+            signals = " ".join(f"{k}=0x{v:x}" if isinstance(v, int) and v > 9 else f"{k}={v}" for k, v in entry.items())
+            f.write(f"| {i} | {signals} |\n")
+    print(f"[expected-trace] -> logs/expected_trace_golden.md ({len(trace)} cycles)")
+else:
+    print("[expected-trace] could not generate trace — golden_model.py interface not recognized")
 PY
-fi
 ```
-   Read the generated `logs/expected_trace_*.md` along with the simulation
-   divergence report — `expected[cycle][reg] vs actual[cycle][reg]` is the
-   fastest way to localise the wrong NBA assignment in the RTL.
+   Read `logs/expected_trace_golden.md` along with the simulation divergence
+   report — `expected[cycle][reg] vs actual[cycle][reg]` is the fastest way
+   to localise the wrong NBA assignment in the RTL.
 
 2. **Read** `logs/timing_diagnostic.json` — this contains the classification
    (B_late/B_early/A/D) and `fix_suggestion` with precise instructions.

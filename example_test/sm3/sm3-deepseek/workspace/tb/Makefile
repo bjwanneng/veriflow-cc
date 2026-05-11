@@ -19,13 +19,13 @@ MODULE = test_sm3_core
 SIM = icarus
 
 # Icarus Verilog compile arguments
-# -g2012 enables Verilog-2005/SystemVerilog features
+# -g2005 enables Verilog-2005 features
 # -Wall enables all warnings
 COMPILE_ARGS = -g2005 -Wall
 
 # Simulation arguments
-# Enable VCD dump for waveform analysis
-SIM_ARGS = -fst
+# Use basic VCD (fst not supported in this iverilog build)
+SIM_ARGS =
 
 # Include cocotb Makefile infrastructure
 include $(shell cocotb-config --makefiles)/Makefile.sim
@@ -39,3 +39,14 @@ clean_vcd:
 .PHONY: view
 view:
 	gtkwave tb_sm3_core.vcd 2>/dev/null || gtkwave dump.fst 2>/dev/null || echo "No waveform file found"
+
+# Verilator-only simulation (no cocotb dependency, uses tb_sm3_core.v)
+.PHONY: sim_verilog
+sim_verilog:
+	iverilog -g2005 -Wall -o simv \
+		$(PWD)/../rtl/sm3_core.v \
+		$(PWD)/../rtl/sm3_fsm.v \
+		$(PWD)/../rtl/sm3_w_gen.v \
+		$(PWD)/../rtl/sm3_compress.v \
+		$(PWD)/tb_sm3_core.v
+	vvp simv

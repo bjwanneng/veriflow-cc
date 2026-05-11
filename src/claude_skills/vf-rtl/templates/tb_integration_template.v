@@ -18,6 +18,7 @@ module tb_<design_name>;
 
     // Clock generation
     initial clk = 0;
+    // codegen: replace #5 with half-period from spec timing.target_frequency_mhz
     always #5 clk = ~clk;
 
     // Cycle counter — increment every posedge

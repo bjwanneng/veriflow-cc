@@ -1,6 +1,8 @@
-`resetall
-`timescale 1ns/1ps
-`default_nettype none
+// ============================================================================
+// SM3 Core - Top-level structural wrapper
+// Instantiates sm3_fsm (control), sm3_w_gen (message expansion),
+// and sm3_compress (compression function).
+// ============================================================================
 
 module sm3_core (
     input  wire         clk,
@@ -13,7 +15,9 @@ module sm3_core (
     output wire [255:0] hash_out
 );
 
-    // ── Internal wires ──────────────────────────────────────────
+    // -------------------------------------------------------------------------
+    // Internal inter-module wiring
+    // -------------------------------------------------------------------------
     wire        load_en;
     wire        calc_en;
     wire        update_v_en;
@@ -21,45 +25,49 @@ module sm3_core (
     wire [31:0] w_j;
     wire [31:0] w_prime_j;
 
-    // ── sm3_fsm (control FSM) ───────────────────────────────────
-    sm3_fsm u_fsm (
-        .clk         (clk),
-        .rst_n       (rst_n),
-        .msg_valid   (msg_valid),
-        .is_last     (is_last),
-        .ready       (ready),
-        .load_en     (load_en),
-        .calc_en     (calc_en),
-        .update_v_en (update_v_en),
-        .round_cnt   (round_cnt),
-        .hash_valid  (hash_valid)
+    // -------------------------------------------------------------------------
+    // sm3_fsm - FSM controller
+    // -------------------------------------------------------------------------
+    sm3_fsm u_sm3_fsm (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .msg_valid    (msg_valid),
+        .is_last      (is_last),
+        .ready        (ready),
+        .load_en      (load_en),
+        .calc_en      (calc_en),
+        .update_v_en  (update_v_en),
+        .round_cnt    (round_cnt),
+        .hash_valid   (hash_valid)
     );
 
-    // ── sm3_w_gen (message expansion) ───────────────────────────
-    sm3_w_gen u_w_gen (
-        .clk       (clk),
-        .rst_n     (rst_n),
-        .load_en   (load_en),
-        .calc_en   (calc_en),
-        .msg_block (msg_block),
-        .round_cnt (round_cnt),
-        .w_j       (w_j),
-        .w_prime_j (w_prime_j)
-    );
-
-    // ── sm3_compress (compression datapath) ─────────────────────
-    sm3_compress u_compress (
+    // -------------------------------------------------------------------------
+    // sm3_w_gen - Message expansion
+    // -------------------------------------------------------------------------
+    sm3_w_gen u_sm3_w_gen (
         .clk         (clk),
         .rst_n       (rst_n),
         .load_en     (load_en),
         .calc_en     (calc_en),
-        .update_v_en (update_v_en),
+        .msg_block   (msg_block),
         .round_cnt   (round_cnt),
         .w_j         (w_j),
-        .w_prime_j   (w_prime_j),
-        .hash_out    (hash_out)
+        .w_prime_j   (w_prime_j)
+    );
+
+    // -------------------------------------------------------------------------
+    // sm3_compress - Compression function
+    // -------------------------------------------------------------------------
+    sm3_compress u_sm3_compress (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .load_en      (load_en),
+        .calc_en      (calc_en),
+        .update_v_en  (update_v_en),
+        .round_cnt    (round_cnt),
+        .w_j          (w_j),
+        .w_prime_j    (w_prime_j),
+        .hash_out     (hash_out)
     );
 
 endmodule
-
-`default_nettype wire

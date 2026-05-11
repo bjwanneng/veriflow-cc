@@ -4,8 +4,9 @@ VeriFlow-CC Installer
 
 Symlinks to ~/.claude/:
   - skills/vf-rtl/SKILL.md   — Pipeline orchestration skill (/vf-rtl)
-  - agents/vf-architect.md        — Specification + golden model generation (Stage 1)
+  - agents/vf-spec-golden.md      — spec.json + golden_model.py generation (Stage 1)
   - agents/vf-coder.md            — RTL code generation sub-agent (Stage 2)
+  - agents/vf-tb-gen.md           — Testbench generation (Stage 2)
   - agents/vf-linter.md           — Lint sub-agent (Stage 4)
   - agents/vf-synthesizer.md      — Synthesis sub-agent (Stage 4)
 
@@ -43,9 +44,7 @@ AGENTS_DST_DIR = CLAUDE_DIR / "agents"
 AGENTS_SRC_DIR = PROJECT_DIR / "src" / "claude_agents"
 
 AGENT_FILES = [
-    "vf-architect.md",
-    "vf-spec-gen.md",
-    "vf-golden-gen.md",
+    "vf-spec-golden.md",
     "vf-coder.md",
     "vf-tb-gen.md",
     "vf-linter.md",
@@ -127,6 +126,7 @@ def main():
         "vf-skill-d.md", "vf-lint.md", "vf-sim.md", "vf-synth.md",
         "vf-debugger.md", "vf-simulator.md",
         "vf-reviewer.md", "vf-microarch.md", "vf-timing.md",
+        "vf-architect.md", "vf-spec-gen.md", "vf-golden-gen.md",
     ]
     cleaned = 0
     for name in LEGACY_AGENTS:

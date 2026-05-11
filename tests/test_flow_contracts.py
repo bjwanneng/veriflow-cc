@@ -33,13 +33,14 @@ def test_iverilog_runner_uses_verilog_2005_mode():
     assert '"-g2012"' not in content
 
 
-def test_stage1_uses_spec_timing_as_golden_input():
+def test_stage1_spec_golden_agent_aligns_timing():
     skill = _read(_SKILL_DIR / "SKILL.md")
-    golden_agent = _read(_AGENTS_DIR / "vf-golden-gen.md")
+    agent = _read(_AGENTS_DIR / "vf-spec-golden.md")
 
-    assert "Run **vf-spec-gen** first" not in skill  # No longer says this
-    assert "SPEC_JSON" not in golden_agent or "NOT provided" in golden_agent
-    assert "cycle_timing" in skill  # timing alignment still referenced
+    assert "vf-spec-golden" in skill
+    assert "Timing alignment" in agent  # merged agent does timing alignment internally
+    assert "cycle_timing" in skill
+    assert "cycle_timing" in agent
 
 
 def test_skill_init_does_not_require_preexisting_python_exe():
@@ -66,7 +67,7 @@ def test_architect_receives_spec_and_golden_as_inputs():
 
 def test_agents_do_not_have_websearch():
     """WebSearch moved to main session — sub-agents must not have it."""
-    for agent_name in ("vf-spec-gen.md", "vf-golden-gen.md", "vf-coder.md"):
+    for agent_name in ("vf-spec-golden.md", "vf-coder.md"):
         content = _read(_AGENTS_DIR / agent_name)
         assert "WebSearch" not in content, f"{agent_name} still has WebSearch in tools"
 
@@ -79,12 +80,12 @@ def test_stage1_websearch_in_main_session():
     assert "web_research.md" in skill
 
 
-def test_stage1_parallel_spec_and_golden():
+def test_stage1_single_spec_golden_dispatch():
     skill = _read(_SKILL_DIR / "SKILL.md")
 
-    assert "parallel" in skill.lower()
-    assert "vf-spec-gen" in skill
-    assert "vf-golden-gen" in skill
+    assert "vf-spec-golden" in skill
+    assert "spec.json" in skill
+    assert "golden_model.py" in skill
 
 
 def test_stage1_templates_preread():
@@ -92,7 +93,6 @@ def test_stage1_templates_preread():
 
     assert "SPEC_TEMPLATE" in skill
     assert "GOLDEN_TEMPLATE" in skill
-    assert "TIMING_TEMPLATE" in skill
 
 
 def test_step0_auto_approves_subagent_tools():

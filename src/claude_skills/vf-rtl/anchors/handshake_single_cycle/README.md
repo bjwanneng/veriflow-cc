@@ -23,9 +23,9 @@ Single-cycle pulse generator with companion last signal.
 
 **One-shot with flag:** Use a `sent_reg` flag to prevent re-triggering in the same cycle. The flag is set when the pulse fires and cleared on the next cycle (or when trigger goes low).
 
-**Combinational vs registered outputs:** In the timing_model, `valid_reg` and `last_reg` are registers to fit the sequential protocol. In the Verilog reference, they are `wire` outputs (combinational) for same-cycle visibility. vf-coder should follow the spec: if the module spec says "wire output", emit combinational assign.
+**Combinational vs registered outputs:** When the spec says `same_cycle_visible`, emit combinational `assign` for outputs. When the spec says `registered_outputs`, use `output wire` + internal `reg` + `assign`.
 
 ## Files
 
-- `timing_model.py` — veriflow_spec sequential model
-- `module.v` — hand-written Verilog-2005
+- `module.v` — hand-written Verilog-2005 reference
+- `trace.md` — cycle-accurate expected values

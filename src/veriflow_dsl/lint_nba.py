@@ -10,6 +10,9 @@ Checks:
   L8: always @(*) blocks with if-without-else may infer latches.
   L9: assign statements must not self-reference (combinational loop).
   L10: Internal wires must be driven by an assign or always block.
+  L11: valid signal and data register updated in same always @(posedge clk).
+  L12: pulse signal and data updated under same if branch.
+  L13: Variable part-select [signal:const] is illegal in Verilog-2005; must use barrel shifter.
 
 Usage:
     python -m veriflow_dsl.lint_nba <rtl_path> [<spec_path>]
@@ -1021,6 +1024,64 @@ def _check_pulse_clears_data_same_cycle(src: str) -> list[LintError]:
 
 
 # ---------------------------------------------------------------------------
+# L13: Variable part-select detection (Verilog-2005 illegal)
+# ---------------------------------------------------------------------------
+
+def _check_variable_part_select(src: str) -> list[LintError]:
+    """Flag variable part-select [signal:const] which is illegal in Verilog-2005.
+
+    Verilog-2005 only allows constant part-select [const:const] where both
+    bounds are compile-time constants. Variable rotation must use a barrel
+    shifter (cascaded muxes) instead of variable part-select.
+
+    Examples:
+      [31:0]       -> OK (constant)
+      [WIDTH-1:0]  -> OK (parameter-based constant)
+      [n:0]        -> ILLEGAL (variable part-select)
+      [shamt+3:shamt] -> ILLEGAL (variable)
+    """
+    errors: list[LintError] = []
+    clean_src = _strip_comments(src)
+    lines = clean_src.split("\n")
+
+    for line_idx, raw_line in enumerate(lines):
+        line_num = line_idx + 1
+        line = raw_line.strip()
+
+        # Find all [expr:expr] part-select patterns
+        for match in re.finditer(r'\[([^:\]]+):([^:\]]+)\]', line):
+            left_expr = match.group(1).strip()
+            right_expr = match.group(2).strip()
+
+            # Check if left bound contains a lowercase signal name
+            # Parameters are typically UPPER_CASE; signals are lower/snake_case
+            # Acceptable: pure digits, parameters (uppercase), operators
+            if re.match(r'^[A-Z0-9_+\-*/()\s]+$', left_expr):
+                continue  # Constant expression — OK
+
+            # Also accept localparams / genvars if they look like constants
+            # (simple heuristic: if it contains any lowercase identifier, flag it)
+            if re.search(r'\b[a-z]\w*\b', left_expr):
+                errors.append(
+                    LintError(
+                        line=line_num,
+                        rule="L13_variable_part_select",
+                        message=(
+                            f"Variable part-select '[{left_expr}:{right_expr}]' "
+                            f"is illegal in Verilog-2005. "
+                            f"Variable rotation must use a barrel shifter."
+                        ),
+                        suggested_fix=(
+                            "Replace with a barrel shifter: cascade 2^N mux stages "
+                            "controlled by each bit of the shift amount."
+                        ),
+                    )
+                )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1048,6 +1109,7 @@ def lint_module_v(rtl_path: Path, spec_module: dict | None = None) -> list[LintE
     errors.extend(_check_undriven_wire(src))
     errors.extend(_check_valid_data_same_cycle_nba(src))
     errors.extend(_check_pulse_clears_data_same_cycle(src))
+    errors.extend(_check_variable_part_select(src))
 
     if spec_module is not None:
         errors.extend(_check_port_alignment(src, spec_module))
@@ -1074,16 +1136,26 @@ def main() -> int:
             try:
                 with open(spec_path) as f:
                     data = json.load(f)
-                # spec.json may be a single module dict or a list of modules
+                # spec.json formats: list of modules, or top-level dict with "modules" key
                 if isinstance(data, list):
-                    # Try to find matching module by filename stem
                     target_name = rtl_path.stem
                     for mod in data:
-                        if mod.get("name") == target_name:
+                        if mod.get("module_name") == target_name or mod.get("name") == target_name:
                             spec_module = mod
                             break
                 else:
-                    spec_module = data
+                    # Top-level spec.json: extract module from modules array/dict
+                    modules = data.get("modules", [])
+                    if isinstance(modules, list):
+                        target_name = rtl_path.stem
+                        for mod in modules:
+                            if mod.get("module_name") == target_name or mod.get("name") == target_name:
+                                spec_module = mod
+                                break
+                        if spec_module is None and modules:
+                            spec_module = modules[0]
+                    elif isinstance(modules, dict):
+                        spec_module = modules.get(rtl_path.stem, next(iter(modules.values()), None))
             except json.JSONDecodeError as e:
                 print(f"Error: Invalid JSON in {spec_path}: {e}", file=sys.stderr)
                 return 2

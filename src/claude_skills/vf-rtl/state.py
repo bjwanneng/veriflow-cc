@@ -264,6 +264,19 @@ class PipelineState:
                 num_modules = len(spec.get("modules", {})) if isinstance(spec.get("modules"), dict) else len(spec.get("modules", []))
                 if num_modules > 1 and not spec.get("module_connectivity"):
                     missing.append("spec.json: module_connectivity missing for multi-module design")
+                # Check timing_convention
+                if not spec.get("timing_convention"):
+                    missing.append("spec.json: timing_convention missing")
+                # Check timing_contract in connectivity entries
+                if spec.get("module_connectivity"):
+                    for i, conn in enumerate(spec["module_connectivity"]):
+                        if not conn.get("timing_contract"):
+                            missing.append(f"spec.json: module_connectivity[{i}] missing timing_contract")
+                # fanout_groups is optional but if present must have valid structure
+                if spec.get("fanout_groups"):
+                    for i, fg in enumerate(spec["fanout_groups"]):
+                        if not fg.get("name") or not fg.get("signals"):
+                            missing.append(f"spec.json: fanout_groups[{i}] missing name or signals")
             except (json.JSONDecodeError, KeyError) as e:
                 missing.append(f"spec.json: parse error - {e}")
 

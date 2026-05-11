@@ -4,7 +4,7 @@ Used by vf-coder in Stage 2 to pick the 1-2 most relevant anchors
 for a given module.
 
 Selection priority:
-  1. explicit ``anchor_hints`` in module_spec (vf-architect generated)
+  1. explicit ``anchor_hints`` in module_spec (if provided by vf-spec-gen)
   2. auto-inferred from module ports / cycle_timing / timing_contract
   3. generic fallback (pipeline_register for data-path, fsm_4state for control)
 """
@@ -53,7 +53,7 @@ def select_anchors(module_spec: dict) -> list[Path]:
     Returns:
         List of Path objects pointing to anchor directories.
     """
-    # 1. Explicit hints (vf-architect generated)
+    # 1. Explicit hints (from spec.json if vf-spec-gen provided them)
     hints = module_spec.get("anchor_hints", [])
     matched = [_ensure_anchor_dir(h) for h in hints[:2] if _ensure_anchor_dir(h)]
     if matched:
@@ -86,7 +86,7 @@ def select_anchors_by_features(
 ) -> list[Path]:
     """Heuristic anchor selection from explicit feature flags.
 
-    Rules (vf-architect uses these to generate anchor_hints):
+    Rules (used to infer anchor_hints from module spec):
       - control + has_states          -> fsm_4state
       - has_shift_register            -> shift_register
       - has_pipeline                  -> pipeline_register

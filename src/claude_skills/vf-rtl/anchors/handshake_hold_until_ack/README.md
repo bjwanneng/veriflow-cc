@@ -24,9 +24,9 @@ Hold-until-acknowledge handshake: valid stays high from req until ack.
 
 **Set/clear on separate conditions:** The pending flag has independent set and clear conditions. It is NOT a simple mux(enable, 1, 0) — both req and ack can be high in the same cycle, and the priority matters. In this design, set wins over clear (req && !pending has higher priority than ack && pending).
 
-**Valid as combinational wire:** `valid` is simply `pending`, giving same-cycle visibility. The timing_model uses `valid_reg` as a register for protocol compliance; vf-coder should translate to `wire` when the spec requires it.
+**Valid as combinational wire:** `valid` is simply `pending`, giving same-cycle visibility. When the spec says `same_cycle_visible`, emit combinational `assign`. When `registered_outputs`, use `output wire` + internal `reg` + `assign`.
 
 ## Files
 
-- `timing_model.py` — veriflow_spec sequential model
-- `module.v` — hand-written Verilog-2005
+- `module.v` — hand-written Verilog-2005 reference
+- `trace.md` — cycle-accurate expected values

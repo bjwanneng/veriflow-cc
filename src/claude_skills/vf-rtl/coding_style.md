@@ -1,8 +1,7 @@
 # Verilog-2005 Coding Style (Condensed for AI Translation Path)
 
-**Context**: Modules with `has_dsl_builder=true` use the VerilogEmitter, which guarantees
-rules 10 (output wire), 11 (two-block separation), 12 (latch elimination), and =/<= separation
-structurally. This document covers rules for **Path B** (AI-translated modules from timing_model).
+**Context**: vf-coder translates golden_model.py algorithms + spec.json timing contracts into
+Verilog-2005. This document covers rules for AI-translated modules.
 
 Full rule document (460 lines): `coding_style_archive.md`.
 
@@ -135,12 +134,12 @@ Terminal condition: `< DEPTH`. Prefer index masking.
 | Asynchronous/active-low reset | Synchronous `rst` |
 | Latches | Flip-flops with defaults |
 
-## 16. Cross-Module Timing (from timing_model mapping)
+## 16. Cross-Module Timing (from spec.json timing_contract)
 
-When translating `@vf_block` functions:
-- `RegT` input → `input wire` (caller provides registered output)
-- `WireT` input → `input wire` (combinational)
-- Local variable → `wire` + `assign`
-- `reg_next(r, val)` → `r <= val` in sequential block
+When translating from golden_model.py + spec.json:
+- Input port with `pipeline_delay_cycles > 0` → caller provides registered output → `input wire`
+- Input port with `same_cycle_visible=true` → combinational → `input wire`
+- Internal combinational signal → `wire` + `assign` or `always @*`
+- Internal register (holds state across cycles) → `reg` + `always @(posedge clk) <=`
 - Co-asserted enables: independent `if` blocks, NOT `if/else if`
 - Finalize states: read `_reg` only, never `_next` combinational wires

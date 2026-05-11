@@ -15,9 +15,9 @@
 | `barrel_shifter_var_n/` | Variable rotation | log2(W) cascaded mux stages, **no variable part-select** |
 | `priority_encoder_8bit/` | Priority encoder | Combinational tuple return (multi-output), cat() for bit assembly |
 
-## Selection Rules (for vf-architect)
+## Selection Rules (auto-inferred from spec.json)
 
-vf-architect generates `anchor_hints` in spec.json based on module features:
+`_selector.py` infers `anchor_hints` from module ports / cycle_timing / timing_contract:
 
 | Module Feature | anchor_hint |
 |---|---|
@@ -35,13 +35,12 @@ Each module gets **at most 2** anchors in its prompt (most relevant first).
 ## Directory Layout
 
 Each anchor directory contains:
-- `timing_model.py` — veriflow_spec protocol model (`@vf_block`, `RegT`/`WireT`, `reg_next`)
 - `module.v` — hand-written Verilog-2005 reference
-- `README.md` — Python -> Verilog mapping guide
+- `trace.md` — cycle-accurate expected values for debugging
+- `README.md` — behavior and timing guide
 
 ## Quality Gates
 
 Every anchor must pass:
-1. `python timing_model.py` emits Verilog and passes `iverilog -g2005 -Wall`
-2. `module.v` passes `iverilog -g2005 -Wall`
-3. `module.v` passes `yosys -p "read_verilog module.v; synth -top <module>"`
+1. `module.v` passes `iverilog -g2005 -Wall`
+2. `module.v` passes `yosys -p "read_verilog module.v; synth -top <module>"`

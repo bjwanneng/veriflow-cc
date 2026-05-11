@@ -190,7 +190,7 @@ Before writing the test sequence, re-read the "TESTBENCH TIMING METHODOLOGY" com
 `tb_integration_template.v` — the generated testbench MUST follow those 5 rules.
 
 Race condition review checklist (verify ALL items before writing the file):
-- [ ] All DUT input ports are driven with `<=` (non-blocking) in the initial block, except `rst`/`rst_n` during the reset sequence
+- [ ] All DUT input ports are driven with `<=` (non-blocking) in the initial block, except `rst` during the reset sequence
 - [ ] Reset sequence holds for at least 2 posedge cycles and waits for `@(negedge clk)` after deassert
 - [ ] Multi-block messages include at least one `@(posedge clk)` gap between blocks
 - [ ] Single-cycle pulse signals are sampled at the same posedge as detection (no intervening `@(negedge clk)`)
