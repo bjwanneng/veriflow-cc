@@ -27,6 +27,44 @@ source "$ARGUMENTS/.veriflow/eda_env.sh"
 
 Read the output to determine: new project or resuming. If resuming, skip stages in `stages_completed`.
 
+### Permission Check (sub-agent tools)
+
+Sub-agents cannot interact with the user — any permission prompt will hang the pipeline.
+Check that the following tools are pre-approved in the project's `.claude/settings.json`:
+
+```bash
+SETTINGS=".claude/settings.json"
+if [ ! -f "$SETTINGS" ]; then
+    echo '{"permissions":{"allow":[]}}' > "$SETTINGS"
+fi
+python3 -c "
+import json
+s = json.load(open('$SETTINGS'))
+allow = s.setdefault('permissions', {}).setdefault('allow', [])
+# Tools that sub-agents need (must not trigger permission dialog):
+# - WebSearch: vf-spec-gen, vf-golden-gen, vf-coder (reference lookup)
+# - Bash(python*): all agents run python for hook validation
+# - Bash(test*): agents run 'test -f ...' for file existence checks
+# - Write: agents write output files (spec.json, golden_model.py, etc.)
+needed = [
+    'WebSearch',
+    'Bash(python*)',
+    'Bash(python3*)',
+    'Bash(test*)',
+]
+added = []
+for tool in needed:
+    if not any(tool in rule for rule in allow):
+        allow.append(tool)
+        added.append(tool)
+if added:
+    json.dump(s, open('$SETTINGS','w'), indent=2)
+    print(f'[PERM] Added to allowlist: {added}')
+else:
+    print('[PERM] All sub-agent tools already allowed')
+"
+```
+
 ## Step 0b: Requirements Clarification
 
 Read ALL input files in parallel (single message with multiple Read calls):

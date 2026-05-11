@@ -87,3 +87,12 @@ def test_coder_has_websearch():
 
     assert "WebSearch" in coder
     assert "Web Research" in coder
+
+
+def test_step0_auto_approves_subagent_tools():
+    skill = _read(_SKILL_DIR / "SKILL.md")
+
+    # Step 0 must auto-add WebSearch and Bash(python*) to avoid sub-agent hangs
+    assert "WebSearch" in skill
+    assert "Bash(python*)" in skill
+    assert "Permission Check" in skill
