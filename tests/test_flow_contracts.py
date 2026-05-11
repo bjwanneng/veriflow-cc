@@ -53,3 +53,37 @@ def test_design_rules_reset_polarity_is_consistent():
 
     assert 'reset_polarity`: `"active_high"` only' in content
     assert 'reset_polarity`: `"active_high"` or `"active_low"`' not in content
+
+
+def test_architect_receives_spec_and_golden_as_inputs():
+    architect = _read(_AGENTS_DIR / "vf-architect.md")
+
+    assert "SPEC_JSON" in architect
+    assert "GOLDEN_MODEL" in architect
+    assert "timing_model.py only" in architect.lower()
+    # Should NOT generate spec.json or golden_model.py
+    assert "do NOT regenerate them" in architect
+
+
+def test_spec_gen_and_golden_gen_have_websearch():
+    spec_gen = _read(_AGENTS_DIR / "vf-spec-gen.md")
+    golden_gen = _read(_AGENTS_DIR / "vf-golden-gen.md")
+
+    assert "WebSearch" in spec_gen
+    assert "WebSearch" in golden_gen
+
+
+def test_stage1_is_sequential_pipeline():
+    skill = _read(_SKILL_DIR / "SKILL.md")
+
+    assert "Run **vf-spec-gen** first" in skill
+    assert "Agent 2: vf-golden-gen" in skill
+    assert "Agent 3: vf-architect" in skill
+    assert "timing_model.py ONLY" in skill
+
+
+def test_coder_has_websearch():
+    coder = _read(_AGENTS_DIR / "vf-coder.md")
+
+    assert "WebSearch" in coder
+    assert "Web Research" in coder
