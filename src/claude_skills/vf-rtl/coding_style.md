@@ -81,12 +81,21 @@ end
 
 - Default values at top of `always @*` prevents latches.
 - **MUST NOT** mix `=` and `<=` in same block.
+- **One reg, one always block**: every `reg` must be driven by exactly one
+  `always` block. Multiple always blocks writing the same `reg` causes
+  undefined simulation behavior and synthesis "multiple drivers" errors.
+  All register logic (FSM state, counters, control flags, data pipeline)
+  goes in the single `always @(posedge clk)` block.
 
 ## 8. FSM Structure
 
 1. `localparam` with explicit width for state encoding.
 2. Combinational block: next-state decode + output, defaults at top.
 3. Sequential block: state register + reset.
+4. Latch signals that must persist across states (e.g. `is_last`, `count_reg`)
+   are updated inside the same `always @(posedge clk)` block using
+   `if (state_reg == X && condition) signal_reg <= value` — never in a
+   separate always block.
 
 ```verilog
 localparam [1:0] STATE_IDLE = 2'd0, STATE_WORK = 2'd1, STATE_DONE = 2'd2;
@@ -130,6 +139,7 @@ Terminal condition: `< DEPTH`. Prefer index masking.
 | `defparam` | named port connections |
 | `output reg` | `output wire` + `_reg` |
 | Blocking `=` in `always @(posedge clk)` | Non-blocking `<=` |
+| Two always blocks driving the same `reg` | All register logic in one `always @(posedge clk)` block |
 | `#delay` in synthesizable code | Remove |
 | Asynchronous/active-low reset | Synchronous `rst` |
 | Latches | Flip-flops with defaults |
