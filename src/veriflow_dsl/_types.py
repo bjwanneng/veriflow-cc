@@ -270,6 +270,7 @@ class Signal(Value):
     """
 
     _auto_counter = 0
+    _counter_prefix = ""  # set by Module for per-module scoping
 
     def __init__(
         self,
@@ -284,7 +285,7 @@ class Signal(Value):
         self._width = width
         if name is None:
             Signal._auto_counter += 1
-            name = f"sig_{Signal._auto_counter}"
+            name = f"{Signal._counter_prefix}sig_{Signal._auto_counter}"
         self._name = name
         self._reset = reset
         self._reset_less = reset_less
@@ -297,6 +298,12 @@ class Signal(Value):
     @property
     def reset_less(self) -> bool:
         return self._reset_less
+
+    @classmethod
+    def reset_auto_counter(cls):
+        """Reset the auto-naming counter. Call between independent module builds."""
+        cls._auto_counter = 0
+        cls._counter_prefix = ""
 
     def eq(self, value) -> "Assignment":
         """Create an assignment statement for use with m.d.comb/sync."""
@@ -447,6 +454,11 @@ class _ROL(Value):
     """Rotate-left expression node."""
 
     def __init__(self, operand: Value, amount: Value, width: int):
+        assert operand.width == width, (
+            f"ROL operand width ({operand.width}) must equal rotation width ({width}). "
+            f"If the operand is wider than the desired rotation, slice it first: "
+            f"operand[{width-1}:0].rotate_left(n)."
+        )
         self._operand = operand
         self._amount = amount
         self._width = width

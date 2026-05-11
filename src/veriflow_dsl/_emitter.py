@@ -47,6 +47,11 @@ def _needs_temp_wire(expr: Value) -> bool:
     return not isinstance(expr, (Signal, Const))
 
 
+def _is_simple_identifier(s: str) -> bool:
+    """Return True if the string is a plain Verilog identifier (no operators, parens)."""
+    return bool(re.match(r'^[A-Za-z_]\w*$', s))
+
+
 class _ExprEmitter:
     """Convert a DSL expression tree to a Verilog expression string."""
 
@@ -83,9 +88,11 @@ class _ExprEmitter:
 
     def emit(self, expr: Value) -> str:
         """Convert expression tree to Verilog expression string."""
-        # When auto_temp is enabled, wrap non-trivial expressions in a tmp wire
-        # so they can be referenced by name instead of being inlined.
-        if self._auto_temp and not isinstance(expr, (Const, Signal)):
+        # auto_temp: wrap BinOp/UnaryOp in temp wires so they get a named
+        # reference (needed when they appear as operands of ROL/Slice in
+        # Verilog-2005).  ROL, Slice, Concat, Mux handle their own temp needs
+        # internally, so we don't wrap them.
+        if self._auto_temp and isinstance(expr, (_BinOp, _UnaryOp)):
             inner = self._emit_core(expr)
             return self._get_or_create_tmp(inner, expr.width)
         return self._emit_core(expr)
@@ -146,7 +153,8 @@ class _ExprEmitter:
             # Single-bit select is allowed on expressions in Verilog-2005
             return f"{operand}[{s._high}]"
         # Verilog-2005 does not allow part-select on expression results.
-        if _needs_temp_wire(s._operand):
+        # Skip if auto_temp already converted operand to a simple identifier.
+        if _needs_temp_wire(s._operand) and not _is_simple_identifier(operand):
             operand = self._get_or_create_tmp(operand, s._operand.width)
         return f"{operand}[{s._high}:{s._low}]"
 
@@ -165,14 +173,26 @@ class _ExprEmitter:
         amount = r._amount
         w = r._width
 
+        # Defense-in-depth: warn if operand width != rotation width
+        # (types.py assertion should catch this at construction time, but
+        # emitted blocks may bypass the DSL builder.)
+        if r._operand.width != w:
+            import warnings
+            warnings.warn(
+                f"[VerilogEmitter] ROL width mismatch: operand width={r._operand.width} "
+                f"but rotation width={w}. This usually means a slice was omitted before "
+                f"rotate_left(). The emitted Verilog will rotate {w} bits, discarding "
+                f"upper bits of the operand."
+            )
+
         # Constant rotation: use bit-slice concatenation
         if isinstance(amount, Const):
             n = amount.value % w
             if n == 0:
                 return operand
             # Verilog-2005 does not allow part-select on expression results.
-            # Introduce a temporary wire if the operand is complex.
-            if _needs_temp_wire(r._operand):
+            # Skip if auto_temp already converted operand to a simple identifier.
+            if _needs_temp_wire(r._operand) and not _is_simple_identifier(operand):
                 operand = self._get_or_create_tmp(operand, w)
             return f"{{{operand}[{w-1-n}:{0}], {operand}[{w-1}:{w-n}]}}"
 
@@ -389,7 +409,7 @@ class VerilogEmitter:
         sync_asns = analysis["sync_assignments"]
         signals = analysis["signals"]
         renames = self._build_signal_renames(analysis)
-        ee = _ExprEmitter(signal_names=renames, tmp_start=self._tmp_offset)
+        ee = _ExprEmitter(signal_names=renames, tmp_start=self._tmp_offset, auto_temp=True)
 
         # Pre-emit expressions once to discover needed temporaries
         expr_strs = []

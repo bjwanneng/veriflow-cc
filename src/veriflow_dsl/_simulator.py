@@ -87,6 +87,7 @@ class CycleSimulator:
         n_comb = len(self._analysis["comb_assignments"])
         max_iter = n_comb * 2 + 1 if n_comb > 0 else 1
         converged = False
+        first_eval_error: str | None = None
         for iteration in range(max_iter):
             changed = False
             for target_name, value_expr in self._analysis["comb_assignments"]:
@@ -97,8 +98,11 @@ class CycleSimulator:
                     if ctx.get(target_name) != masked:
                         ctx[target_name] = masked
                         changed = True
-                except (ValueError, KeyError):
-                    pass  # unevaluated dependencies — keep current value
+                except (ValueError, KeyError) as e:
+                    # Record the first error for diagnostics; keep current value
+                    # so other signals that don't depend on this one can still converge.
+                    if first_eval_error is None:
+                        first_eval_error = f"{target_name}: {e}"
             if not changed:
                 converged = True
                 break
@@ -115,8 +119,9 @@ class CycleSimulator:
         # target unset after the loop, which we must not silently ignore.
         for target_name, _ in self._analysis["comb_assignments"]:
             if target_name not in ctx:
+                hint = f" First error: {first_eval_error}" if first_eval_error else ""
                 raise RuntimeError(
-                    f"Combinational signal '{target_name}' could not be evaluated. "
+                    f"Combinational signal '{target_name}' could not be evaluated.{hint} "
                     f"Check that all referenced signals are defined and have valid values."
                 )
 

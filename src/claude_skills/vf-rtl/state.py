@@ -166,12 +166,19 @@ class PipelineState:
 
     @classmethod
     def load(cls, project_dir: str) -> "PipelineState":
-        """Load from file, create new state if file does not exist."""
+        """Load from file, create new state if file does not exist.
+
+        Tolerant of extra fields in the JSON (e.g. from newer versions):
+        unknown keys are silently ignored so that downgrades don't crash.
+        """
         p = Path(project_dir) / ".veriflow" / "pipeline_state.json"
         if p.exists():
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-                return cls(**data)
+                # Filter to only known fields to survive schema evolution
+                known = {f.name for f in cls.__dataclass_fields__.values()}
+                filtered = {k: v for k, v in data.items() if k in known}
+                return cls(**filtered)
             except (TypeError, json.JSONDecodeError) as e:
                 print(f"[WARNING] Corrupted pipeline_state.json, starting fresh: {e}", file=sys.stderr)
         return cls(project_dir=project_dir)
@@ -345,6 +352,59 @@ class PipelineState:
         except Exception as e:
             issues.append(f"golden_model.py execution error: {e}")
             return (False, issues)
+
+        # ------------------------------------------------------------------
+        # Consistency check: trace mode vs non-trace mode must agree
+        # SM3 bug: compute(trace=True) produced wrong per-cycle trace,
+        # misleading Stage 3 debug for hours.
+        # ------------------------------------------------------------------
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("golden_model", str(gm_path))
+            gm_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gm_module)
+
+            if hasattr(gm_module, "compute"):
+                compute = gm_module.compute
+                # Try to call both modes
+                try:
+                    non_trace = compute(trace=False)
+                except TypeError:
+                    non_trace = compute()
+                trace_result = compute(trace=True)
+
+                if isinstance(trace_result, list) and trace_result:
+                    trace_last = trace_result[-1]
+                elif isinstance(trace_result, dict):
+                    trace_last = trace_result
+                else:
+                    trace_last = None
+
+                if (
+                    isinstance(non_trace, dict)
+                    and isinstance(trace_last, dict)
+                ):
+                    # Compare only common keys — trace mode may include extra
+                    # internal signals that non-trace mode omits.
+                    common_keys = set(non_trace.keys()) & set(trace_last.keys())
+                    mismatches = []
+                    for k in sorted(common_keys):
+                        v1 = non_trace[k]
+                        v2 = trace_last[k]
+                        if v1 != v2:
+                            mismatches.append(f"{k}: non-trace={v1} trace={v2}")
+                    if mismatches:
+                        issues.append(
+                            "golden_model.py trace mode and non-trace mode produce different "
+                            "final results for common keys. This means the per-cycle trace "
+                            "is not derived from the same algorithm path as the final output. "
+                            "Mismatched keys: "
+                            + ", ".join(mismatches[:5])
+                        )
+                        return (False, issues)
+        except Exception as e:
+            # Consistency check is best-effort; if import fails, don't block
+            pass
 
         return (True, [])
 

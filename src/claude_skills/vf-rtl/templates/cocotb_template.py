@@ -123,26 +123,30 @@ def check(dut, expected, signal, test_name, cycle):
 
 
 async def drive_inputs(dut, input_values, valid_name='valid_in',
-                       ready_name='ready_out'):
+                       ready_name='ready_out',
+                       hold_data_cycles=None):
     """Wait for ready, then drive valid=1 with input values.
 
     Timing (POST-NBA):
     1. Wait for ready=1
     2. Drive ALL inputs simultaneously (valid + data)
     3. Wait ONE RisingEdge — DUT samples inputs at this posedge, NBA fires
-    4. Deassert inputs (for single_cycle) or hold (for hold_until_ack)
-
-    After this function returns, the DUT has consumed the inputs and its
-    registered state reflects the transition (e.g., loaded data, FSM advance).
-    The caller should account for this consumed cycle when aligning the
-    golden model trace for comparison (see DRIVE_PHASE_CYCLES).
+    4. Deassert valid. For data inputs, hold for additional cycles based on
+       pipeline_delay_cycles to ensure downstream modules have sampled.
 
     Args:
         dut: cocotb DUT handle
         input_values: dict mapping port names to integer values
         valid_name: name of the valid input port
         ready_name: name of the ready/ack output port
+        hold_data_cycles: extra cycles to hold data after deasserting valid.
+            Defaults to DRIVE_PHASE_CYCLES. If the control signal that triggers
+            sampling has pipeline_delay_cycles=N, data must remain stable for
+            N+1 cycles after valid is deasserted.
     """
+    if hold_data_cycles is None:
+        hold_data_cycles = DRIVE_PHASE_CYCLES
+
     # Wait for ready
     timeout = TIMEOUT_CYCLES
     ready_sig = getattr(dut, ready_name)
@@ -162,12 +166,14 @@ async def drive_inputs(dut, input_values, valid_name='valid_in',
     # Deassert based on handshake protocol
     if valid_name in HOLD_UNTIL_ACK_PORTS:
         # hold_until_ack: keep valid high until DUT asserts ready
-        # (ready was already high when we started, so DUT has sampled.
-        #  But for multi-cycle holds, wait for ready to be asserted again)
         pass  # caller is responsible for deasserting after ack
     else:
-        # single_cycle / pulse: deassert after DUT has sampled
+        # single_cycle / pulse: deassert valid immediately after sampling
         getattr(dut, valid_name).value = 0
+        # Hold data for pipeline_delay_cycles so downstream consumers
+        # (e.g., w_gen that sees load_en 2 cycles late) still see stable data.
+        for _ in range(hold_data_cycles):
+            await RisingEdge(dut.clk)
         for port_name in input_values:
             getattr(dut, port_name).value = 0
 

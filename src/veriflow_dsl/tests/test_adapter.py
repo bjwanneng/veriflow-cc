@@ -141,13 +141,19 @@ class TestAdapterErrors(unittest.TestCase):
         with self.assertRaises(TypeError):
             from_timing_model(bad)
 
-    def test_combinational_not_implemented(self):
+    def test_combinational_block_supported(self):
         @vf_block(type="combinational")
-        def adder(*, a: RegT = RegT("a"), b: RegT = RegT("b")) -> WireT:
+        def adder(*, a: RegT = RegT("a", 8), b: RegT = RegT("b", 8)) -> WireT:
             return a + b
 
-        with self.assertRaises(NotImplementedError):
-            from_timing_model(adder)
+        m = from_timing_model(adder)
+        self.assertEqual(m.name, "adder")
+        # Should have two input ports and one output port
+        ports = m.ports()
+        port_names = {p.name for p in ports}
+        self.assertIn("a", port_names)
+        self.assertIn("b", port_names)
+        self.assertIn("adder_out", port_names)
 
 
 if __name__ == "__main__":

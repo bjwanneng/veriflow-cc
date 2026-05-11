@@ -519,24 +519,37 @@ def _check_concat_width(src: str) -> list[LintError]:
     """Flag {a, b} concatenations where summed widths don't match target.
 
     Catches ROL bit-slice errors like {x[22:0], x[31:7]} (23+25=48 ≠ 32).
+    Tracks wire/reg declarations across lines so it can resolve target widths
+    even when the wire is declared separately from the concat assignment.
     """
     errors: list[LintError] = []
     clean_src = _strip_comments(src)
     lines = clean_src.split("\n")
 
+    # First pass: collect all wire/reg width declarations
+    # Maps signal_name -> width (from [N:0] declarations)
+    declared_widths: dict[str, int] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        # Match: (wire|reg) [N:0] name  or  output wire [N:0] name  etc.
+        decl_match = re.match(
+            r'(?:wire|reg|output\s+wire|output\s+reg)\s+\[(\d+):0\]\s+(\w+)',
+            line,
+        )
+        if decl_match:
+            declared_widths[decl_match.group(2)] = int(decl_match.group(1)) + 1
+
+    # Second pass: check concat widths
     for line_idx, raw_line in enumerate(lines):
         line_num = line_idx + 1
         line = raw_line.strip()
 
-        # Look for lines with both a target width declaration and concatenation
-        # Pattern: [N:0] signal_name = ... { ... }
-        # or:     wire [N:0] signal_name = { ... }
-        # or:     assign signal_name = { ... } where signal was declared [N:0]
+        # Look for lines with concatenation
         concats = list(_CONCAT_RE.finditer(line))
         if not concats:
             continue
 
-        # Find target width from this line or context
+        # Find target width from this line or from prior declarations
         target_width = None
 
         # Try to find [N:0] on the LHS of assignment
@@ -551,6 +564,18 @@ def _check_concat_width(src: str) -> list[LintError]:
             width_match = _WIDTH_DECL_RE.search(lhs)
             if width_match:
                 target_width = int(width_match.group(1)) + 1
+
+        # Fallback: look up the signal name in declared_widths
+        if target_width is None:
+            # Extract signal name being assigned
+            if assign_pos > 0:
+                lhs = line[:assign_pos].strip()
+                # Handle "assign sig_name = ..." and "sig_name <= ..."
+                name_match = re.search(r'(\w+)\s*$', lhs)
+                if name_match:
+                    sig_name = name_match.group(1)
+                    if sig_name in declared_widths:
+                        target_width = declared_widths[sig_name]
 
         if target_width is None:
             continue  # Can't determine target width
@@ -573,9 +598,13 @@ def _check_concat_width(src: str) -> list[LintError]:
                     total_bits += 32  # unsized integer
                     known = False
                 else:
-                    # Plain signal — width unknown from this line alone
-                    known = False
-                    total_bits += 1  # assume 1 bit minimum
+                    # Plain signal — look up declared width
+                    plain_name = re.match(r'(\w+)', part)
+                    if plain_name and plain_name.group(1) in declared_widths:
+                        total_bits += declared_widths[plain_name.group(1)]
+                    else:
+                        known = False
+                        total_bits += 1  # assume 1 bit minimum
 
             if known and total_bits != target_width:
                 errors.append(
@@ -774,6 +803,224 @@ def _check_undriven_wire(src: str) -> list[LintError]:
 
 
 # ---------------------------------------------------------------------------
+# L11: valid signal and data register updated in same always @(posedge clk)
+# ---------------------------------------------------------------------------
+
+_VALID_RE = re.compile(r'\b\w*(?:_valid|_done|_ready|_ack)(?![a-zA-Z0-9])')
+_DATA_RE = re.compile(r'\b(?:\w*hash\w*|\w*data\w*|\w*result\w*|\w*out\w*|\w*state\w*|V_\w+|msg\w*|block\w*)\b')
+
+
+def _check_valid_data_same_cycle_nba(src: str) -> list[LintError]:
+    """Flag valid-like and data-like signals updated in the same seq block.
+
+    SM3 bug pattern: hash_valid_reg <= 1'b1 and V_reg <= V_next in the same
+    always @(posedge clk). Consumers sampling hash_valid at the same posedge
+    see the OLD V value because NBA has not yet applied.
+    """
+    errors: list[LintError] = []
+    clean_src = _strip_comments(src)
+    lines = clean_src.split("\n")
+
+    in_seq = False
+    begin_depth = 0
+    block_targets: list[str] = []
+    block_start = 0
+
+    for line_idx, raw_line in enumerate(lines):
+        line_num = line_idx + 1
+        line = raw_line.strip()
+
+        if line.startswith("always") and "@" in line:
+            if "posedge" in line:
+                in_seq = True
+                begin_depth = 0
+                block_targets = []
+                block_start = line_num
+            else:
+                in_seq = False
+            continue
+
+        if not in_seq:
+            continue
+
+        line_no_strings = _strip_strings(line)
+        begin_depth += len(re.findall(r'\bbegin\b', line_no_strings)) - \
+                      len(re.findall(r'\bend\b', line_no_strings))
+
+        if begin_depth < 0:
+            # Block ended — analyze
+            has_valid = any(_VALID_RE.search(t) for t in block_targets)
+            has_data = any(
+                _DATA_RE.search(t) and not _VALID_RE.search(t)
+                for t in block_targets
+            )
+            if has_valid and has_data:
+                errors.append(
+                    LintError(
+                        line=block_start,
+                        rule="L11_valid_data_same_cycle_nba",
+                        message=(
+                            "Valid-like signal and data signal updated in the same "
+                            "sequential always block. Consumers may sample valid before "
+                            "NBA applies new data values."
+                        ),
+                        suggested_fix=(
+                            "Move valid assertion to a separate always @(posedge clk) "
+                            "block, or assert valid one cycle AFTER data is stable."
+                        ),
+                        severity="warning",
+                    )
+                )
+            in_seq = False
+            begin_depth = 0
+            continue
+
+        # Collect NBA targets
+        m = re.match(r'\s*(\w+)\s*<=', line)
+        if m:
+            block_targets.append(m.group(1))
+
+    # EOF case
+    if in_seq and block_targets:
+        has_valid = any(_VALID_RE.search(t) for t in block_targets)
+        has_data = any(
+            _DATA_RE.search(t) and not _VALID_RE.search(t)
+            for t in block_targets
+        )
+        if has_valid and has_data:
+            errors.append(
+                LintError(
+                    line=block_start,
+                    rule="L11_valid_data_same_cycle_nba",
+                    message=(
+                        "Valid-like signal and data signal updated in the same "
+                        "sequential always block. Consumers may sample valid before "
+                        "NBA applies new data values."
+                    ),
+                    suggested_fix=(
+                        "Move valid assertion to a separate always @(posedge clk) "
+                        "block, or assert valid one cycle AFTER data is stable."
+                    ),
+                    severity="warning",
+                )
+            )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# L12: pulse signal and data updated under same if branch
+# ---------------------------------------------------------------------------
+
+def _check_pulse_clears_data_same_cycle(src: str) -> list[LintError]:
+    """Flag valid/done pulse and data update under the same if condition.
+
+    SM3 bug pattern: inside `if (state == DONE)`: hash_valid_reg <= 1'b1
+    AND hash_out_reg <= hash_next. The pulse is visible to consumers on the
+    SAME cycle the data updates, but consumers see old data (pre-NBA).
+    """
+    errors: list[LintError] = []
+    clean_src = _strip_comments(src)
+    lines = clean_src.split("\n")
+
+    in_seq = False
+    begin_depth = 0
+    # Track current if scope: (depth_when_if_started, line_num, has_valid, has_data)
+    if_frame: tuple[int, int, bool, bool] | None = None
+
+    for line_idx, raw_line in enumerate(lines):
+        line_num = line_idx + 1
+        line = raw_line.strip()
+
+        if line.startswith("always") and "@" in line:
+            if "posedge" in line:
+                in_seq = True
+                begin_depth = 0
+                if_frame = None
+            else:
+                in_seq = False
+            continue
+
+        if not in_seq:
+            continue
+
+        line_no_strings = _strip_strings(line)
+        depth_before = begin_depth
+        begin_depth += len(re.findall(r'\bbegin\b', line_no_strings)) - \
+                      len(re.findall(r'\bend\b', line_no_strings))
+
+        if begin_depth < 0:
+            in_seq = False
+            begin_depth = 0
+            if_frame = None
+            continue
+
+        # Detect if start
+        if re.search(r'\bif\s*\(', line_no_strings):
+            if_frame = (depth_before, line_num, False, False)
+
+        # Detect else — close previous if, open new frame for else branch
+        elif re.search(r'\belse\b', line_no_strings):
+            if if_frame is not None:
+                _, if_line, has_v, has_d = if_frame
+                if has_v and has_d:
+                    errors.append(
+                        LintError(
+                            line=if_line,
+                            rule="L12_pulse_clears_data_same_cycle",
+                            message=(
+                                "Pulse signal (valid/done) and data updated under the "
+                                "same if/else branch. The pulse is visible before NBA "
+                                "applies the new data."
+                            ),
+                            suggested_fix=(
+                                "Separate the pulse assertion from the data update: "
+                                "(1) update data in the current cycle, "
+                                "(2) assert valid in the NEXT cycle after data is stable."
+                            ),
+                            severity="warning",
+                        )
+                    )
+            if_frame = (depth_before, line_num, False, False)
+
+        # Collect assignments inside current if frame
+        if if_frame is not None and depth_before >= if_frame[0]:
+            m = re.match(r'\s*(\w+)\s*<=', line)
+            if m:
+                target = m.group(1)
+                has_v = if_frame[2] or bool(_VALID_RE.search(target))
+                has_d = if_frame[3] or (
+                    bool(_DATA_RE.search(target)) and not bool(_VALID_RE.search(target))
+                )
+                if_frame = (if_frame[0], if_frame[1], has_v, has_d)
+
+        # If scope closed by end
+        if if_frame is not None and depth_before < if_frame[0]:
+            _, if_line, has_v, has_d = if_frame
+            if has_v and has_d:
+                errors.append(
+                    LintError(
+                        line=if_line,
+                        rule="L12_pulse_clears_data_same_cycle",
+                        message=(
+                            "Pulse signal (valid/done) and data updated under the "
+                            "same if/else branch. The pulse is visible before NBA "
+                            "applies the new data."
+                        ),
+                        suggested_fix=(
+                            "Separate the pulse assertion from the data update: "
+                            "(1) update data in the current cycle, "
+                            "(2) assert valid in the NEXT cycle after data is stable."
+                        ),
+                        severity="warning",
+                    )
+                )
+            if_frame = None
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -799,6 +1046,8 @@ def lint_module_v(rtl_path: Path, spec_module: dict | None = None) -> list[LintE
     errors.extend(_check_latch_from_incomplete_assign(src))
     errors.extend(_check_combinational_loop(src))
     errors.extend(_check_undriven_wire(src))
+    errors.extend(_check_valid_data_same_cycle_nba(src))
+    errors.extend(_check_pulse_clears_data_same_cycle(src))
 
     if spec_module is not None:
         errors.extend(_check_port_alignment(src, spec_module))

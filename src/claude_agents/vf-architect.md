@@ -31,6 +31,10 @@ Constraints:
 - `design_intent` block is REQUIRED — populate from design_intent.md or from clarification answers
 - `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1)
 - `resource_strategy` must be `"distributed_ram"` or `"block_ram"`
+- **Cryptographic designs ONLY**: Add a top-level `crypto_ops` array listing every
+cryptographic primitive operation that MUST appear in the RTL (e.g.,
+`"ROL(T_j, j)"`, `"FF_j(X, Y, Z)"`, `"P_1(X)"`). The vf-coder agent uses this
+as a compliance checklist — missing ops trigger auto-rejection.
 - Do NOT generate any Verilog files
 - **Lint-aware port declarations** — Every port MUST declare `name`, `direction`, `width` precisely. The W3 NBA lint hook (L3 rule) performs byte-exact comparison between spec.json ports and generated Verilog module declarations. Mismatches in name, direction, or width are auto-rejected. Include `clk` and `rst` explicitly in the port list — do NOT assume they are auto-injected.
 - Port semantic fields:
@@ -119,6 +123,16 @@ Use Read tool on `${TEMPLATES_DIR}/golden_model_template.py` for structure, then
 7. **`__main__`**: Prints cycle trace and verifies final outputs
 
 **Key principle**: Write ONE `compute()` function. Use `trace` parameter to control output granularity. Do NOT write two separate implementations (reference + cycle-accurate). The trace mode records intermediate state that the non-trace mode computes anyway.
+
+**Self-consistency check**: Before writing golden_model.py, add this internal verification:
+```python
+# At the end of compute() or in __main__:
+final = compute(inputs, trace=False)
+trace = compute(inputs, trace=True)
+assert trace[-1] == final, "BUG: trace mode and non-trace mode produce different results!"
+```
+This catches the SM3 bug where `compute(trace=True)` silently computed wrong
+intermediate values, misleading 66 minutes of RTL debug.
 
 **Size target**: 150-300 lines. Do NOT exceed 400 lines.
 

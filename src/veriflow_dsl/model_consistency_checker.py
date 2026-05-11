@@ -158,8 +158,8 @@ def _run_golden_model(golden_model_path: Path, input_sequence: list[dict], num_c
             result = gm_module.compute(sequences, trace=True)
             if isinstance(result, list):
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[model_consistency] compute(sequences) failed: {e}", file=sys.stderr)
 
     # Format 3: legacy _sequence suffix
     if sequences and hasattr(gm_module, "compute"):
@@ -168,8 +168,8 @@ def _run_golden_model(golden_model_path: Path, input_sequence: list[dict], num_c
             result = gm_module.compute(legacy, trace=True)
             if isinstance(result, list):
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[model_consistency] compute(legacy_sequences) failed: {e}", file=sys.stderr)
 
     # Format 2: scalar inputs (constant across all cycles)
     if input_sequence and hasattr(gm_module, "compute"):
@@ -178,15 +178,15 @@ def _run_golden_model(golden_model_path: Path, input_sequence: list[dict], num_c
             result = gm_module.compute(scalar_inputs, trace=True)
             if isinstance(result, list):
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[model_consistency] compute(scalar) failed: {e}", file=sys.stderr)
 
     # Format 4: built-in test vector via run()
     if hasattr(gm_module, "run"):
         try:
             return gm_module.run(0)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[model_consistency] run(0) failed: {e}", file=sys.stderr)
 
     return None
 

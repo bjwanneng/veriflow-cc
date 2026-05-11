@@ -102,6 +102,39 @@ Output ports: `output wire` + internal `_reg` + `assign`.
 | `struct` | separate signals |
 | `interface` | direct port connections |
 
+## Cryptographic Operation Integrity (MANDATORY for crypto designs)
+
+For cryptographic algorithms (SM3, SM4, SHA-256, AES, etc.), the following rules
+are ABSOLUTE — violations cause algorithmic hash mismatches that are extremely
+difficult to debug:
+
+1. **NO algebraic simplification**: You MUST NOT replace any operation with a
+   mathematically equivalent shortcut. For example:
+   - `ROL(T_j, j)` MUST be implemented as a real rotation, NOT replaced with a
+     precomputed constant table.
+   - Constant additions MUST use the exact constants from the spec, NOT
+     simplified or folded.
+   - Bit permutations MUST follow the spec's exact wiring, NOT "optimized".
+
+2. **Bit-exact width discipline**: Every intermediate signal MUST be exactly the
+   width specified in the standard (e.g., 32-bit for SM3). If an operand is
+   computed in wider precision (e.g., 34-bit after addition), you MUST truncate
+   or slice it to 32-bit BEFORE feeding it into a rotation or XOR.
+
+3. **Spec compliance checklist**: Scan the spec.json `crypto_ops` field. Every
+   listed operation MUST have a visible RTL counterpart. If `crypto_ops` lists
+   `ROL(T_j, j)` and you emit only a constant, the lint hook will reject it.
+
+4. **Variable rotation = barrel shifter**: Any rotation where the amount is NOT
+   a compile-time constant MUST use a barrel shifter (cascaded 2^N muxes). Do
+   NOT use variable part-select `{x[N:0], x[W:N]}` with variable N — this is
+   illegal in Verilog-2005 and will fail synthesis.
+
+5. **Test vector verification**: Before declaring the module complete, verify
+   that the RTL output matches at least ONE known-correct test vector from the
+   official specification. A single vector match is worth more than 100 lines
+   of code review.
+
 ## Debug Observability
 
 - All intermediate registers use `_reg` suffix (visible in VCD)

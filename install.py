@@ -150,8 +150,19 @@ def main():
             print()
 
     def _symlink(src: Path, dst: Path, label: str):
-        """Create or overwrite a symlink from dst → src."""
+        """Create or overwrite a symlink from dst → src.
+
+        Warns if the existing file differs from the source (user may have
+        local modifications that would be overwritten).
+        """
         if dst.exists() or dst.is_symlink():
+            # Check if existing content differs from source
+            if dst.is_file() and not dst.is_symlink() and src.is_file():
+                try:
+                    if dst.read_text(encoding="utf-8") != src.read_text(encoding="utf-8"):
+                        print(f"  [warn]   Overwriting modified: {dst} (content differs from source)")
+                except Exception:
+                    pass  # binary file or encoding issue — just overwrite
             dst.unlink()
         dst.symlink_to(src.resolve())
         print(f"  [{label}]  {src.name}  →  {dst}")

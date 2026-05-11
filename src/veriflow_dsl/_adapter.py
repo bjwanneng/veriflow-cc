@@ -63,6 +63,7 @@ def _expr_to_dsl(expr, signal_map: dict[str, Signal]) -> Value:
         op_map = {
             "+": lambda a, b: a + b,
             "-": lambda a, b: a - b,
+            "*": lambda a, b: a * b,
             "&": lambda a, b: a & b,
             "|": lambda a, b: a | b,
             "^": lambda a, b: a ^ b,

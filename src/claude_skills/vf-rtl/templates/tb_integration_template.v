@@ -121,28 +121,58 @@ module tb_<design_name>;
     //
     // ===========================================================================
 
-    // Test cases (example structure)
-    initial begin
-        // --- Reset ---
-        rst = 1; data_in <= 0;
-        @(posedge clk); @(posedge clk);
-        rst = 0;
-        @(negedge clk);  // wait for NBA to settle after rst deassert
-        $display("[TRACE] cycle=%0d rst released", cycle_count);
+    // ===========================================================================
+    // MACROS: Race-free sampling helpers
+    // ===========================================================================
+    // Use these macros instead of raw @(negedge clk) to avoid race conditions.
+    `define SAMPLE_REGISTERED_OUTPUT(sig, expected, test_name) \
+        @(negedge clk); \
+        if (sig !== expected) begin \
+            $display("[FAIL] test=%s cycle=%0d signal=%s expected=0x%0h actual=0x%0h phase=negedge", \
+                     test_name, cycle_count, `"sig`", expected, sig); \
+            fail_count = fail_count + 1; \
+        end else \
+            $display("[PASS] test=%s cycle=%0d signal=%s actual=0x%0h phase=negedge", \
+                     test_name, cycle_count, `"sig`", sig);
 
+    `define SAMPLE_PULSE_OUTPUT(sig, expected, test_name) \
+        if (sig !== expected) begin \
+            $display("[FAIL] test=%s cycle=%0d signal=%s expected=0x%0h actual=0x%0h phase=posedge", \
+                     test_name, cycle_count, `"sig`", expected, sig); \
+            fail_count = fail_count + 1; \
+        end else \
+            $display("[PASS] test=%s cycle=%0d signal=%s actual=0x%0h phase=posedge", \
+                     test_name, cycle_count, `"sig`", sig);
+
+    // ===========================================================================
+    // RESET TASK: Must be called at start of EVERY independent test
+    // ===========================================================================
+    task automatic apply_reset;
+        begin
+            rst = 1;
+            data_in <= 0;  // zero all data inputs with NBA
+            @(posedge clk); @(posedge clk); @(posedge clk);
+            rst = 0;
+            @(negedge clk);  // wait for NBA to settle after rst deassert
+            $display("[TRACE] cycle=%0d rst released", cycle_count);
+        end
+    endtask
+
+    // ===========================================================================
+    // Test cases
+    // ===========================================================================
+    initial begin
         // --- Test case 1: <description> ---
+        apply_reset();
         data_in <= 32'h0000_1234;
         @(posedge clk);   // DUT samples data_in
-        @(negedge clk);   // NBA settled — registered outputs now valid
-        $display("[TRACE] cycle=%0d data_in=0x%0h data_out=0x%0h", cycle_count, data_in, data_out);
-        if (data_out !== 32'hEXPECTED) begin
-            $display("[FAIL] test=test1 vector=0 cycle=%0d signal=data_out expected=0x%0h actual=0x%0h phase=negedge",
-                     cycle_count, 32'hEXPECTED, data_out);
-            fail_count = fail_count + 1;
-        end else
-            $display("[PASS] test=test1 vector=0 cycle=%0d signal=data_out actual=0x%0h", cycle_count, data_out);
+        `SAMPLE_REGISTERED_OUTPUT(data_out, 32'hEXPECTED, "test1")
 
         // --- Test case 2: multi-cycle operation with valid/ready handshake ---
+        // CRITICAL: Call apply_reset() before EVERY independent test to prevent
+        // state accumulation (e.g., hash chaining variables retaining stale values).
+        apply_reset();
+
         // IMPORTANT: When polling for single-cycle pulse signals (hash_valid, ready):
         //   - Detect the signal at posedge in a wait loop
         //   - Check output IMMEDIATELY after wait returns — NO @(negedge clk) delay

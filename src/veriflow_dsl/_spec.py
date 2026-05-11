@@ -102,28 +102,22 @@ def _to_expr(obj: "RegT | WireT | _Coerced") -> Expr:
             return obj.expr
         return Expr("signal", obj.width, (obj.name,))
     if isinstance(obj, _Coerced):
-        return Expr("const", obj.width, (int(obj.name),))
+        return obj.expr
     raise TypeError(f"Cannot convert {type(obj).__name__} to Expr")
 
 
 # ---------------------------------------------------------------------------
-# RegT — read-only register value at cycle T
+# Shared operator mixin (eliminates ~180 lines of duplication)
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class RegT:
-    """Read-only register value sampled at cycle T (posedge).
+class _SignalOps:
+    """Shared arithmetic/bitwise/comparison/slice operators for RegT and WireT.
 
-    In a timing_model function, parameters typed as RegT mean:
-    "the value this register holds at the current clock edge".
-
-    RegT must NEVER appear in a function's return value.
-    Use reg_next() to express register updates.
+    Both types delegate to WireT._from_binop / _from_slice / _from_unaryop.
+    The mixin assumes subclasses provide `.width` and `.name` attributes.
     """
-    name: str
-    width: int = 32
 
-    # --- Operators: RegT + RegT -> WireT (combinational) -------------------
+    # --- Arithmetic ---------------------------------------------------------
 
     def __add__(self, other: "RegT | WireT | int") -> "WireT":
         return WireT._from_binop("+", self, other)
@@ -136,6 +130,14 @@ class RegT:
 
     def __rsub__(self, other: int) -> "WireT":
         return WireT._from_binop("-", _coerce(other), self)
+
+    def __mul__(self, other: "RegT | WireT | int") -> "WireT":
+        return WireT._from_binop("*", self, other)
+
+    def __rmul__(self, other: int) -> "WireT":
+        return WireT._from_binop("*", _coerce(other), self)
+
+    # --- Bitwise ------------------------------------------------------------
 
     def __and__(self, other: "RegT | WireT | int") -> "WireT":
         return WireT._from_binop("&", self, other)
@@ -155,6 +157,11 @@ class RegT:
     def __rxor__(self, other: int) -> "WireT":
         return WireT._from_binop("^", _coerce(other), self)
 
+    def __invert__(self) -> "WireT":
+        return WireT._from_unaryop("~", self)
+
+    # --- Shifts -------------------------------------------------------------
+
     def __lshift__(self, other: "RegT | WireT | int") -> "WireT":
         return WireT._from_binop("<<", self, other)
 
@@ -167,59 +174,75 @@ class RegT:
     def __rrshift__(self, other: int) -> "WireT":
         return WireT._from_binop(">>", _coerce(other), self)
 
-    # --- Slicing: RegT[int] -> WireT ---------------------------------------
+    # --- Comparison ---------------------------------------------------------
+
+    def __eq__(self, other) -> "WireT":   # type: ignore[override]
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("==", self, other)
+
+    def __ne__(self, other) -> "WireT":   # type: ignore[override]
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("!=", self, other)
+
+    def __lt__(self, other: "RegT | WireT | int") -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("<", self, other)
+
+    def __le__(self, other: "RegT | WireT | int") -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop("<=", self, other)
+
+    def __gt__(self, other: "RegT | WireT | int") -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop(">", self, other)
+
+    def __ge__(self, other: "RegT | WireT | int") -> "WireT":
+        if not isinstance(other, (RegT, WireT, int)):
+            return NotImplemented
+        return WireT._from_binop(">=", self, other)
+
+    # --- Slicing ------------------------------------------------------------
 
     def __getitem__(self, key: int | slice) -> "WireT":
         if isinstance(key, int):
             return WireT._from_slice(self, key, key)
         elif isinstance(key, slice):
-            high = key.start if key.start is not None else self.width - 1
+            high = key.start if key.start is not None else self.width - 1  # type: ignore[attr-defined]
             low = key.stop if key.stop is not None else 0
             return WireT._from_slice(self, high, low)
         raise TypeError(f"unsupported index type: {type(key)}")
 
-    def __invert__(self) -> "WireT":
-        return WireT._from_unaryop("~", self)
+    # --- Identity hash + bool guard -----------------------------------------
 
-    # --- Comparison operators ----------------------------------------------
-
-    def __eq__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("==", self, other)
-
-    def __ne__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("!=", self, other)
-
-    def __lt__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("<", self, other)
-
-    def __le__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("<=", self, other)
-
-    def __gt__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop(">", self, other)
-
-    def __ge__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop(">=", self, other)
-
-    # Preserve dataclass hash despite custom __eq__
     __hash__ = object.__hash__
 
-    # --- Immutability checks -----------------------------------------------
-
     def __bool__(self) -> bool:
-        raise TypeError("Cannot convert RegT to bool. Use explicit comparison.")
+        raise TypeError(
+            f"Cannot convert {type(self).__name__} to bool. Use explicit comparison."
+        )
+
+
+# ---------------------------------------------------------------------------
+# RegT — read-only register value at cycle T
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RegT(_SignalOps):
+    """Read-only register value sampled at cycle T (posedge).
+
+    In a timing_model function, parameters typed as RegT mean:
+    "the value this register holds at the current clock edge".
+
+    RegT must NEVER appear in a function's return value.
+    Use reg_next() to express register updates.
+    """
+    name: str
+    width: int = 32
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +250,7 @@ class RegT:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class WireT:
+class WireT(_SignalOps):
     """Combinational signal visible in the same cycle it is computed.
 
     Created by:
@@ -279,99 +302,6 @@ class WireT:
             width=val.width,
             expr=Expr("signal", val.width, (val.name,)),
         )
-
-    # --- Operators: WireT + X -> WireT -------------------------------------
-
-    def __add__(self, other: "RegT | WireT | int") -> "WireT":
-        return WireT._from_binop("+", self, other)
-
-    def __radd__(self, other: int) -> "WireT":
-        return WireT._from_binop("+", _coerce(other), self)
-
-    def __sub__(self, other: "RegT | WireT | int") -> "WireT":
-        return WireT._from_binop("-", self, other)
-
-    def __rsub__(self, other: int) -> "WireT":
-        return WireT._from_binop("-", _coerce(other), self)
-
-    def __and__(self, other: "RegT | WireT | int") -> "WireT":
-        return WireT._from_binop("&", self, other)
-
-    def __rand__(self, other: int) -> "WireT":
-        return WireT._from_binop("&", _coerce(other), self)
-
-    def __or__(self, other: "RegT | WireT | int") -> "WireT":
-        return WireT._from_binop("|", self, other)
-
-    def __ror__(self, other: int) -> "WireT":
-        return WireT._from_binop("|", _coerce(other), self)
-
-    def __xor__(self, other: "RegT | WireT | int") -> "WireT":
-        return WireT._from_binop("^", self, other)
-
-    def __rxor__(self, other: int) -> "WireT":
-        return WireT._from_binop("^", _coerce(other), self)
-
-    def __lshift__(self, other: "RegT | WireT | int") -> "WireT":
-        return WireT._from_binop("<<", self, other)
-
-    def __rlshift__(self, other: int) -> "WireT":
-        return WireT._from_binop("<<", _coerce(other), self)
-
-    def __rshift__(self, other: "RegT | WireT | int") -> "WireT":
-        return WireT._from_binop(">>", self, other)
-
-    def __rrshift__(self, other: int) -> "WireT":
-        return WireT._from_binop(">>", _coerce(other), self)
-
-    def __getitem__(self, key: int | slice) -> "WireT":
-        if isinstance(key, int):
-            return WireT._from_slice(self, key, key)
-        elif isinstance(key, slice):
-            high = key.start if key.start is not None else self.width - 1
-            low = key.stop if key.stop is not None else 0
-            return WireT._from_slice(self, high, low)
-        raise TypeError(f"unsupported index type: {type(key)}")
-
-    def __invert__(self) -> "WireT":
-        return WireT._from_unaryop("~", self)
-
-    # --- Comparison operators ----------------------------------------------
-
-    def __eq__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("==", self, other)
-
-    def __ne__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("!=", self, other)
-
-    def __lt__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("<", self, other)
-
-    def __le__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop("<=", self, other)
-
-    def __gt__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop(">", self, other)
-
-    def __ge__(self, other) -> "WireT":
-        if not isinstance(other, (RegT, WireT, int)):
-            return NotImplemented
-        return WireT._from_binop(">=", self, other)
-
-    __hash__ = object.__hash__
-
-    def __bool__(self) -> bool:
-        raise TypeError("Cannot convert WireT to bool. Use explicit comparison.")
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +467,8 @@ def _coerce(value: "RegT | WireT | int") -> "RegT | WireT | _Coerced":
     if isinstance(value, (RegT, WireT)):
         return value
     if isinstance(value, int):
+        # Normalize bools to ints (Python bool is subclass of int)
+        value = int(value)
         width = max(1, value.bit_length())
         return _Coerced(name=str(value), width=width, expr=Expr("const", width, (value,)))
     raise TypeError(f"Cannot coerce {type(value).__name__} — expected RegT, WireT, or int")
