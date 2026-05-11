@@ -103,6 +103,20 @@ When translating, respect the timing contract from MODULE_SPEC:
 
 ### Step 3: Write skeleton and FSM
 
+**File header is MANDATORY** — every .v file MUST start with:
+```verilog
+`resetall
+`timescale 1ns / 1ps
+`default_nettype none
+
+module <name> #( ... )( ... );
+// ... body ...
+endmodule
+
+`resetall
+```
+Do NOT omit `resetall`, `timescale`, or `default_nettype none`.
+
 Write the module declaration, internal declarations, and FSM logic.
 Use the anchor files as style reference. Produce **Verilog-2005 ONLY**.
 
