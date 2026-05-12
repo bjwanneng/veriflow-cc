@@ -20,8 +20,8 @@ class TestScriptGeneration(unittest.TestCase):
     def test_script_contains_read_verilog(self):
         from yosys_equiv import _build_yosys_script
         script = _build_yosys_script("ref.v", "impl.v", "my_module")
-        self.assertIn("read_verilog -defer ref.v", script)
-        self.assertIn("read_verilog -defer impl.v", script)
+        self.assertIn('read_verilog "ref.v"', script)
+        self.assertIn('read_verilog "impl.v"', script)
 
     def test_script_contains_equiv_commands(self):
         from yosys_equiv import _build_yosys_script
@@ -80,6 +80,99 @@ class TestCLIArgs(unittest.TestCase):
             yosys_bin="/nonexistent/yosys",
         )
         self.assertFalse(result["yosys_available"])
+
+
+class TestSameNameCollision(unittest.TestCase):
+    """Both files defining the same module name must not poison each other.
+
+    Regression for I9: the script uses `rename {top} ref_top` then
+    `read_verilog impl` then `rename {top} impl_top`. If either
+    rename silently failed or only renamed one of two same-named modules,
+    the equiv check would compare a design against itself and trivially pass.
+    Originally the script used `read_verilog -defer`, but deferred modules
+    are stored as `$abstract\\name` and the rename pass can't find them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        if shutil.which("yosys") is None:
+            raise unittest.SkipTest("yosys not on PATH")
+
+    def test_same_module_name_distinguished(self):
+        """Two non-equivalent modules with the same name must report FAIL."""
+        from yosys_equiv import check_equivalence
+
+        ref_src = """
+        module adder(input [3:0] a, input [3:0] b, output [3:0] y);
+            assign y = a + b;
+        endmodule
+        """
+        impl_src = """
+        module adder(input [3:0] a, input [3:0] b, output [3:0] y);
+            assign y = a - b;
+        endmodule
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ref_p = tmp_path / "ref.v"
+            impl_p = tmp_path / "impl.v"
+            ref_p.write_text(ref_src)
+            impl_p.write_text(impl_src)
+
+            result = check_equivalence(
+                ref_path=str(ref_p),
+                impl_path=str(impl_p),
+                top_name="adder",
+                timeout=60,
+            )
+
+            # If rename failed silently the two designs would collapse into
+            # one and equiv would trivially pass. We assert FAIL to prove
+            # the script kept them separated.
+            self.assertTrue(result["yosys_available"])
+            self.assertEqual(
+                result["equivalent"], False,
+                f"Expected FAIL for non-equivalent same-named modules. "
+                f"Got equivalent={result['equivalent']}. Raw:\n{result.get('raw', '')[-500:]}"
+            )
+
+    def test_same_module_name_actually_equivalent(self):
+        """Two equivalent modules with the same name must report PASS."""
+        from yosys_equiv import check_equivalence
+
+        src = """
+        module mux2(input s, input [3:0] a, input [3:0] b, output [3:0] y);
+            assign y = s ? a : b;
+        endmodule
+        """
+        src_alt = """
+        module mux2(input s, input [3:0] a, input [3:0] b, output [3:0] y);
+            assign y = ({4{s}} & a) | ({4{~s}} & b);
+        endmodule
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ref_p = tmp_path / "ref.v"
+            impl_p = tmp_path / "impl.v"
+            ref_p.write_text(src)
+            impl_p.write_text(src_alt)
+
+            result = check_equivalence(
+                ref_path=str(ref_p),
+                impl_path=str(impl_p),
+                top_name="mux2",
+                timeout=60,
+            )
+
+            self.assertTrue(result["yosys_available"])
+            self.assertEqual(
+                result["equivalent"], True,
+                f"Expected PASS. Got equivalent={result['equivalent']}. "
+                f"Raw:\n{result.get('raw', '')[-500:]}"
+            )
 
 
 if __name__ == "__main__":

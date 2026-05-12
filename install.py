@@ -25,15 +25,18 @@ CLAUDE_DIR = Path.home() / ".claude"
 # --- Skill ---
 SKILL_SRC_DIR = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl"
 SKILL_DST_DIR = CLAUDE_DIR / "skills" / "vf-rtl"
-SKILL_FILES = ["SKILL.md", "state.py", "init.py", "vcd2table.py", "cocotb_runner.py", "iverilog_runner.py", "timing_contract_checker.py", "yosys_equiv.py", "bug_patterns.md", "design_rules.md", "error_recovery.md"]
+# Auto-scan skill source directory for installable files.
+# Excludes: templates/ (handled separately), __pycache__/, .DS_Store,
+# coding_style.md (handled separately as CODING_STYLE_SRC).
+_SKILL_EXCLUDE = {"templates", "__pycache__", ".DS_Store", "coding_style_archive.md"}
+SKILL_FILES = sorted(
+    f.name for f in SKILL_SRC_DIR.iterdir()
+    if f.is_file()
+    and f.name not in _SKILL_EXCLUDE
+    and not f.name.endswith(".pyc")
+    and f.name != "coding_style.md"
+)
 TEMPLATES_DIR = "templates"
-
-# --- veriflow_dsl Python package ---
-# Symlinked into SKILL_DST_DIR/veriflow_dsl so that skill scripts and the
-# user's project (which sources eda_env.sh, exporting PYTHONPATH=$SKILL_DIR)
-# can `from veriflow_dsl import ...` and `python -m veriflow_dsl.trace_export`.
-VERIFLOW_DSL_SRC = PROJECT_DIR / "src" / "veriflow_dsl"
-VERIFLOW_DSL_DST_NAME = "veriflow_dsl"
 
 # Source for coding_style.md is now in the skill directory itself
 CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl" / "coding_style.md"
@@ -82,16 +85,26 @@ def main():
                     removed += 1
             templates_dst.rmdir()
 
-        # Remove veriflow_dsl/ symlink (or directory copy fallback)
-        dsl_dst = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME
-        if dsl_dst.is_symlink() or dsl_dst.exists():
-            if dsl_dst.is_symlink() or dsl_dst.is_file():
-                dsl_dst.unlink()
+        # Remove legacy veriflow_dsl/ symlink (if present from older installs)
+        legacy_dsl_dst = SKILL_DST_DIR / "veriflow_dsl"
+        if legacy_dsl_dst.is_symlink() or legacy_dsl_dst.exists():
+            if legacy_dsl_dst.is_symlink() or legacy_dsl_dst.is_file():
+                legacy_dsl_dst.unlink()
             else:
-                # Directory copy fallback (Windows without symlink permission)
                 import shutil as _sh
-                _sh.rmtree(dsl_dst)
-            print(f"  Removed package: veriflow_dsl/")
+                _sh.rmtree(legacy_dsl_dst)
+            print(f"  Removed legacy package: veriflow_dsl/")
+            removed += 1
+
+        # Remove legacy anchors/ directory (if present from older installs)
+        legacy_anchors_dst = SKILL_DST_DIR / "anchors"
+        if legacy_anchors_dst.is_symlink() or legacy_anchors_dst.exists():
+            if legacy_anchors_dst.is_symlink() or legacy_anchors_dst.is_file():
+                legacy_anchors_dst.unlink()
+            else:
+                import shutil as _sh
+                _sh.rmtree(legacy_anchors_dst)
+            print(f"  Removed legacy anchors: anchors/")
             removed += 1
 
         if SKILL_DST_DIR.exists():
@@ -200,51 +213,18 @@ def main():
     else:
         print(f"  [skip]   vf-rtl/{TEMPLATES_DIR}/ not found at {templates_src}")
 
-    # 1d. Install veriflow_dsl/ as a sibling package under SKILL_DST_DIR.
-    # `python -m veriflow_dsl.<x>` must resolve once SKILL_DST_DIR is on
-    # PYTHONPATH (init.py wires that into eda_env.sh).
-    dsl_dst = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME
-    if VERIFLOW_DSL_SRC.is_dir():
-        # Remove anything previously placed here (file, symlink, or stale dir).
-        if dsl_dst.is_symlink() or dsl_dst.is_file():
-            dsl_dst.unlink()
-        elif dsl_dst.is_dir():
+    # 1d. Clean up legacy veriflow_dsl/ and anchors/ from older installs.
+    # These directories were part of the v2 DSL architecture that has been
+    # retired; if they exist from a previous install they must go.
+    for legacy_name in ("veriflow_dsl", "anchors"):
+        legacy_dst = SKILL_DST_DIR / legacy_name
+        if legacy_dst.is_symlink() or legacy_dst.is_file():
+            legacy_dst.unlink()
+            print(f"  [clean]  Removed legacy {legacy_name}/")
+        elif legacy_dst.is_dir():
             import shutil as _sh
-            _sh.rmtree(dsl_dst)
-        installed_ok = False
-        # Tier 1: native symlink (Unix / Windows with Developer Mode)
-        try:
-            dsl_dst.symlink_to(VERIFLOW_DSL_SRC.resolve(), target_is_directory=True)
-            print(f"  [pkg]    veriflow_dsl/  →  {dsl_dst}")
-            installed_ok = True
-        except (OSError, NotImplementedError):
-            pass
-
-        # Tier 2: Windows directory junction (no admin required on Win10+)
-        if not installed_ok and sys.platform == "win32":
-            try:
-                import subprocess as _sp
-                _sp.run(
-                    ["cmd", "/c", "mklink", "/J", str(dsl_dst), str(VERIFLOW_DSL_SRC.resolve())],
-                    check=True,
-                    capture_output=True,
-                )
-                print(f"  [pkg]    veriflow_dsl/  →  {dsl_dst} (junction)")
-                installed_ok = True
-            except Exception:
-                pass
-
-        # Tier 3: directory copy fallback
-        if not installed_ok:
-            import shutil as _sh
-            _sh.copytree(VERIFLOW_DSL_SRC, dsl_dst)
-            print(f"  [pkg]    veriflow_dsl/  copied to {dsl_dst}")
-            installed_ok = True
-
-        if installed_ok:
-            skill_installed += 1
-    else:
-        print(f"  [skip]   veriflow_dsl/ source missing at {VERIFLOW_DSL_SRC}")
+            _sh.rmtree(legacy_dst)
+            print(f"  [clean]  Removed legacy {legacy_name}/")
 
     # 2. Install sub-agents (symlink)
     AGENTS_DST_DIR.mkdir(parents=True, exist_ok=True)
@@ -333,17 +313,6 @@ def main():
         print(f"  [OK]   iverilog_runner.py present")
     else:
         verify_errors.append(f"  [FAIL] iverilog_runner.py missing at {iverilog_runner_dst}")
-
-    # 3g. Check veriflow_dsl/__init__.py reachable through skill dir
-    dsl_init = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME / "__init__.py"
-    dsl_trace = SKILL_DST_DIR / VERIFLOW_DSL_DST_NAME / "trace_export.py"
-    if dsl_init.exists() and dsl_trace.exists():
-        print(f"  [OK]   veriflow_dsl/ package present")
-    else:
-        verify_errors.append(
-            f"  [FAIL] veriflow_dsl/ package missing under {SKILL_DST_DIR}/ "
-            f"(__init__.py={dsl_init.exists()}, trace_export.py={dsl_trace.exists()})"
-        )
 
     if verify_errors:
         print(f"\n[verify] Issues found:")

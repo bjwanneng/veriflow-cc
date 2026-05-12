@@ -1,23 +1,27 @@
 """Pipeline state management - zero external dependencies."""
 
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import dataclass, field, asdict, fields
+from typing import Final, Optional
 
 
-# Strict execution order — no stage may be skipped
-STAGE_ORDER = ["spec_golden", "codegen", "verify_fix", "lint_synth"]
+# Strict execution order — no stage may be skipped. Tuple to prevent mutation
+# (init.py + tests import this and iterate; nobody should be able to append).
+STAGE_ORDER: Final[tuple[str, ...]] = (
+    "spec_golden", "codegen", "verify_fix", "lint_synth"
+)
 
 # Prerequisite stages that must all complete before a given stage can run
-STAGE_PREREQUISITES = {
-    "spec_golden":  [],                     # no prerequisites
-    "codegen":      ["spec_golden"],        # needs spec.json + golden_model.py
-    "verify_fix":   ["codegen"],            # needs RTL + testbench
-    "lint_synth":   ["verify_fix"],         # needs verified RTL
+STAGE_PREREQUISITES: Final[dict[str, tuple[str, ...]]] = {
+    "spec_golden":  (),                     # no prerequisites
+    "codegen":      ("spec_golden",),       # needs spec.json + golden_model.py
+    "verify_fix":   ("codegen",),           # needs RTL + testbench
+    "lint_synth":   ("verify_fix",),        # needs verified RTL
 }
 
 
@@ -35,7 +39,7 @@ def can_execute(stage: str, stages_completed: list) -> tuple[bool, str]:
     Returns:
         (can_run, reason) — can_run=True means OK to execute
     """
-    prereqs = STAGE_PREREQUISITES.get(stage, [])
+    prereqs = STAGE_PREREQUISITES.get(stage, ())
     missing = [p for p in prereqs if p not in stages_completed]
     if missing:
         return False, f"Prerequisite stages not completed: {missing}"
@@ -161,7 +165,10 @@ class PipelineState:
         d = Path(self.project_dir) / ".veriflow"
         d.mkdir(parents=True, exist_ok=True)
         p = d / "pipeline_state.json"
-        p.write_text(json.dumps(asdict(self), indent=2, default=str), encoding="utf-8")
+        try:
+            p.write_text(json.dumps(asdict(self), indent=2, default=str), encoding="utf-8")
+        except OSError as e:
+            print(f"[ERROR] Failed to save pipeline state: {e}", file=sys.stderr)
         return p
 
     @classmethod
@@ -176,10 +183,10 @@ class PipelineState:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 # Filter to only known fields to survive schema evolution
-                known = {f.name for f in cls.__dataclass_fields__.values()}
+                known = {f.name for f in fields(cls)}
                 filtered = {k: v for k, v in data.items() if k in known}
                 return cls(**filtered)
-            except (TypeError, json.JSONDecodeError) as e:
+            except (TypeError, json.JSONDecodeError, OSError) as e:
                 print(f"[WARNING] Corrupted pipeline_state.json, starting fresh: {e}", file=sys.stderr)
         return cls(project_dir=project_dir)
 
@@ -298,7 +305,7 @@ class PipelineState:
         recent_errors = self.error_history[stage][-3:]  # Last 3 attempts
         signature_count = sum(
             1 for e in recent_errors
-            if error_signature in str(e.get("errors", []))
+            if any(error_signature == err for err in e.get("errors", []))
         )
         return signature_count >= 2
 
@@ -373,9 +380,9 @@ class PipelineState:
         # ------------------------------------------------------------------
         try:
             import importlib.util
-            spec = importlib.util.spec_from_file_location("golden_model", str(gm_path))
-            gm_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(gm_module)
+            gm_spec = importlib.util.spec_from_file_location("golden_model", str(gm_path))
+            gm_module = importlib.util.module_from_spec(gm_spec)
+            gm_spec.loader.exec_module(gm_module)
 
             if hasattr(gm_module, "compute"):
                 compute = gm_module.compute
@@ -435,14 +442,19 @@ def _get_arg(argv: list, flag: str) -> str | None:
             idx = i
             break
     if idx is not None and idx + 1 < len(argv):
-        return argv[idx + 1]
+        val = argv[idx + 1]
+        # If the next token looks like another flag, don't consume it —
+        # the user should use --flag=value to pass dash-prefixed values.
+        if val.startswith("--"):
+            return None
+        return val
     return None
 
 
 def _append_journal(project_dir: str, stage: str, outputs: str = "", notes: str = "",
                     status: str = "completed"):
-    """Append a stage journal entry to workspace/docs/stage_journal.md."""
-    journal_path = Path(project_dir) / "workspace" / "docs" / "stage_journal.md"
+    """Append a stage journal entry to logs/stage_journal.md."""
+    journal_path = Path(project_dir) / "logs" / "stage_journal.md"
     from datetime import datetime
     ts = datetime.now().isoformat()
     entry = f"\n## Stage: {stage}\n**Status**: {status}\n**Timestamp**: {ts}\n"
@@ -461,6 +473,9 @@ def _print_usage():
     print("  python state.py <project_dir> <stage_name> --start    Record stage start time")
     print("  python state.py <project_dir> <stage_name> --fail     Mark stage failed")
     print("  python state.py <project_dir> --reset <stage_name>    Rollback from stage onward")
+    print("  python state.py <project_dir> <stage_name> --check-loop=<signature>")
+    print("                                                       Detect repeated error signature")
+    print("                                                       Exits 0 if NOT looping, 2 if looping")
     print("")
     print("  Combined (hook + state + journal in one call):")
     print("  python state.py <project_dir> <stage_name> \\")
@@ -500,11 +515,27 @@ if __name__ == "__main__":
         print(f"ERROR: Unknown stage '{_stage}'. Valid stages: {STAGE_ORDER}", file=sys.stderr)
         sys.exit(1)
 
+    # --check-loop: detect repeated error signatures without modifying state
+    _check_loop_sig = _get_arg(sys.argv, "check-loop")
+    if _check_loop_sig:
+        _state = PipelineState.load(_project_dir)
+        looping = _state.detect_fix_loop(_stage, _check_loop_sig)
+        if looping:
+            print(
+                f"[LOOP] Stage '{_stage}' is cycling on the same error: "
+                f"{_check_loop_sig}"
+            )
+            print(f"[LOOP] Recommended: state.py {_project_dir} --reset codegen")
+            sys.exit(2)
+        print(f"[LOOP] OK — '{_check_loop_sig}' not yet a repeat pattern")
+        sys.exit(0)
+
     _is_start = "--start" in sys.argv
     _is_fail = "--fail" in sys.argv
     _hook_cmd = _get_arg(sys.argv, "hook")
     _journal_outputs = _get_arg(sys.argv, "journal-outputs")
     _journal_notes = _get_arg(sys.argv, "journal-notes")
+    _error_sig = _get_arg(sys.argv, "error-sig")
 
     _state = PipelineState.load(_project_dir)
 
@@ -513,19 +544,26 @@ if __name__ == "__main__":
         _append_journal(_project_dir, _stage, status="started")
         print(f"[STATE] {_stage} → STARTED")
     elif _is_fail:
-        _state.mark_failed(_stage, {"success": False, "errors": ["Hook failed"]})
+        _fail_result = {"success": False, "errors": ["Hook failed"]}
+        if _error_sig:
+            _fail_result["errors"] = [_error_sig]
+        _state.mark_failed(_stage, _fail_result)
         _state.save()
         _append_journal(_project_dir, _stage, status="failed")
         print(f"[STATE] {_stage} → FAILED")
+        if _error_sig:
+            print(f"[STATE] Error signature recorded: {_error_sig}")
     else:
         # Run hook if provided
         _hook_passed = True
         if _hook_cmd:
-            import subprocess
+            import shlex
             _hook_cmd_resolved = _hook_cmd.replace("$PROJECT_DIR", _project_dir)
             try:
                 result = subprocess.run(
-                    _hook_cmd_resolved, shell=True, capture_output=True, text=True, cwd=_project_dir
+                    shlex.split(_hook_cmd_resolved),
+                    capture_output=True, text=True, cwd=_project_dir,
+                    env={**os.environ, "PROJECT_DIR": _project_dir},
                 )
                 if result.stdout.strip():
                     print(result.stdout.strip())

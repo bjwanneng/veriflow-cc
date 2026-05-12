@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 def _build_yosys_script(
@@ -46,16 +47,37 @@ def _build_yosys_script(
     if impl_top is None:
         impl_top = ref_top
 
-    # Rename modules to avoid collision if both files define the same module name.
+    # Approach: prep each side in its own namespace via `design -stash`,
+    # then combine. This is the only reliable way to handle the common
+    # case where both files define a top module with the same name.
+    #
+    # Why not a single design with two `prep -top` calls? `prep -top X`
+    # internally runs `hierarchy -check -top X`, which prunes every module
+    # not reachable from X. So the second prep would have already lost the
+    # first design. Stashing each prepped side keeps them alive.
+    #
+    # Why not `-defer`? Deferred modules are stored as `$abstract\name`,
+    # which the plain `rename name new_name` command cannot find.
     script = f"""# VeriFlow Yosys equivalence check
-read_verilog -defer {ref_path}
+read_verilog "{ref_path}"
+prep -top {ref_top}
 rename {ref_top} ref_top
-read_verilog -defer {impl_path}
+design -stash veriflow_ref
+
+design -reset
+read_verilog "{impl_path}"
+prep -top {impl_top}
 rename {impl_top} impl_top
-prep -top ref_top
+design -stash veriflow_impl
+
+design -copy-from veriflow_ref -as ref_top ref_top
+design -copy-from veriflow_impl -as impl_top impl_top
+
 equiv_make ref_top impl_top equiv
-equiv_simple
-equiv_status -assert
+opt -full equiv
+equiv_simple equiv
+equiv_induct equiv
+equiv_status -assert equiv
 """
     return script
 
@@ -72,7 +94,10 @@ def _parse_equiv_output(output: str) -> dict:
         "raw": output,
     }
 
-    if "Equivalence successfully proved" in output:
+    # Yosys variants emit either "Equivalence successfully proved" or
+    # "...proven!" — accept both. Also accept the all-proven counter line.
+    if ("Equivalence successfully prove" in output
+            or "Equivalence successfully proven" in output):
         result["equivalent"] = True
         return result
 
@@ -150,6 +175,7 @@ def check_equivalence(
         str(ref_path), str(impl_path), top_name, impl_top
     )
 
+    script_path = ""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".ys", delete=False) as f:
         f.write(script)
         script_path = f.name
@@ -180,7 +206,10 @@ def check_equivalence(
     finally:
         Path(script_path).unlink(missing_ok=True)
 
-    parsed = _parse_equiv_output(result.stdout + "\n" + result.stderr)
+    combined_output = result.stdout
+    if result.stderr:
+        combined_output += "\n--- STDERR ---\n" + result.stderr
+    parsed = _parse_equiv_output(combined_output)
     parsed["yosys_available"] = True
     parsed["yosys_returncode"] = result.returncode
     if parsed["equivalent"] is None and result.returncode != 0:
@@ -228,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     if result["equivalent"] is True:
         return 0
     if result["yosys_available"] is False:
-        return 0  # Graceful skip
+        return 2  # Tool not available — distinguish from equivalence failure
     return 1
 
 

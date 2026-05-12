@@ -8,6 +8,7 @@ Two modes:
   - compute(inputs, trace=True)  -> list   : per-cycle state (for vcd2table diff)
   - run()                        -> list   : standard interface for pipeline
 """
+from __future__ import annotations
 
 # --- Constants ---
 # (algorithm-specific constants: IV, T_j, state encodings, etc.)
@@ -82,8 +83,9 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
         - Golden cycle 1: LOAD (A = IV0) happens instantly
         - RTL cycle 1: FSM transitions to CALC, load_en asserted in NBA wake
         - RTL cycle 2: A_reg = IV0 (actual load)
-        The cocotb testbench compensates with DRIVE_PHASE_CYCLES = N, where N is
-        max(pipeline_delay_cycles) from spec.json timing_contract.
+        The cocotb testbench compensates with DRIVE_PHASE_CYCLES, read from
+        spec.json timing_convention.golden_to_rtl_offset_cycles (primary) or
+        max(pipeline_delay_cycles) from module timing_contract (fallback).
 
     Implementation note:
         Write ONE algorithm implementation. When trace=True, record intermediate
@@ -172,13 +174,18 @@ def get_test_vectors() -> list[dict]:
 if __name__ == "__main__":
     # Strategy 1 for vcd2table.py: print "cycle N: signal=0xVALUE" lines
     # Also used for standalone verification.
+    #
+    # Hex format note: we emit unpadded hex (`0x{v:x}`) so the same template
+    # works for 32-bit, 64-bit, and 256-bit datapaths without truncation or
+    # excess zero-padding. The vcd2table parser at vcd2table.py accepts any
+    # length of hex digits.
     import json
 
     # Run default test vector with cycle trace
     cycles = run()
     for i, entry in enumerate(cycles):
         if entry:
-            parts = [f"{k}=0x{v:08x}" if isinstance(v, int) else f"{k}={v}"
+            parts = [f"{k}=0x{v:x}" if isinstance(v, int) else f"{k}={v}"
                      for k, v in entry.items()]
             print(f"cycle {i}: {' '.join(parts)}")
 
@@ -188,6 +195,6 @@ if __name__ == "__main__":
         computed = compute(tv["inputs"], trace=False)
         ok = computed == tv["expected"]
         name = tv["name"]
-        parts = [f"{k}=0x{v:064x}" if isinstance(v, int) and v > 0xFFFF else f"{k}={v}"
+        parts = [f"{k}=0x{v:x}" if isinstance(v, int) and v > 0xFFFF else f"{k}={v}"
                  for k, v in tv["expected"].items()]
         print(f"[{'PASS' if ok else 'FAIL'}] {name}: {' '.join(parts)}")

@@ -22,7 +22,7 @@ Run the initialization script:
 ```bash
 PY_INIT="${PYTHON_EXE:-python}"
 cd "$ARGUMENTS" && "$PY_INIT" "${CLAUDE_SKILL_DIR}/init.py" "$ARGUMENTS"
-source "$ARGUMENTS/.veriflow/eda_env.sh"
+[ -f "$ARGUMENTS/.veriflow/eda_env.sh" ] && source "$ARGUMENTS/.veriflow/eda_env.sh"
 ```
 
 Read the output to determine: new project or resuming. If resuming, skip stages in `stages_completed`.
@@ -31,6 +31,19 @@ Read the output to determine: new project or resuming. If resuming, skip stages 
 
 Sub-agents cannot interact with the user — any permission prompt will hang the pipeline.
 Check that the following tools are pre-approved in the project's `.claude/settings.json`:
+
+> **Heads-up — the allow-list below is the minimum.** Sub-agents also run shell
+> commands like `source`, `cd`, `iverilog`, `vvp`, `yosys`, `mkdir`, `ls`,
+> `xargs`. Those are NOT auto-added here because the right scope is environment-
+> dependent. Two ways to keep the pipeline from hanging on a permission prompt:
+>
+> 1. Launch Claude Code with `--permission-mode acceptEdits` (or rely on
+>    `~/.claude/settings.json` setting `skipDangerousModePermissionPrompt: true`).
+> 2. Or, extend `.claude/settings.json` allow-list with the patterns above
+>    (e.g. `"Bash(source*)"`, `"Bash(iverilog*)"`, `"Bash(yosys*)"`).
+>
+> If Stage 2/3/4 hangs silently, the cause is almost always one of these
+> unlisted commands waiting on an invisible permission dialog.
 
 ```bash
 SETTINGS=".claude/settings.json"
@@ -101,14 +114,14 @@ Every stage MUST execute these 3 steps in order:
 
 **Pre-stage:**
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "<STAGE>" --start
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "<STAGE>" --start
 ```
 
 **Execute:** dispatch agents (Stages 1/2/4) or run inline (Stage 3)
 
 **Post-stage:**
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "<STAGE>" --hook="<HOOK_CMD>" --journal-outputs="<FILES>" --journal-notes="<NOTES>"
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "<STAGE>" --hook="<HOOK_CMD>" --journal-outputs="<FILES>" --journal-notes="<NOTES>"
 ```
 Then: `TaskUpdate` mark the stage task as completed.
 
@@ -157,6 +170,24 @@ After it returns:
 
 1. Read `workspace/docs/spec.json` and `workspace/docs/golden_model.py` to verify.
 
+**Golden model self-check** (pre-codegen gate — run FIRST to catch syntax errors):
+
+Before proceeding to Stage 2, verify that golden_model.py passes its own test
+vectors. This catches algorithmic and syntax bugs before RTL is generated.
+
+```bash
+cd "$PROJECT_DIR"
+if [ -f workspace/docs/golden_model.py ]; then
+    $PYTHON_EXE workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
+    if grep -q "FAIL" logs/golden_selfcheck.log; then
+        echo "[GOLDEN] Self-check FAILED — fix golden_model.py before proceeding."
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --fail
+        echo "[GOLDEN] Stage 1 marked failed; Stage 2 will not run. Main session: fix golden_model.py and re-run Stage 1."
+        exit 1
+    fi
+fi
+```
+
 **Timing contract check** (pre-verification, before codegen):
 ```bash
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
@@ -174,24 +205,8 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
 ```
 Re-run the checker after `--fix` to confirm all errors are resolved. Only if errors remain after auto-fix, review `logs/timing_check.json` and manually fix spec.json or golden_model.py. Errors indicate timing contradictions that will cause RTL bugs.
 
-**Golden model self-check** (pre-codegen gate):
-
-Before proceeding to Stage 2, verify that golden_model.py passes its own test
-vectors. This catches algorithmic bugs before RTL is generated.
-
 ```bash
-cd "$PROJECT_DIR"
-if [ -f workspace/docs/golden_model.py ]; then
-    $PYTHON_EXE workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
-    if grep -q "FAIL" logs/golden_selfcheck.log; then
-        echo "[GOLDEN] Self-check FAILED — fix golden_model.py before proceeding."
-        # Do NOT proceed to Stage 2
-    fi
-fi
-```
-
-```bash
-state.py "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior; no timing_model.py"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior"
 ```
 TaskUpdate complete.
 
@@ -220,23 +235,10 @@ Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to in
   - `WEB_RESEARCH`: content from `.veriflow/web_research.md` — **only if the file
     has substantive content** (more than just "skipped" or "unavailable"). If
     minimal, omit this field entirely to save prompt tokens.
-  - `ANCHOR_1`: auto-selected by `${CLAUDE_SKILL_DIR}/anchors/_selector.py`.
-    Priority: (1) explicit `anchor_hints` in spec.json, (2) auto-inferred from
-    module ports/cycle_timing (fsm, shift, pipeline, hash, handshake, barrel),
-    (3) generic fallback (`fsm_4state` for control, `pipeline_register` for data-path).
-    **Inline the contents of both files**: `module.v` AND `trace.md`.
-    The trace.md gives concrete cycle values that anchor the expected behavior.
-    Example block:
-    ```
-    ANCHOR_1: hash_round_one_cycle
-    --- module.v ---
-    <contents of anchors/hash_round_one_cycle/module.v>
-    --- trace.md ---
-    <contents of anchors/hash_round_one_cycle/trace.md>
-    ```
-  - `ANCHOR_2`: second anchor (same format as ANCHOR_1). **Only provide for
-    modules with FSM or multi-cycle timing_contract** — simple combinational
-    or single-stage modules need only ANCHOR_1.
+  - `PREV_FAILURE` (only on Stage 3 retry — see Stage 3 step 5b): a 5-line
+    summary of the last simulation failure ("cycle N, signal X, expected=A,
+    actual=B; bug class: <classification>"). When present, instruct vf-coder
+    to address this specific divergence first before any other rewriting.
   - Condensed coding_style.md content
   - For top modules: include submodule port definitions from spec.json
 
@@ -255,7 +257,7 @@ After ALL return, verify outputs exist:
 ls "$PROJECT_DIR/workspace/rtl/"*.v "$PROJECT_DIR/workspace/tb/"*.v "$PROJECT_DIR/workspace/tb/"*.py 2>/dev/null
 ```
 ```bash
-state.py "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
 ```
 TaskUpdate complete.
 
@@ -265,9 +267,16 @@ TaskUpdate complete.
 
 **IMPORTANT**: This stage runs inline because error recovery needs main session context for Edit tool.
 
+**Verification order (project policy — do NOT reverse):**
+1. cocotb runs FIRST when `cocotb-config` is on PATH — it is the primary
+   verification path. The per-cycle VPI comparison and FIRST DIVERGENCE
+   report are the main diagnostic signal for error recovery.
+2. The pure-Verilog testbench runs SECOND as a fallback / cross-check.
+   When cocotb is unavailable, it is the only path.
+
 Pre-stage:
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --start
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --start
 ```
 
 ### Golden Model Self-Check (BEFORE simulation)
@@ -276,20 +285,21 @@ If golden_model.py exists, verify it passes its own test vectors first.
 This catches golden model bugs BEFORE wasting time on RTL debugging.
 
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh"
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
 cd "$PROJECT_DIR"
 if [ -f workspace/docs/golden_model.py ]; then
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
         --golden-check workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
-    if [ $? -ne 0 ]; then
+    # ${PIPESTATUS[0]} reads the runner's exit, not tee's. Bash-only.
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         echo "[GOLDEN] Self-check FAILED — the reference model has bugs."
         echo "[GOLDEN] Fix golden_model.py FIRST. The problem is NOT in the RTL."
-        # Do NOT consume retry budget — this is a golden model issue
-        state.py "$PROJECT_DIR" "verify_fix" \
-            --hook="test -f workspace/docs/golden_model.py" \
-            --journal-outputs="logs/golden_selfcheck.log" \
-            --journal-notes="Golden model self-check failed — golden model has bugs"
-        # STOP and notify user to fix the golden model before retrying
+        # Do NOT consume retry budget — this is a golden model issue.
+        # Mark stage failed AND abort so the main session is forced to fix
+        # golden_model.py before any RTL debugging.
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --fail
+        echo "[GOLDEN] verify_fix marked failed. Main session: fix golden_model.py, then re-run /vf-rtl."
+        exit 1
     fi
 fi
 ```
@@ -300,11 +310,25 @@ Before running Verilog simulation, run cocotb with per-cycle internal signal
 comparison. This is the PRIMARY debugging tool — it finds the FIRST divergence
 point automatically, instead of only checking final outputs.
 
+Uses `cocotb_runner.py` (no Makefile required) — it handles build, test,
+VCD capture, and JSON result output via `cocotb_tools.runner.Icarus`.
+
 ```bash
 if command -v cocotb-config &>/dev/null; then
-    cd "$PROJECT_DIR/workspace/tb"
-    make SIM=icarus 2>&1 | tee "$PROJECT_DIR/logs/cocotb.log"
-    cd "$PROJECT_DIR"
+    TOP_MODULE=$($PYTHON_EXE -c "
+import json
+for m in json.load(open('workspace/docs/spec.json')).get('modules', []):
+    if m.get('module_type') == 'top': print(m['module_name']); break
+")
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/cocotb_runner.py" \
+        --rtl-dir workspace/rtl \
+        --tb-dir workspace/tb \
+        --module $TOP_MODULE \
+        --build-dir workspace/sim_cocotb \
+        --results-file logs/cocotb_results.xml \
+        --verbose 2>&1 | tee logs/cocotb.log
+    # cocotb_runner.py exits 0=pass, 1=fail, 2=env error
+    # JSON summary is on stdout (last line), details in cocotb.log
     if grep -q "FIRST DIVERGENCE" logs/cocotb.log; then
         echo "[COCOTB] Internal signal mismatch found — see cocotb.log for details"
         # Extract first divergence info — this is the PRIMARY diagnostic
@@ -318,7 +342,7 @@ If cocotb is not available, proceed with Verilog simulation as before.
 ### Run simulation
 
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh"
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
 cd "$PROJECT_DIR"
 TOP_MODULE=$($PYTHON_EXE -c "
 import json
@@ -334,7 +358,7 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
 ### If PASS
 
 ```bash
-state.py "$PROJECT_DIR" "verify_fix" --hook="grep -q 'ALL TESTS PASSED' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q 'ALL TESTS PASSED' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
 ```
 TaskUpdate complete. Go to Stage 4.
 
@@ -342,7 +366,7 @@ TaskUpdate complete. Go to Stage 4.
 
 1. **Run timing diagnostic + expected trace** (BEFORE manual analysis):
 ```bash
-source "$PROJECT_DIR/.veriflow/eda_env.sh"
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
 LOG_FILE=$(test -f logs/cocotb.log && echo logs/cocotb.log || echo logs/sim.log)
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_diagnostic.py" \
     --log "$LOG_FILE" \
@@ -375,59 +399,18 @@ try:
 except Exception:
     print(16)
 ")
-EXPECTED_TRACE_CYCLES=$EXPECTED_TRACE_CYCLES $PYTHON_EXE - <<'PY' 2>&1 | tee logs/expected_trace_gen.log
-import importlib.util, sys, os, json
-sys.path.insert(0, "workspace/docs")
-spec = importlib.util.spec_from_file_location("_gm", "workspace/docs/golden_model.py")
-gm = importlib.util.module_from_spec(spec); spec.loader.exec_module(gm)
-cycles = int(os.environ.get("EXPECTED_TRACE_CYCLES", 16))
-print(f"[expected-trace] cycles={cycles}")
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/expected_trace_gen.py" \
+    --golden workspace/docs/golden_model.py \
+    --cycles "$EXPECTED_TRACE_CYCLES" \
+    --output logs/expected_trace_golden.md \
+    2>&1 | tee logs/expected_trace_gen.log
+```
 
-trace = None
-
-# Try multiple golden model interfaces (not all projects use the same names)
-try:
-    # Interface 1: compute(inputs_dict, trace=True) + TEST_VECTORS
-    if hasattr(gm, "compute") and hasattr(gm, "TEST_VECTORS"):
-        tv = gm.TEST_VECTORS[0]
-        inputs = tv.get("inputs", tv)
-        trace = gm.compute(inputs, trace=True)
-        print("[expected-trace] used gm.compute(inputs, trace=True)")
-except Exception as e:
-    print(f"[expected-trace] compute() failed: {e}")
-
-if trace is None:
-    try:
-        # Interface 2: run(index) -> list of per-cycle dicts
-        if hasattr(gm, "run"):
-            trace = gm.run(0)
-            print("[expected-trace] used gm.run(0)")
-    except Exception as e:
-        print(f"[expected-trace] run() failed: {e}")
-
-if trace is None:
-    try:
-        # Interface 3: simulate(inputs, trace=True)
-        if hasattr(gm, "simulate") and hasattr(gm, "TEST_VECTORS"):
-            tv = gm.TEST_VECTORS[0]
-            inputs = tv.get("inputs", tv)
-            trace = gm.simulate(inputs, trace=True)
-            print("[expected-trace] used gm.simulate(inputs, trace=True)")
-    except Exception as e:
-        print(f"[expected-trace] simulate() failed: {e}")
-
-if trace:
-    with open("logs/expected_trace_golden.md", "w") as f:
-        f.write("## Golden Model Expected Trace\n\n")
-        f.write("| cycle | signals |\n")
-        f.write("|------:|---------|\n")
-        for i, entry in enumerate(trace[:cycles]):
-            signals = " ".join(f"{k}=0x{v:x}" if isinstance(v, int) and v > 9 else f"{k}={v}" for k, v in entry.items())
-            f.write(f"| {i} | {signals} |\n")
-    print(f"[expected-trace] -> logs/expected_trace_golden.md ({len(trace)} cycles)")
-else:
-    print("[expected-trace] could not generate trace — golden_model.py interface not recognized")
-PY
+   Post-check: verify expected trace was generated:
+```bash
+if [ ! -s "$PROJECT_DIR/logs/expected_trace_golden.md" ]; then
+    echo "[WARN] Expected trace not generated — error recovery will lack per-cycle reference"
+fi
 ```
    Read `logs/expected_trace_golden.md` along with the simulation divergence
    report — `expected[cycle][reg] vs actual[cycle][reg]` is the fastest way
@@ -440,16 +423,95 @@ PY
 3. **If no diagnosis** (tool returns "No FIRST DIVERGENCE found"):
    **Read** `${CLAUDE_SKILL_DIR}/error_recovery.md` — follow the full procedure
    **Collect data**: read `logs/sim.log`, run vcd2table diff, classify bug type
-   **5-point root cause analysis** → write to `stage_journal.md`
+   **5-point root cause analysis** → write to `logs/stage_journal.md`
 
 4. **Fix RTL** using Edit tool
 
-5. **Re-run simulation** (go back to "Run simulation" above)
+5. **Record this failure signature** before re-running (lets the loop detector
+   see repeats):
+```bash
+SIG=$($PYTHON_EXE -c "
+import json, pathlib
+p = pathlib.Path('logs/timing_diagnostic.json')
+if p.exists():
+    d = json.loads(p.read_text())
+    div = d.get('divergence', {})
+    print(f\"cycle:{div.get('cycle','?')}:signal:{div.get('signal','?')}\")
+else:
+    print('no-diagnostic')
+")
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" \
+    --fail --error-sig="$SIG"
+```
 
-6. **Retry budget**: 3 attempts total
+5b. **Build the failure-summary file** for the next vf-coder retry (D2: keep
+the divergence one Read away — main session always re-reads it before any
+inline fix; if step 6 falls back to codegen, it MUST inline this file into
+the new vf-coder prompt under `PREV_FAILURE`):
+```bash
+$PYTHON_EXE - <<'PY' 2>&1 | tee logs/prev_failure_summary.md
+import json, pathlib
+
+diag = pathlib.Path("logs/timing_diagnostic.json")
+expected = pathlib.Path("logs/expected_trace_golden.md")
+
+print("# Previous attempt failure summary")
+print()
+
+if not diag.exists():
+    print("(no logs/timing_diagnostic.json — `timing_diagnostic.py` did not produce a report)")
+else:
+    d = json.loads(diag.read_text())
+    div = d.get("divergence", {}) or {}
+    print(f"- **First divergence cycle**: {div.get('cycle', '?')}")
+    print(f"- **Signal**: `{div.get('signal', '?')}`")
+    print(f"- **Expected**: `{div.get('expected', '?')}`")
+    print(f"- **Actual**: `{div.get('actual', '?')}`")
+    print(f"- **Bug class**: {d.get('bug_class', '?')}  ({d.get('confidence', '?')})")
+    fix = d.get("fix_suggestion") or {}
+    if fix:
+        print()
+        print("## Suggested fix direction")
+        for k, v in fix.items():
+            print(f"- **{k}**: {v}")
+
+if expected.exists():
+    print()
+    print("## Expected trace (first 8 cycles, from golden_model.py)")
+    lines = expected.read_text().splitlines()
+    # Skip the heading, keep up to 10 lines of the table
+    body = [ln for ln in lines if ln.strip() and not ln.startswith("##")][:10]
+    print("\n".join(body))
+PY
+```
+If `logs/prev_failure_summary.md` is non-empty, it MUST be passed as the
+`PREV_FAILURE` field on any subsequent vf-coder invocation.
+
+6. **Check whether we are looping on the same bug** BEFORE consuming another
+   retry slot. If the same divergence signature has fired 2+ times, fixing
+   RTL is not converging — rollback to codegen instead of burning more attempts:
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" \
+    --check-loop="$SIG"
+LOOP_STATUS=$?
+if [ "$LOOP_STATUS" -eq 2 ]; then
+    echo "[STAGE3] Detected fix-loop on '$SIG' — rolling back to codegen."
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" --reset codegen
+    # Main session: re-dispatch Stage 2 (codegen) and pass the contents of
+    # logs/prev_failure_summary.md inline as PREV_FAILURE for every vf-coder
+    # invocation — without this, the agent will repeat the same bug.
+fi
+```
+
+7. **Re-run simulation** (go back to "Run simulation" above)
+
+8. **Retry budget**: 3 attempts total
    - 1st fail: fix RTL, retry
    - 2nd fail: `state.py --reset codegen`, restart from Stage 2
    - 3rd fail: STOP, notify user
+   - At ANY attempt: if step 6's loop detector returns 2, jump straight to
+     `state.py --reset codegen` and re-run Stage 2 without waiting for the
+     3rd attempt.
 
 ---
 
@@ -466,7 +528,7 @@ If lint failed → fix syntax errors in main session, re-run lint only.
 If synth failed → check report, fix if needed.
 
 ```bash
-state.py "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
 ```
 TaskUpdate complete. Pipeline done.
 

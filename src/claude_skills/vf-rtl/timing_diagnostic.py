@@ -26,6 +26,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Ensure same-directory siblings (rtl_utils) are importable when this script
+# is invoked directly (e.g. `python timing_diagnostic.py ...`).
+sys.path.insert(0, str(Path(__file__).parent))
+
+from rtl_utils import DIVERGENCE_SEARCH_WINDOW  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -62,13 +68,13 @@ class TimingDiagnosis:
 # ---------------------------------------------------------------------------
 
 _DIV_PATTERNS = [
-    # cocotb template format
+    # INTERNAL first — it pinpoints the exact register, more useful than LAYERED
     re.compile(
-        r'\[LAYERED\]\s+FIRST\s+DIVERGENCE\s+at\s+cycle=(\d+)\s+'
+        r'\[INTERNAL\]\s+FIRST\s+DIVERGENCE\s+at\s+cycle=(\d+)\s+'
         r'signal=(\S+):\s+expected=(0x[0-9a-fA-F]+)\s+got=(0x[0-9a-fA-F]+)'
     ),
     re.compile(
-        r'\[INTERNAL\]\s+FIRST\s+DIVERGENCE\s+at\s+cycle=(\d+)\s+'
+        r'\[LAYERED\]\s+FIRST\s+DIVERGENCE\s+at\s+cycle=(\d+)\s+'
         r'signal=(\S+):\s+expected=(0x[0-9a-fA-F]+)\s+got=(0x[0-9a-fA-F]+)'
     ),
     # vcd2table format
@@ -102,24 +108,82 @@ def parse_divergence(log_path: Path) -> Divergence | None:
 # ---------------------------------------------------------------------------
 
 def load_golden_trace(golden_path: Path) -> list[dict[str, int]]:
-    """Import and run golden model to get cycle trace."""
-    spec_mod = importlib.util.spec_from_file_location("golden_model", str(golden_path))
+    """Import golden model and obtain its per-cycle trace.
+
+    Supports three interfaces (must match SKILL.md expected_trace_gen):
+      1. ``mod.run(test_vector_index=0)`` or ``mod.run()`` -> list[dict]
+      2. ``mod.compute(inputs, trace=True)`` -> list[dict]
+         with inputs from ``mod.TEST_VECTORS[0]`` (full dict or its ``inputs`` field)
+      3. ``mod.simulate(inputs, trace=True)`` -> list[dict] (legacy interface)
+
+    Returns the first non-empty list[dict] it can produce, or [] if none work.
+    """
+    spec_mod = importlib.util.spec_from_file_location(
+        "golden_model", str(golden_path)
+    )
     if not spec_mod or not spec_mod.loader:
         return []
 
     mod = importlib.util.module_from_spec(spec_mod)
-    spec_mod.loader.exec_module(mod)
-
-    if not hasattr(mod, "run"):
+    try:
+        spec_mod.loader.exec_module(mod)
+    except Exception as e:
+        print(f"[timing_diagnostic] Failed to load golden model: {e}", file=sys.stderr)
         return []
 
-    try:
-        data = mod.run(test_vector_index=0)
-    except TypeError:
-        data = mod.run()
+    def _normalize(data) -> list[dict[str, int]]:
+        if not isinstance(data, list):
+            return []
+        out = []
+        for entry in data:
+            if isinstance(entry, dict):
+                # Coerce values to int where possible; skip non-numeric entries
+                clean = {}
+                for k, v in entry.items():
+                    if isinstance(v, int):
+                        clean[k] = v
+                    elif isinstance(v, str):
+                        try:
+                            clean[k] = int(v, 0)
+                        except (TypeError, ValueError):
+                            pass
+                out.append(clean)
+        return out
 
-    if isinstance(data, list):
-        return [entry for entry in data if isinstance(entry, dict)]
+    # Interface 1: run()
+    if hasattr(mod, "run"):
+        for kwargs in ({"test_vector_index": 0}, {}):
+            try:
+                trace = _normalize(mod.run(**kwargs))
+                if trace:
+                    return trace
+            except TypeError:
+                continue
+            except Exception:
+                break
+
+    # Interface 2: compute(inputs, trace=True) + TEST_VECTORS
+    if hasattr(mod, "compute") and hasattr(mod, "TEST_VECTORS"):
+        try:
+            tv = mod.TEST_VECTORS[0]
+            inputs = tv.get("inputs", tv) if isinstance(tv, dict) else tv
+            trace = _normalize(mod.compute(inputs, trace=True))
+            if trace:
+                return trace
+        except Exception:
+            pass
+
+    # Interface 3: simulate(inputs, trace=True) + TEST_VECTORS (legacy)
+    if hasattr(mod, "simulate") and hasattr(mod, "TEST_VECTORS"):
+        try:
+            tv = mod.TEST_VECTORS[0]
+            inputs = tv.get("inputs", tv) if isinstance(tv, dict) else tv
+            trace = _normalize(mod.simulate(inputs, trace=True))
+            if trace:
+                return trace
+        except Exception:
+            pass
+
     return []
 
 
@@ -127,7 +191,7 @@ def load_golden_trace(golden_path: Path) -> list[dict[str, int]]:
 # Step 3: Classify all mismatched signals
 # ---------------------------------------------------------------------------
 
-WINDOW = 8  # ±8 cycles search window
+WINDOW = DIVERGENCE_SEARCH_WINDOW  # ±N cycles, sourced from rtl_utils
 
 
 def _classify_signal(
@@ -175,24 +239,34 @@ def classify_all_signals(
     divergence: Divergence,
     golden_trace: list[dict[str, int]],
 ) -> list[SignalDiagnosis]:
-    """Classify all signals that mismatch at the divergence cycle."""
+    """Classify the diverged signal against the golden trace.
+
+    Returns a single-element list containing the classification of the
+    signal reported by cocotb's FIRST DIVERGENCE.
+
+    Note (was a bug previously): we DO NOT fabricate classifications for
+    other signals at the divergence cycle. cocotb stops at the first
+    divergence, so we have no observation for the other signals — assuming
+    they match (`actual = expected`) produces noise that misleads the LLM
+    fix step. If you need full per-signal classification, read the VCD with
+    `vcd2table.py` to obtain the real values.
+    """
     cycle = divergence.cycle
-    if cycle >= len(golden_trace):
-        return [SignalDiagnosis(divergence.signal, "A", 0, divergence.expected, divergence.actual)]
+    expected = divergence.expected
+    actual = divergence.actual
 
-    golden_entry = golden_trace[cycle]
-    results = []
+    if golden_trace and 0 <= cycle < len(golden_trace):
+        diag = _classify_signal(
+            divergence.signal, cycle, expected, actual, golden_trace
+        )
+    else:
+        # Out of trace range — fall back to D/A heuristic.
+        if actual == 0 and expected != 0:
+            diag = SignalDiagnosis(divergence.signal, "D", 0, expected, actual)
+        else:
+            diag = SignalDiagnosis(divergence.signal, "A", 0, expected, actual)
 
-    for signal, expected in golden_entry.items():
-        if signal.startswith("_"):
-            continue
-        # For the diverged signal, use the actual value from cocotb.
-        # For other signals, assume they match (actual=expected) unless they're
-        # the primary diverged signal.
-        actual = divergence.actual if signal == divergence.signal else expected
-        results.append(_classify_signal(signal, cycle, expected, actual, golden_trace))
-
-    return results
+    return [diag]
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +408,11 @@ def diagnose(
     ]
 
     # Step 4: Load spec and find timing context
-    spec = json.loads(spec_path.read_text())
+    try:
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[timing_diagnostic] Cannot read spec.json: {e}", file=sys.stderr)
+        return None
     timing_context = find_timing_context(div.signal, spec)
 
     # Step 5: Build diagnosis

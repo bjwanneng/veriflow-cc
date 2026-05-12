@@ -3,8 +3,6 @@
 **Context**: vf-coder translates golden_model.py algorithms + spec.json timing contracts into
 Verilog-2005. This document covers rules for AI-translated modules.
 
-Full rule document (460 lines): `coding_style_archive.md`.
-
 ## 1. File Structure
 
 ```verilog
@@ -40,13 +38,14 @@ Signal suffixes: `_reg` (clocked state), `_next` (combinational next-state).
 ## 4. Clock and Reset
 
 - Main clock: `clk`. Additional: `clk_<domain>`.
-- **Synchronous active-high** reset named `rst`. Place `if (rst)` at the **end** of sequential block.
+- **Synchronous active-high** reset named `rst`. Place `if (rst)` at the **beginning** of sequential block (reset-first + else). This guarantees reset takes priority over `_next` assignments.
 
 ```verilog
 always @(posedge clk) begin
-    state_reg <= state_next;
     if (rst) begin
         state_reg <= STATE_IDLE;
+    end else begin
+        state_reg <= state_next;
     end
 end
 ```

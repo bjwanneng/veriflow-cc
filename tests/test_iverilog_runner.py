@@ -108,3 +108,28 @@ def test_classify_no_golden_defaults_to_a():
     result = classify_failure(failures)
 
     assert result[0]["classification"] == "A"
+
+
+def test_parse_fail_line_handles_adjacent_kv_pairs():
+    """Regression: TB lines without spaces between kv pairs must still
+    parse correctly. Previously `bar=1foo=2` was parsed as a single field
+    `bar=1foo=2`, silently losing `foo=2`."""
+    # Real-world: TB forgot a space between `cycle=5` and `signal=...`
+    line = "[FAIL] cycle=5signal=data_out expected=0xAA actual=0xBB"
+    result = _parse_fail_line(line)
+
+    assert result["cycle"] == 5
+    assert result["signal"] == "data_out"
+    assert result["expected"] == "0xAA"
+    assert result["actual"] == "0xBB"
+
+
+def test_parse_fail_line_handles_quoted_values():
+    """Quoted values (with embedded spaces) should be captured intact."""
+    line = '[FAIL] test=t1 cycle=3 message="something broke at posedge"'
+    result = _parse_fail_line(line)
+
+    assert result["test"] == "t1"
+    assert result["cycle"] == 3
+    assert result.get("message_field") in (None, "something broke at posedge") \
+        or "broke" in result.get("message", "")

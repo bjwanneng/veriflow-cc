@@ -53,6 +53,7 @@ Constraints:
 - Every module must have complete port definitions (name, direction, width)
 - `constraints` block is REQUIRED
 - `design_intent` block is REQUIRED
+- `timing_convention` block is REQUIRED — must include `golden_to_rtl_offset_cycles`
 - `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1)
 - `resource_strategy` must be `"distributed_ram"` or `"block_ram"`
 - Do NOT generate any Verilog files
@@ -62,6 +63,8 @@ Constraints:
   - If `handshake: "hold_until_ack"`, MUST also declare `ack_port`
 - `cycle_timing` REQUIRED for any module with FSM or multi-cycle behavior
 - `timing_contract` REQUIRED for every `module_connectivity` entry
+- `timing_contract` REQUIRED for each module that has registered outputs —
+  must include `registered_outputs`, `same_cycle_visible`, and `pipeline_delay_cycles`
 - `fanout_groups` is OPTIONAL but recommended for multi-module designs with shared control signals.
   Each group must have: `name`, `common_source`, `signals` (array of `{name, path}`),
   `constraint` (`"same_arrival"` or `"max_skew"`), and `max_delay_skew_cycles`.
@@ -111,11 +114,15 @@ If any check fails, fix spec.json immediately.
 ### Step 5: Hook Validation
 
 ```bash
+# Source EDA env so $PYTHON_EXE resolves to the discovered interpreter.
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
+PY="${PYTHON_EXE:-python3}"
+
 # Validate spec.json
-test -f "$PROJECT_DIR/workspace/docs/spec.json" && python -c "import json; spec=json.load(open('$PROJECT_DIR/workspace/docs/spec.json')); mods=spec.get('modules',{}); assert any(m.get('module_type')=='top' for m in (mods if isinstance(mods,list) else [mods[k] for k in mods]))" && echo "[HOOK] spec.json: OK" || echo "[HOOK] FAIL: spec.json"
+test -f "$PROJECT_DIR/workspace/docs/spec.json" && "$PY" -c "import json; spec=json.load(open('$PROJECT_DIR/workspace/docs/spec.json')); mods=spec.get('modules',{}); assert any(m.get('module_type')=='top' for m in (mods if isinstance(mods,list) else [mods[k] for k in mods]))" && echo "[HOOK] spec.json: OK" || echo "[HOOK] FAIL: spec.json"
 
 # Validate golden_model.py syntax
-python -c "import py_compile; py_compile.compile('$PROJECT_DIR/workspace/docs/golden_model.py', doraise=True)" 2>/dev/null && echo "[HOOK] golden_model.py: syntax OK" || echo "[HOOK] FAIL: golden_model.py has syntax errors"
+"$PY" -c "import py_compile; py_compile.compile('$PROJECT_DIR/workspace/docs/golden_model.py', doraise=True)" 2>/dev/null && echo "[HOOK] golden_model.py: syntax OK" || echo "[HOOK] FAIL: golden_model.py has syntax errors"
 ```
 
 If either FAIL → fix and rewrite immediately.

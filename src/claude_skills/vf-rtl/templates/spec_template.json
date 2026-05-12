@@ -70,8 +70,6 @@
       "module_name": "module_name",
       "description": "What this module does",
       "module_type": "top|processing|control|memory|interface",
-      "anchor_hints": [],
-      "has_dsl_builder": false,
       "hierarchy_level": 0,
       "parent": null,
       "submodules": [],
@@ -104,6 +102,12 @@
           "description": "Parameter description"
         }
       ],
+      "timing_contract": {
+        "registered_outputs": ["output_port_name"],
+        "same_cycle_visible": ["combinational_port_name"],
+        "pipeline_delay_cycles": 1,
+        "description": "Per-module timing: registered_outputs change at posedge via NBA (1-cycle delay); same_cycle_visible are combinational (no delay)."
+      },
       "cycle_timing": {
         "fsm_states": [
           {
@@ -152,7 +156,7 @@
           }
         ],
         "pipeline_timing": {
-          "input_to_output_latency_cycles": 0,
+          "input_to_output_latency_cycles": 1,
           "throughput": "1 result per N cycles",
           "reset_recovery_cycles": 1
         },

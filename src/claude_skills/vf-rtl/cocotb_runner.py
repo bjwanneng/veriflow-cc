@@ -27,7 +27,10 @@ import argparse
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
+
+from rtl_utils import collect_rtl_sources
 
 
 def check_environment():
@@ -44,18 +47,6 @@ def check_environment():
         sys.exit(2)
 
 
-def collect_rtl_sources(rtl_dir: Path) -> list[str]:
-    """Find all Verilog source files in rtl_dir."""
-    sources = sorted(rtl_dir.glob("*.v"))
-    if not sources:
-        print(json.dumps({
-            "tests": 0, "passed": 0, "failed": 0,
-            "error": f"No .v files found in {rtl_dir}"
-        }))
-        sys.exit(2)
-    return [str(s) for s in sources]
-
-
 def find_test_module(tb_dir: Path, module_name: str) -> str:
     """Find the cocotb test file: test_<module>.py."""
     test_file = tb_dir / f"test_{module_name}.py"
@@ -66,6 +57,35 @@ def find_test_module(tb_dir: Path, module_name: str) -> str:
         }))
         sys.exit(2)
     return f"test_{module_name}"
+
+
+def _build_cocotb_diff_summary(
+    failures: list[dict],
+    num_tests: int,
+    num_passed: int,
+    num_failed: int,
+) -> str:
+    """Build a human-readable diff summary from cocotb xUnit failures."""
+    lines = [
+        "",
+        "=" * 60,
+        "COCOTB DIFF SUMMARY",
+        f"Tests: {num_passed}/{num_tests} passed, {num_failed} failed",
+        "=" * 60,
+    ]
+    for i, f in enumerate(failures[:10]):
+        test_name = f.get("test", "?")
+        msg = f.get("message", "")
+        lines.append(f"  #{i+1} test={test_name}")
+        if msg:
+            # Show first line of the message (usually contains cycle/signal info)
+            first_line = msg.split("\n")[0] if "\n" in msg else msg[:120]
+            lines.append(f"     {first_line}")
+    if len(failures) > 10:
+        lines.append(f"  ... and {len(failures) - 10} more failure(s)")
+    lines.append("=" * 60)
+    lines.append("")
+    return "\n".join(lines)
 
 
 def main():
@@ -82,12 +102,11 @@ def main():
                         help="Build directory for cocotb artifacts")
     parser.add_argument("--results-file", default=None,
                         help="Path to write xUnit XML results (default: <build_dir>/results.xml)")
-    parser.add_argument("--vcd", action="store_true", default=True,
-                        help="Enable VCD waveform dump (default: True)")
     parser.add_argument("--no-vcd", dest="vcd", action="store_false",
-                        help="Disable VCD waveform dump")
+                        help="Disable VCD waveform dump (default: enabled)")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed per-test results")
+    parser.set_defaults(vcd=True)
     args = parser.parse_args()
 
     # Phase 0: Check cocotb is importable
@@ -104,8 +123,13 @@ def main():
 
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy test file to build_dir so cocotb can import it
-    # (cocotb's test_module discovery searches the test_dir)
+    # Clean stale VCD files from previous runs
+    for stale_vcd in build_dir.glob("*.vcd"):
+        try:
+            stale_vcd.unlink()
+        except OSError:
+            pass
+
     rtl_sources = collect_rtl_sources(rtl_dir)
 
     if args.verbose:
@@ -121,6 +145,9 @@ def main():
     # Copy current environment (ensures PATH with iverilog/vvp is passed
     # to subprocess — without this, the runner's empty env loses PATH)
     runner.env = os.environ.copy()
+    # Set cocotb test timeout (default 120s) to prevent infinite hangs
+    if "COCOTB_TIMEOUT" not in runner.env:
+        runner.env["COCOTB_TIMEOUT"] = "120"
 
     # ── Build ──────────────────────────────────────────────────────────
     if args.verbose:
@@ -135,6 +162,7 @@ def main():
             waves=args.vcd,
         )
     except Exception as e:
+        traceback.print_exc()
         print(json.dumps({
             "tests": 0, "passed": 0, "failed": 0,
             "error": f"Build failed: {e}"
@@ -157,6 +185,7 @@ def main():
             waves=args.vcd,
         )
     except Exception as e:
+        traceback.print_exc()
         # Simulation crashed before producing results
         print(json.dumps({
             "tests": 0, "passed": 0, "failed": 1,
@@ -201,9 +230,16 @@ def main():
             pass
 
     # ── Output JSON summary to stdout ──────────────────────────────────
-    # Find VCD file(s) in build_dir for waveform analysis
-    vcd_files = sorted(build_dir.glob("*.vcd"))
-    vcd_path = str(vcd_files[0]) if vcd_files else None
+    # Pick VCD file — prefer module-specific name for parallel-sim safety,
+    # fall back to most-recently-modified for backward compatibility.
+    vcd_files = list(build_dir.glob("*.vcd"))
+    module_vcd = build_dir / f"{module_name}.vcd"
+    if module_vcd.exists():
+        vcd_path = str(module_vcd)
+    elif vcd_files:
+        vcd_path = str(max(vcd_files, key=lambda p: p.stat().st_mtime))
+    else:
+        vcd_path = None
     if args.verbose and vcd_path:
         print(f"[cocotb_runner] VCD file  : {vcd_path}", file=sys.stderr)
 
@@ -216,6 +252,11 @@ def main():
         "failures": failures,
     }
     print(json.dumps(result))
+
+    # Print inline diff summary to stderr for orchestrator visibility
+    if num_failed > 0 and failures:
+        diff_summary = _build_cocotb_diff_summary(failures, num_tests, num_passed, num_failed)
+        print(diff_summary, file=sys.stderr)
 
     if num_failed > 0:
         sys.exit(1)

@@ -19,7 +19,10 @@ The prompt will contain these paths:
 
 ### Step 1: Read spec.json for top module name
 
-Use **Read** tool to read the file at path `SPEC`. Extract `design_name` (top module name).
+Use **Read** tool to read the file at path `SPEC`. Find the module with
+`"module_type": "top"` in the `modules` array and use its `module_name` as the
+top module name. Do NOT use the top-level `design_name` field — it may not match
+the actual module name.
 
 ### Step 2: Run synthesis
 

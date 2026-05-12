@@ -300,6 +300,18 @@ def check_timing_convention(spec: dict) -> tuple[list[str], list[str]]:
             f"max pipeline_delay_cycles={max_delay} "
             f"(offset must be >= max delay)"
         )
+    elif offset > max_delay:
+        # Over-large offset: drive_inputs() will hold inputs for `offset`
+        # cycles, advancing the DUT past golden cycle 1 before the compare
+        # loop starts. The compare loop will then see stale matches or
+        # spurious divergences. Recommend setting offset == max_delay.
+        warnings.append(
+            f"golden_to_rtl_offset_cycles={offset} exceeds "
+            f"max pipeline_delay_cycles={max_delay} by {offset - max_delay} "
+            f"cycle(s). drive_inputs() will over-hold and the comparison "
+            f"loop will compare against stale golden entries. Set "
+            f"timing_convention.golden_to_rtl_offset_cycles={max_delay}."
+        )
 
     return errors, warnings
 
@@ -348,15 +360,17 @@ def check_fanout_skew(spec: dict) -> tuple[list[str], list[str]]:
                 tc = conn.get("timing_contract", {})
                 delay = tc.get("pipeline_delay_cycles", 0) if tc else 0
 
-                # Check if this connection is on the signal's path
+                # Check if this connection is on the signal's path (exact matching)
                 src_match = any(
-                    f"{p.split('.')[0]}.{p.split('.')[-1]}" in src
-                    or p.strip() in src
+                    f"{p.split('.')[0]}.{p.split('.')[-1]}" == src
+                    or p.strip() == src
+                    or src.startswith(p.strip() + ".")
                     for p in path_parts[:-1]
                 )
                 dst_match = any(
-                    f"{p.split('.')[0]}.{p.split('.')[-1]}" in dst
-                    or p.strip() in dst
+                    f"{p.split('.')[0]}.{p.split('.')[-1]}" == dst
+                    or p.strip() == dst
+                    or dst.startswith(p.strip() + ".")
                     for p in path_parts[1:]
                 )
 
@@ -392,9 +406,10 @@ def check_fanout_skew(spec: dict) -> tuple[list[str], list[str]]:
 def fix_spec(spec: dict) -> dict:
     """Apply automatic fixes to spec.json based on checker rules.
 
-    Returns a NEW dict with fixes applied.  Mutates the input dict in-place
-    as a side effect for convenience.
+    Returns a deep-copied dict so the original is untouched.
     """
+    import copy
+    spec = copy.deepcopy(spec)
     fixes_log = []
 
     # ---- Fix 1: timing_contract consistency ----
@@ -482,7 +497,7 @@ def fix_spec(spec: dict) -> dict:
         if latency is None:
             continue
 
-        delay_sum = 0
+        max_delay = 0
         for conn in connectivity:
             src = conn.get("source", "")
             dst = conn.get("destination", "")
@@ -493,12 +508,12 @@ def fix_spec(spec: dict) -> dict:
             dst_mod = dst.split(".")[0] if "." in dst else dst
 
             if dst_mod == mod_name or src_mod == mod_name:
-                delay_sum += delay
+                max_delay = max(max_delay, delay)
 
-        if delay_sum > 0 and latency < delay_sum:
-            pt["input_to_output_latency_cycles"] = delay_sum
+        if max_delay > 0 and latency < max_delay:
+            pt["input_to_output_latency_cycles"] = max_delay
             fixes_log.append(
-                f"Module '{mod_name}': latency {latency} -> {delay_sum}"
+                f"Module '{mod_name}': latency {latency} -> {max_delay}"
             )
 
     return {"spec": spec, "fixes": fixes_log}
@@ -570,22 +585,25 @@ def main():
     if args.fix:
         fix_result = fix_spec(spec)
         fixes = fix_result["fixes"]
+        fixed_spec = fix_result["spec"]
 
-        if fixes:
-            # Write fixed spec back to disk
-            spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
-            print(json.dumps({"fixed": True, "fixes_applied": fixes}, indent=2))
-        else:
-            print(json.dumps({"fixed": False, "message": "No auto-fixable issues found"}, indent=2))
-
-        # Re-check after fixing
-        all_errors, all_warnings = _run_all_checks(spec, args.golden)
+        # Re-check BEFORE writing to disk — avoids half-fixed state
+        all_errors, all_warnings = _run_all_checks(fixed_spec, args.golden)
         result = {
             "passed": len(all_errors) == 0,
             "errors": all_errors,
             "warnings": all_warnings,
             "auto_fixed": fixes,
         }
+
+        if fixes:
+            # Only write if fixes were applied (even if re-check still finds issues,
+            # the partial fix is better than no fix — user can iterate)
+            spec_path.write_text(json.dumps(fixed_spec, indent=2), encoding="utf-8")
+            print(json.dumps({"fixed": True, "fixes_applied": fixes}, indent=2))
+        else:
+            print(json.dumps({"fixed": False, "message": "No auto-fixable issues found"}, indent=2))
+
         print(json.dumps(result, indent=2))
 
         if args.output:

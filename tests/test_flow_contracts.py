@@ -56,13 +56,14 @@ def test_design_rules_reset_polarity_is_consistent():
     assert 'reset_polarity`: `"active_high"` or `"active_low"`' not in content
 
 
-def test_architect_receives_spec_and_golden_as_inputs():
-    architect = _read(_AGENTS_DIR / "vf-architect.md")
-
-    assert "SPEC_JSON" in architect
-    assert "GOLDEN_MODEL" in architect
-    assert "timing_model.py only" in architect.lower()
-    assert "do NOT regenerate them" in architect
+def test_architect_role_merged_into_spec_golden():
+    """vf-architect.md was removed when its outputs (spec + golden) were merged
+    into vf-spec-golden in commit e940f47. This test guards against accidental
+    resurrection of the stale file.
+    """
+    assert not (_AGENTS_DIR / "vf-architect.md").exists()
+    assert not (_AGENTS_DIR / "vf-spec-gen.md").exists()
+    assert not (_AGENTS_DIR / "vf-golden-gen.md").exists()
 
 
 def test_agents_do_not_have_websearch():

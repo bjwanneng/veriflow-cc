@@ -20,60 +20,25 @@ Output (stdout):
     JSON object: {"tests": N, "passed": M, "failed": F, "vcd_path": "..."}
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from rtl_utils import find_executable, collect_rtl_sources, DIVERGENCE_SEARCH_WINDOW
+
 
 def find_iverilog() -> str:
-    """Find iverilog executable."""
-    candidates = ["iverilog", "iverilog.exe"]
-    # Check EDA_BIN from eda_env.sh if available
-    eda_bin = os.environ.get("EDA_BIN", "")
-    if eda_bin:
-        for c in candidates:
-            p = Path(eda_bin) / c
-            if p.exists():
-                return str(p)
-    # Check PATH
-    for c in candidates:
-        found = shutil.which(c)
-        if found:
-            return found
-    return ""
+    return find_executable(["iverilog", "iverilog.exe"])
 
 
 def find_vvp() -> str:
-    """Find vvp executable."""
-    candidates = ["vvp", "vvp.exe"]
-    eda_bin = os.environ.get("EDA_BIN", "")
-    if eda_bin:
-        for c in candidates:
-            p = Path(eda_bin) / c
-            if p.exists():
-                return str(p)
-    for c in candidates:
-        found = shutil.which(c)
-        if found:
-            return found
-    return ""
-
-
-def collect_rtl_sources(rtl_dir: Path) -> list[str]:
-    """Find all Verilog source files in rtl_dir."""
-    sources = sorted(rtl_dir.glob("*.v"))
-    if not sources:
-        print(json.dumps({
-            "tests": 0, "passed": 0, "failed": 0,
-            "error": f"No .v files found in {rtl_dir}"
-        }))
-        sys.exit(2)
-    return [str(s) for s in sources]
+    return find_executable(["vvp", "vvp.exe"])
 
 
 def golden_check(golden_path: str, verbose: bool = False) -> dict:
@@ -130,38 +95,38 @@ def golden_check(golden_path: str, verbose: bool = False) -> dict:
     }
 
 
-_FAIL_PATTERN = re.compile(
-    r'\[FAIL\]\s+'
-    r'test=(\S+)\s+'
-    r'vector=(\d+)\s+'
-    r'cycle=(\d+)\s+'
-    r'signal=(\S+)\s+'
-    r'expected=(\S+)\s+'
-    r'actual=(\S+)\s+'
-    r'phase=(\S+)'
-)
+# Permissive key=value parser. The previous fixed-order regex broke whenever
+# the testbench omitted a field or reordered them. We now tolerate any
+# subset/ordering of {test, vector, cycle, signal, expected, actual, phase}.
+#
+# Two flavors of value are accepted:
+#   - "quoted strings" — may embed spaces; captured without the quotes
+#   - bare tokens — non-greedy run of non-space chars terminated by
+#     either whitespace, end-of-string, OR the next `<word>=` pair. The
+#     `\w+=` lookahead is what protects against TB lines that forget the
+#     space between kv pairs (e.g. `cycle=5signal=data_out`).
+_FAIL_KV_PATTERN = re.compile(r'(\w+)=(?:"([^"]*)"|(\S+?))(?=\s|$|\w+=)')
+
+_INT_FIELDS = {"vector", "cycle"}
 
 
 def _parse_fail_line(fl: str) -> dict:
-    """Parse a structured [FAIL] line into a failure dict."""
-    m = _FAIL_PATTERN.search(fl)
-    if m:
-        return {
-            "test": m.group(1),
-            "message": fl,
-            "vector": int(m.group(2)),
-            "cycle": int(m.group(3)),
-            "signal": m.group(4),
-            "expected": m.group(5),
-            "actual": m.group(6),
-            "phase": m.group(7),
-        }
-    # Fallback: legacy unstructured [FAIL] line
-    fallback = {"test": "verilog_tb", "message": fl}
-    m_cycle = re.search(r'cycle=(\d+)', fl)
-    if m_cycle:
-        fallback["cycle"] = int(m_cycle.group(1))
-    return fallback
+    """Parse a [FAIL] line into a failure dict.
+
+    Returns at minimum {"test": ..., "message": fl}; any of vector, cycle,
+    signal, expected, actual, phase are added when present in the line.
+    """
+    result: dict = {"test": "verilog_tb", "message": fl}
+    for k, quoted, bare in _FAIL_KV_PATTERN.findall(fl):
+        v = quoted if quoted else bare
+        if k in _INT_FIELDS:
+            try:
+                result[k] = int(v)
+            except ValueError:
+                result[k] = v
+        else:
+            result[k] = v
+    return result
 
 
 def _normalize_value(val: str) -> int | None:
@@ -191,12 +156,17 @@ def _is_unknown(val: str) -> bool:
     return any(c in val for c in "xz")
 
 
+# Shared divergence search window — imported from rtl_utils so both
+# iverilog_runner and timing_diagnostic read the same value.
+_DIVERGENCE_SEARCH_WINDOW = DIVERGENCE_SEARCH_WINDOW
+
+
 def _find_value_in_golden(
     golden_cycles: dict[int, dict[str, str]],
     signal: str,
     actual_raw: str,
     expected_cycle: int,
-    search_window: int = 5,
+    search_window: int = _DIVERGENCE_SEARCH_WINDOW,
 ) -> int | None:
     """Search golden trace for a cycle where signal matches actual value."""
     actual_norm = _normalize_value(actual_raw)
@@ -261,6 +231,80 @@ def classify_failure(
     return results
 
 
+def _resolve_sim_timeout(
+    cli_value: int | None,
+    spec_path: str | None,
+    rtl_dir: Path,
+    default: int = 120,
+) -> int:
+    """Resolve the simulation timeout.
+
+    Priority: --sim-timeout > spec.json constraints.verification.sim_timeout_s
+              > default (120 s).
+
+    spec.json is searched at:
+      1. --spec-path (if given)
+      2. <rtl_dir>/../docs/spec.json (project layout convention)
+    """
+    if cli_value is not None and cli_value > 0:
+        return cli_value
+
+    candidates = []
+    if spec_path:
+        candidates.append(Path(spec_path))
+    candidates.append(rtl_dir.parent / "docs" / "spec.json")
+
+    for spec_p in candidates:
+        try:
+            if spec_p.exists():
+                spec = json.loads(spec_p.read_text(encoding="utf-8"))
+                t = (
+                    spec.get("constraints", {})
+                        .get("verification", {})
+                        .get("sim_timeout_s")
+                )
+                if isinstance(t, (int, float)) and t > 0:
+                    return int(t)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    return default
+
+
+def _build_diff_summary(
+    classified_failures: list[dict],
+    num_tests: int,
+    num_passed: int,
+    num_failed: int,
+) -> str:
+    """Build a human-readable diff summary for appending to sim.log."""
+    lines = [
+        "",
+        "=" * 60,
+        "SIMULATION DIFF SUMMARY",
+        f"Tests: {num_passed}/{num_tests} passed, {num_failed} failed",
+        "=" * 60,
+    ]
+    for i, f in enumerate(classified_failures[:10]):
+        cls = f.get("classification", "?")
+        signal = f.get("signal", "?")
+        cycle = f.get("cycle", "?")
+        expected = f.get("expected", "?")
+        actual = f.get("actual", "?")
+        reasoning = f.get("reasoning", "")
+        lines.append(
+            f"  [{cls}] #{i+1} cycle={cycle} signal={signal} "
+            f"expected={expected} actual={actual}"
+        )
+        if reasoning:
+            lines.append(f"       {reasoning}")
+    if len(classified_failures) > 10:
+        lines.append(f"  ... and {len(classified_failures) - 10} more failure(s)")
+    lines.append("=" * 60)
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Pure-Verilog simulation runner for VeriFlow-CC pipeline"
@@ -281,6 +325,13 @@ def main():
                         help="Save raw simulation output to this file path")
     parser.add_argument("--golden-check",
                         help="Run golden model self-check (path to golden_model.py)")
+    parser.add_argument("--sim-timeout", type=int, default=None,
+                        help="vvp simulation timeout in seconds. If omitted, "
+                             "reads spec.json constraints.verification.sim_timeout_s "
+                             "(searched relative to --rtl-dir/..), else falls back to 120.")
+    parser.add_argument("--spec-path", default=None,
+                        help="Optional spec.json path used to resolve --sim-timeout "
+                             "when the flag itself is omitted.")
     args = parser.parse_args()
 
     if args.golden_check:
@@ -288,10 +339,9 @@ def main():
         print(json.dumps(result, indent=2))
         sys.exit(0 if result.get("passed") else 1)
 
-    if not args.golden_check:
-        if not args.rtl_dir or not args.tb_file or not args.module or not args.build_dir:
-            parser.error("--rtl-dir, --tb-file, --module, --build-dir required "
-                         "when not using --golden-check")
+    if not args.rtl_dir or not args.tb_file or not args.module or not args.build_dir:
+        parser.error("--rtl-dir, --tb-file, --module, --build-dir required "
+                     "when not using --golden-check")
 
     rtl_dir = Path(args.rtl_dir).resolve()
     tb_file = Path(args.tb_file).resolve()
@@ -306,6 +356,18 @@ def main():
         sys.exit(2)
 
     build_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clean stale VCD files from previous runs to avoid mtime-based picker
+    # picking a stale dump when the current run fails to produce one.
+    for stale_vcd in build_dir.glob("*.vcd"):
+        try:
+            stale_vcd.unlink()
+        except OSError as e:
+            # Best-effort cleanup; downstream `ls -t` picks the newest. We
+            # still surface the failure so a locked-file or perm-denied
+            # situation isn't invisible when debugging stale VCDs.
+            print(f"[iverilog_runner] could not remove stale {stale_vcd.name}: {e}",
+                  file=sys.stderr)
 
     # Find executables
     iverilog_exe = find_iverilog()
@@ -362,9 +424,11 @@ def main():
     sim_env = os.environ.copy()
     eda_bin = os.environ.get("EDA_BIN", "")
     eda_lib = os.environ.get("EDA_LIB", "")
-    extra_paths = os.pathsep.join(p for p in [eda_bin, eda_lib] if p)
-    if extra_paths:
-        sim_env["PATH"] = extra_paths + os.pathsep + sim_env.get("PATH", "")
+    existing_path = sim_env.get("PATH", "")
+    existing_dirs = set(existing_path.split(os.pathsep))
+    extra = [p for p in [eda_bin, eda_lib] if p and p not in existing_dirs]
+    if extra:
+        sim_env["PATH"] = os.pathsep.join(extra) + os.pathsep + existing_path
     try:
         result = subprocess.run(
             compile_cmd,
@@ -396,11 +460,13 @@ def main():
     if args.verbose:
         print(f"[iverilog_runner] Compilation successful, running simulation...", file=sys.stderr)
 
+    sim_timeout = _resolve_sim_timeout(args.sim_timeout, args.spec_path, rtl_dir)
+    if args.verbose:
+        print(f"[iverilog_runner] sim timeout: {sim_timeout}s", file=sys.stderr)
+
     # Run simulation with vvp
     sim_cmd = [vvp_exe, output_vvp]
-    if not args.no_vcd:
-        # VCD is generated by $dumpfile/$dumpvars in the testbench
-        pass
+    # VCD is generated by $dumpfile/$dumpvars in the testbench itself
 
     try:
         result = subprocess.run(
@@ -409,7 +475,7 @@ def main():
             text=True,
             cwd=str(build_dir),
             env=sim_env,
-            timeout=120,  # 2-minute timeout
+            timeout=sim_timeout,
         )
 
         sim_output = result.stdout + result.stderr
@@ -418,7 +484,10 @@ def main():
         if args.save_raw_log:
             raw_log_path = Path(args.save_raw_log)
             raw_log_path.parent.mkdir(parents=True, exist_ok=True)
-            raw_log_path.write_text(sim_output, encoding="utf-8")
+            try:
+                raw_log_path.write_text(sim_output, encoding="utf-8")
+            except OSError as e:
+                print(f"[iverilog_runner] Warning: could not save raw log: {e}", file=sys.stderr)
 
         if args.verbose:
             print(f"[iverilog_runner] Simulation output:", file=sys.stderr)
@@ -427,7 +496,9 @@ def main():
     except subprocess.TimeoutExpired:
         print(json.dumps({
             "tests": 0, "passed": 0, "failed": 1,
-            "error": "Simulation timed out after 120 seconds"
+            "error": f"Simulation timed out after {sim_timeout} seconds "
+                     f"(override with --sim-timeout or "
+                     f"spec.json constraints.verification.sim_timeout_s)"
         }))
         sys.exit(1)
     except Exception as e:
@@ -460,9 +531,16 @@ def main():
         num_failed = max(num_failed, int(failed_summary.group(1)))
     num_tests = num_passed + num_failed
 
-    # Find VCD file
-    vcd_files = sorted(build_dir.glob("*.vcd"))
-    vcd_path = str(vcd_files[0]) if vcd_files else None
+    # Find VCD file — prefer module-specific name for parallel-sim safety,
+    # fall back to most-recently-modified for backward compatibility.
+    vcd_files = list(build_dir.glob("*.vcd"))
+    module_vcd = build_dir / f"{args.module}.vcd"
+    if module_vcd.exists():
+        vcd_path = str(module_vcd)
+    elif vcd_files:
+        vcd_path = str(max(vcd_files, key=lambda p: p.stat().st_mtime))
+    else:
+        vcd_path = None
 
     if num_failed > 0 or not all_passed:
         classified = classify_failure(failures)
@@ -475,6 +553,17 @@ def main():
             "first_fail_cycle": first_fail_cycle,
         }
         print(json.dumps(result))
+
+        # Append inline diff summary to the raw sim log
+        diff_summary = _build_diff_summary(classified, num_tests, num_passed, num_failed)
+        if args.save_raw_log:
+            raw_log_path = Path(args.save_raw_log)
+            if raw_log_path.exists():
+                with open(raw_log_path, "a", encoding="utf-8") as f:
+                    f.write(diff_summary)
+        # Also print summary to stderr for orchestrator visibility
+        print(diff_summary, file=sys.stderr)
+
         sys.exit(1)
     else:
         result = {

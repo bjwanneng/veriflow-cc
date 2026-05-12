@@ -36,7 +36,9 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles, Timer
 
-CLK_PERIOD_NS = None  # codegen: MUST set from spec.timing.target_frequency_mhz
+CLK_PERIOD_NS = None  # codegen: MUST set FULL period from spec.timing.target_frequency_mhz
+                      # (period_ns = 1000 / target_frequency_mhz). cocotb's Clock()
+                      # takes the FULL period, NOT half-period.
 RESET_CYCLE_SKIP = 1  # Golden cycle 0 is the reset state; comparison starts at cycle 1
 TIMEOUT_CYCLES = 500
 FAIL_COUNT = 0
@@ -49,8 +51,9 @@ if GM_PATH.exists():
     try:
         from golden_model import run as golden_run
         GOLDEN_AVAILABLE = True
-    except ImportError:
-        pass
+    except ImportError as _e:
+        import warnings
+        warnings.warn(f"[GOLDEN] Import failed: {_e}. Per-cycle tests will be skipped.")
 
 # ─── Port configuration ─────────────────────────────────────────────────
 # Populated from spec.json by the codegen stage.
@@ -68,8 +71,32 @@ HOLD_UNTIL_ACK_PORTS = [] # ["valid_in", ...] — ports with hold_until_ack prot
 # Falls back to max(pipeline_delay_cycles) from module_connectivity timing_contract
 # if timing_convention is not set (backward compat).
 #
-# Codegen MUST set this from spec.json.
+# Codegen MUST set this from spec.json. If codegen doesn't, the fallback below
+# reads spec.json at import time to compute a reasonable default.
 DRIVE_PHASE_CYCLES = 0    # codegen: set from spec.timing_convention.golden_to_rtl_offset_cycles
+
+# Fallback: if codegen didn't set DRIVE_PHASE_CYCLES, try reading spec.json
+if DRIVE_PHASE_CYCLES == 0:
+    try:
+        _spec_path = Path(__file__).parent.parent / "docs" / "spec.json"
+        if _spec_path.exists():
+            import json as _json
+            _spec = _json.loads(_spec_path.read_text())
+            _tc = _spec.get("timing_convention", {})
+            _offset = _tc.get("golden_to_rtl_offset_cycles")
+            if isinstance(_offset, int) and _offset > 0:
+                DRIVE_PHASE_CYCLES = _offset
+            else:
+                # Fallback: max pipeline_delay_cycles across all modules
+                _delays = []
+                for _m in _spec.get("modules", []):
+                    _d = _m.get("timing_contract", {}).get("pipeline_delay_cycles")
+                    if isinstance(_d, (int, float)):
+                        _delays.append(int(_d))
+                if _delays:
+                    DRIVE_PHASE_CYCLES = max(_delays)
+    except Exception:
+        pass
 
 
 # ─── Clock management ───────────────────────────────────────────────────
@@ -192,20 +219,9 @@ async def wait_valid(dut, valid_name='valid_out', max_cycles=200):
     return -1  # timeout
 
 
-# ─── VCD capture for cocotb ────────────────────────────────────────────
-# cocotb + iverilog does not automatically produce VCD. Enable it
-# so that vcd2table.py can analyze waveforms after simulation.
-def enable_vcd(dut, design_name="dut"):
-    """Enable VCD dump for waveform analysis."""
-    try:
-        dut._log.info(f"[VCD] Enabling waveform capture for {design_name}")
-        # cocotb passes PLUSARGS to iverilog — use $dumpfile/$dumpvars
-        # via the Verilog testbench wrapper or force VCD via command line.
-        # NOTE: For cocotb, VCD must be enabled via iverilog compile flags
-        # or by including a Verilog wrapper with $dumpfile/$dumpvars.
-        # The cocotb_runner.py handles this via build_args.
-    except Exception:
-        pass
+# ─── VCD capture ──────────────────────────────────────────────────────
+# VCD is handled by cocotb_runner.py (waves=True) or the Makefile.
+# No in-test action needed — the runner configures iverilog to dump VCD.
 
 
 # ─── Tests ──────────────────────────────────────────────────────────────
@@ -214,21 +230,22 @@ def enable_vcd(dut, design_name="dut"):
 async def test_reset(dut):
     """Test 1: Reset behavior — outputs quiescent after reset."""
     global FAIL_COUNT
+    FAIL_COUNT = 0  # reset per-test counter
     await ensure_clock(dut)
     await reset_dut(dut)
 
-    # After reset: verify all valid output ports are 0
+    # After reset: verify all output ports are 0
     reset_ok = True
-    for valid_name in VALID_OUTPUT_PORTS:
+    for port_name in OUTPUT_PORTS:
         try:
-            sig = getattr(dut, valid_name)
+            sig = getattr(dut, port_name)
             val = int(sig.value)
             if val != 0:
                 FAIL_COUNT += 1
-                dut._log.error(f"[RESET] {valid_name}={val} after reset, expected 0")
+                dut._log.error(f"[RESET] {port_name}={val} after reset, expected 0")
                 reset_ok = False
         except AttributeError:
-            dut._log.warning(f"[RESET] Port {valid_name} not found in DUT")
+            dut._log.warning(f"[RESET] Port {port_name} not found in DUT")
 
     if reset_ok:
         dut._log.info("[PASS] reset behavior correct")
@@ -320,27 +337,46 @@ async def test_layered(dut):
     #
     # If golden_model.py provides input data per cycle, drive it here.
     # If the design processes a single input block, drive once then wait.
+    # <CODEGEN: drive_inputs() call here>
 
-    first_divergence = None
-    cycles_checked = 0
+    # Stimulus guard: verify that at least one input port was driven to non-zero.
+    # If drive_inputs() was never called, the DUT receives zero stimulus and
+    # any comparison against golden model is meaningless.
+    if INPUT_PORTS and all(int(getattr(dut, n).value) == 0 for n in INPUT_PORTS):
+        raise AssertionError(
+            "test_layered: no input stimulus detected — drive_inputs() was never called"
+        )
 
     # Map golden trace signal names to DUT port names.
     # Golden model uses "_reg" suffix; DUT output ports don't.
     # Codegen populates this from spec.json port names.
     GOLDEN_TO_PORT = {}  # {"ready_reg": "ready", "hash_valid_reg": "hash_valid", ...}
 
-    # Skip golden cycle 0 (reset state) + DRIVE_PHASE_CYCLES offset.
-    # RESET_CYCLE_SKIP (1) skips the reset state cycle.
-    # DRIVE_PHASE_CYCLES accounts for the golden-to-RTL pipeline offset
-    # (from spec.timing_convention.golden_to_rtl_offset_cycles).
-    # These are NOT the same — do NOT add them again elsewhere.
-    compare_cycles = expected_cycles[RESET_CYCLE_SKIP + DRIVE_PHASE_CYCLES:]
+    if not GOLDEN_TO_PORT:
+        raise AssertionError(
+            "test_layered: GOLDEN_TO_PORT is empty — codegen did not populate port mapping"
+        )
+
+    first_divergence = None
+    cycles_checked = 0
+    signals_compared = 0
+
+    # Alignment derivation (avoid the double-offset bug from SM3 pipeline):
+    #   drive_inputs() already advanced the DUT through 1 sample posedge plus
+    #   DRIVE_PHASE_CYCLES "hold" posedges. After drive_inputs returns, the
+    #   DUT register state corresponds to golden cycle 1 (= "after the first
+    #   logical computation step"). DRIVE_PHASE_CYCLES is therefore consumed
+    #   inside drive_inputs and MUST NOT be added to the golden-trace slice
+    #   here as well — doing so caused (N-1)-cycle offsets in earlier runs.
+    #
+    # Slice rule: skip ONLY golden cycle 0 (reset state). Then compare
+    # BEFORE advancing the clock, so iteration 0 reads DUT at the state left
+    # by drive_inputs (= golden cycle 1), iteration 1 at golden cycle 2, etc.
+    compare_cycles = expected_cycles[RESET_CYCLE_SKIP:]
 
     for cycle_idx, expected in enumerate(compare_cycles):
-        # Wait one cycle for DUT to produce output
-        await RisingEdge(dut.clk)
-
-        # Compare each output signal against golden model
+        # Compare each output signal against golden model — DUT state already
+        # reflects this golden cycle, so do NOT await before comparing.
         for sig_name, expected_val in expected.items():
             # Map golden trace name to DUT port name
             dut_name = GOLDEN_TO_PORT.get(sig_name)
@@ -349,6 +385,7 @@ async def test_layered(dut):
             try:
                 sig = getattr(dut, dut_name)
                 actual_val = int(sig.value)
+                signals_compared += 1
                 if actual_val != expected_val:
                     first_divergence = {
                         "cycle": cycle_idx,
@@ -365,22 +402,22 @@ async def test_layered(dut):
         if first_divergence:
             break
 
+        # Advance DUT one cycle for the NEXT golden entry.
+        await RisingEdge(dut.clk)
+
     # Report results
+    if signals_compared == 0:
+        raise AssertionError(
+            "test_layered: ZERO signals were compared — GOLDEN_TO_PORT keys "
+            "do not match any golden trace signal names"
+        )
     if first_divergence:
         FAIL_COUNT += 1
         div = first_divergence
-        # Classify the error type for guided diagnosis
-        if div["actual"] == 0 and div["expected"] != 0:
-            bug_type = "A (computation=0, expected non-zero → logic error or missing init)"
-        else:
-            diff = div["actual"] ^ div["expected"]
-            bug_type = f"A (data-wrong, xor_diff=0x{diff:x} → logic or init error)"
-
         msg = (
             f"[LAYERED] FIRST DIVERGENCE at cycle={div['cycle']} "
             f"signal={div['signal']}: "
-            f"expected=0x{div['expected']:08x} got=0x{div['actual']:08x} "
-            f"→ bug_type={bug_type}"
+            f"expected=0x{div['expected']:08x} got=0x{div['actual']:08x}"
         )
         dut._log.error(msg)
         raise AssertionError(msg)
@@ -413,10 +450,13 @@ async def test_internal_signals(dut):
         Registered outputs (ready, valid, etc.) have a 1-cycle delay from
         the FSM state that computes them — the golden model must track this.
 
-        The comparison alignment is controlled by DRIVE_PHASE_CYCLES. With
-        DRIVE_PHASE_CYCLES=0 and block_trace starting after cycle 0 (reset),
-        the first comparison RisingEdge reads POST-NBA of the drive posedge,
-        matching golden cycle 1 (IDLE->active transition).
+        Alignment rule (single source of truth — do NOT add offsets elsewhere):
+        DRIVE_PHASE_CYCLES is consumed entirely inside `drive_inputs()` via
+        its `hold_data_cycles` parameter. When drive_inputs() returns, the
+        DUT register state corresponds to golden cycle 1. The comparison
+        loop therefore slices the trace as `expected_cycles[RESET_CYCLE_SKIP:]`
+        (skip ONLY the reset state) and compares BEFORE the next await —
+        do not re-add DRIVE_PHASE_CYCLES to this slice.
 
     Skipped if golden_model.py trace mode does not include internal signals.
     """
@@ -448,23 +488,56 @@ async def test_internal_signals(dut):
     # the DUT has no stimulus and all outputs will be initial values.
     # <CODEGEN: drive_inputs() call here — same as test_layered>
 
+    # Stimulus tracking: drive_inputs() may have cleared data inputs by the
+    # time we reach this point (intentional, end-of-hold deassert), so we
+    # cannot decide "was stimulus driven?" from a single snapshot here.
+    # Instead we sample input ports inside the comparison loop and raise if
+    # NONE were ever non-zero across the full comparison window.
+    _stimulus_seen_nonzero = False
+
     first_divergence = None
     cycles_checked = 0
     signals_compared = 0
     signals_not_found = []
 
-    # Align golden trace with DUT state after drive phase.
-    # Block traces exclude the reset cycle, so only DRIVE_PHASE_CYCLES is needed
-    # (no RESET_CYCLE_SKIP here). DRIVE_PHASE_CYCLES accounts for the pipeline
-    # offset from spec.timing_convention.golden_to_rtl_offset_cycles.
-    compare_cycles = expected_cycles[DRIVE_PHASE_CYCLES:]
+    # Alignment derivation — see the matching block in test_layered for the
+    # full rationale. drive_inputs() already consumed DRIVE_PHASE_CYCLES inside
+    # itself. The slice here only skips golden cycle 0 (reset state), and we
+    # compare BEFORE the await so iteration 0 sees the DUT state left by
+    # drive_inputs (= golden cycle 1).
+    compare_cycles = expected_cycles[RESET_CYCLE_SKIP:]
 
     for cycle_idx, expected in enumerate(compare_cycles):
-        await RisingEdge(dut.clk)
+        # Track stimulus: read every input port even when golden trace omits
+        # it, so a missing drive_inputs() is detected via the post-loop check.
+        for in_name in INPUT_PORTS:
+            try:
+                if int(getattr(dut, in_name).value) != 0:
+                    _stimulus_seen_nonzero = True
+                    break
+            except (AttributeError, ValueError):
+                pass
 
         for sig_name, expected_val in expected.items():
             if sig_name in INPUT_PORTS:
-                continue  # skip input signals
+                # Stimulus comparison: golden trace recorded the input value
+                # the DUT is expected to see this cycle. If RTL input doesn't
+                # match, the testbench driver is wrong (not the DUT).
+                try:
+                    actual_val = int(getattr(dut, sig_name).value)
+                    signals_compared += 1
+                    if actual_val != expected_val:
+                        first_divergence = {
+                            "cycle": cycle_idx,
+                            "signal": sig_name,
+                            "expected": expected_val,
+                            "actual": actual_val,
+                            "kind": "stimulus_mismatch",
+                        }
+                        break
+                except (AttributeError, ValueError):
+                    pass
+                continue
 
             try:
                 # Navigate VPI hierarchy for module-qualified names
@@ -502,6 +575,19 @@ async def test_internal_signals(dut):
         if first_divergence:
             break
 
+        # Advance DUT one cycle for the NEXT golden entry.
+        await RisingEdge(dut.clk)
+
+    # Stimulus sanity check: if INPUT_PORTS is non-empty but no input ever
+    # went non-zero across the entire comparison window, drive_inputs() was
+    # almost certainly never called (or called with all-zero values).
+    if INPUT_PORTS and not _stimulus_seen_nonzero:
+        raise AssertionError(
+            "test_internal_signals: no input stimulus observed across "
+            f"{cycles_checked} cycle(s) — drive_inputs() may have been "
+            "skipped or called with all-zero values"
+        )
+
     # Warn about signals that could not be found in DUT hierarchy
     if signals_not_found:
         dut._log.warning(
@@ -523,10 +609,17 @@ async def test_internal_signals(dut):
     if first_divergence:
         FAIL_COUNT += 1
         div = first_divergence
+        kind = div.get("kind", "signal_mismatch")
+        kind_tag = " kind=stimulus_mismatch" if kind == "stimulus_mismatch" else ""
+        hint = (
+            "  (testbench driver wrong — DUT input doesn't match golden stimulus)"
+            if kind == "stimulus_mismatch" else ""
+        )
         msg = (
             f"[INTERNAL] FIRST DIVERGENCE at cycle={div['cycle']} "
-            f"signal={div['signal']}: "
+            f"signal={div['signal']}{kind_tag}: "
             f"expected=0x{div['expected']:08x} got=0x{div['actual']:08x}"
+            f"{hint}"
         )
         dut._log.error(msg)
         raise AssertionError(msg)

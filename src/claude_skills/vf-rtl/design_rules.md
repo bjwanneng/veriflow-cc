@@ -1,6 +1,6 @@
 # Design Rules (Apply to ALL stages)
 
-- All modules use **synchronous active-high reset** named `rst`. Reset is checked inside `always @(posedge clk)` only — no async sensitivity list. See `coding_style.md` Section 6 for full rules.
+- All modules use **synchronous active-high reset** named `rst`. See `coding_style.md` §4 for the full sequential block pattern.
 - Port naming: `_n` suffix for active-low, `_i`/`_o` for direction
 - Parameterized design: use `parameter` for widths and depths
 - Clock domains must be explicitly declared
@@ -10,7 +10,7 @@
 
 The following fields in spec.json are locked after Stage 1 completes. Stages 2-4 must NOT modify them:
 - Port names, widths, and directions
-- Reset polarity: `"active_high"` only → port named `rst` (see line 3: synchronous active-high reset)
+- Reset polarity: `"active_high"` only → port named `rst` (see `coding_style.md` §4)
 - Handshake protocol (`handshake` field: `"hold_until_ack"` / `"single_cycle"` / `"pulse"`)
 - Module hierarchy and connectivity
 

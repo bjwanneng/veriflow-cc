@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from state import STAGE_ORDER
+
 
 def discover_python() -> str:
     """Find a working Python executable."""
@@ -25,8 +27,6 @@ def discover_python() -> str:
             candidates.append(p)
     # Common Windows locations
     if sys.platform == "win32":
-        for p in Path("C:/").glob("Python*/python.exe"):
-            candidates.append(str(p))
         for p in Path(os.path.expanduser("~")).glob(
             "AppData/Local/Programs/Python/*/python.exe"
         ):
@@ -57,18 +57,22 @@ def discover_eda() -> tuple[str, str]:
     # Search both Unix-style and Windows-style paths.
     # On Windows, Python uses native filesystem APIs so /c/oss-cad-suite
     # resolves to C:\c\oss-cad-suite (wrong). We need C:\oss-cad-suite.
-    search_dirs = [
-        r"C:\oss-cad-suite",
-        r"C:\Program Files\iverilog",
-        r"C:\Program Files (x86)\iverilog",
-        "/c/oss-cad-suite",
-        "/c/Program Files/iverilog",
-        "/c/Program Files (x86)/iverilog",
-        "/opt/oss-cad-suite",
-        "/usr/local",
-        "/usr",
-        os.path.expanduser("~/.local"),
-    ]
+    # Platform-aware search — mixing Windows and MSYS paths on native Windows
+    # Python causes wrong resolution (e.g. Path("/c/oss-cad-suite") →
+    # C:\c\oss-cad-suite). Filter dirs by platform.
+    if sys.platform == "win32":
+        search_dirs = [
+            r"C:\oss-cad-suite",
+            r"C:\Program Files\iverilog",
+            r"C:\Program Files (x86)\iverilog",
+        ]
+    else:
+        search_dirs = [
+            "/opt/oss-cad-suite",
+            "/usr/local",
+            "/usr",
+            os.path.expanduser("~/.local"),
+        ]
 
     for base in search_dirs:
         base_path = Path(base)
@@ -86,7 +90,7 @@ def discover_eda() -> tuple[str, str]:
             eda_lib = str(lib_dir)
         ivl_dir = base_path / "lib" / "ivl"
         if ivl_dir.is_dir():
-            eda_lib = f"{eda_lib}:{ivl_dir}" if eda_lib else str(ivl_dir)
+            eda_lib = f"{eda_lib}{os.pathsep}{ivl_dir}" if eda_lib else str(ivl_dir)
         return eda_bin, eda_lib
 
     # Fallback: check PATH
@@ -145,7 +149,7 @@ def check_cocotb(python_exe: str) -> bool:
 
 def init_journal(project_dir: Path, is_resume: bool) -> None:
     """Initialize or append to stage journal."""
-    journal_path = project_dir / "workspace" / "docs" / "stage_journal.md"
+    journal_path = project_dir / "logs" / "stage_journal.md"
     journal_path.parent.mkdir(parents=True, exist_ok=True)
 
     from datetime import datetime
@@ -235,11 +239,11 @@ def main():
     # Build PATH line, skipping empty entries
     path_entries = [p for p in [eda_bin, eda_lib] if p]
     path_entries.append("$PATH")
-    path_str = ":".join(path_entries)
-    # Skill directory holds the veriflow_dsl/ package after install.py runs.
-    # Exporting it on PYTHONPATH lets every shell that sources eda_env.sh
-    # run `python -m veriflow_dsl.<x>` and `from veriflow_dsl import ...`
-    # without per-call PYTHONPATH=src wrangling.
+    path_str = os.pathsep.join(path_entries)
+    # Skill directory holds state.py + helper scripts. Exporting it on
+    # PYTHONPATH lets every shell that sources eda_env.sh run things like
+    # `python -c "from state import PipelineState"` without per-call
+    # PYTHONPATH wrangling.
     skill_dir = str(Path(__file__).resolve().parent)
     with open(eda_env_path, "w", encoding="utf-8") as f:
         f.write(f'export PYTHON_EXE="{python_exe}"\n')
@@ -248,7 +252,7 @@ def main():
         f.write(f'export IVL_HOME="{ivl_home}"\n')
         f.write(f'export COCOTB_AVAILABLE="{"true" if cocotb_available else "false"}"\n')
         f.write(f'export PATH="{path_str}"\n')
-        f.write(f'export PYTHONPATH="{skill_dir}:${{PYTHONPATH:-}}"\n')
+        f.write(f'export PYTHONPATH="{skill_dir}{os.pathsep}${{PYTHONPATH:-}}"\n')
     print(f"[ENV] Wrote {eda_env_path}")
     if ivl_home:
         print(f"[ENV] IVL_HOME={ivl_home}")
@@ -282,7 +286,7 @@ def main():
             print(f"[ENV] DLLs found in EDA_BIN: {len(dll_files)}")
         else:
             lib_dlls = []
-            for lib_dir_str in (eda_lib.split(":") if eda_lib else []):
+            for lib_dir_str in (eda_lib.split(os.pathsep) if eda_lib else []):
                 lib_dir = Path(lib_dir_str)
                 if lib_dir.is_dir():
                     lib_dlls.extend(lib_dir.glob("*.dll"))
@@ -301,7 +305,7 @@ def main():
             state["is_resume"] = True
             state["stages_completed"] = data.get("stages_completed", [])
             completed = state["stages_completed"]
-            stages = ["spec_golden", "codegen", "verify_fix", "lint_synth"]
+            stages = STAGE_ORDER
             for s in stages:
                 if s not in completed:
                     state["next_stage"] = s
@@ -310,8 +314,8 @@ def main():
                 state["next_stage"] = "complete"
             print(f"[STATUS] Resuming — next stage: {state['next_stage']}")
             print(f"[STATUS] Completed: {completed}")
-        except json.JSONDecodeError:
-            print("[STATUS] Corrupted state, starting fresh")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[STATUS] Corrupted state, starting fresh: {e}")
     else:
         print("[STATUS] New project, starting from Stage 1.")
 
@@ -332,7 +336,10 @@ def main():
     }
 
     result_path = veriflow_dir / "init_result.json"
-    result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    try:
+        result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    except OSError as e:
+        print(f"[WARN] Failed to write init_result.json: {e}", file=sys.stderr)
     print(f"\n[INIT] Complete. Result: {result_path}")
 
 

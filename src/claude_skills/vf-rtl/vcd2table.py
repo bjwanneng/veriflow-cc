@@ -8,7 +8,6 @@ Usage:
 Options:
     --vcd <path>            VCD file path (alias for positional vcd_file)
     --sim-log <path>        sim.log or sim_<module>.log — extract failing signal names
-    --timing-yaml <path>    (optional) timing assertions YAML — annotate violations
     --signals <s1,s2,...>   comma-separated list of extra signals to always include
     --window <N>            cycles around each failure to show (default: 15)
     --module <name>         only show signals from this module scope
@@ -23,9 +22,12 @@ Output:
     NOTES column: flags assertion violations and [FAIL] markers.
 """
 
+import os
 import re
 import sys
 import argparse
+import importlib.util
+import subprocess
 from pathlib import Path
 from collections import defaultdict
 
@@ -39,12 +41,21 @@ def has_unknown_bits(value: str) -> bool:
 
 
 def format_vcd_value(value: str) -> str:
-    """Format a VCD value for display without hiding x/z states."""
+    """Format a VCD value for display without hiding x/z states.
+
+    Binary vectors longer than 4 bits are shown as hex with explicit width
+    prefix (e.g., 32'h00000001) to preserve bit-width information for
+    accurate comparison with golden model values.
+    """
     val = str(value)
     if has_unknown_bits(val):
         return val.lower()
     if len(val) > 4 and all(c in "01" for c in val):
-        return hex(int(val, 2))
+        width = len(val)
+        int_val = int(val, 2)
+        hex_digits = (width + 3) // 4
+        hex_str = format(int_val, f'0{hex_digits}x')
+        return f"{width}'h{hex_str}"
     return val
 
 
@@ -79,20 +90,34 @@ def normalize_for_compare(value: object) -> tuple[str, object]:
 class VCDParser:
     """Minimal VCD parser. Handles scalar and vector signals."""
 
-    def __init__(self):
+    def __init__(self, max_time_steps: int = 1_000_000):
         self.signals = {}       # id → {name, width, scope}
         self.id_to_name = {}    # id → full_name
         self.changes = defaultdict(dict)  # time → {full_name: value}
         self.timescale = "1ns"
         self._scope_stack = []
+        self._max_time_steps = max_time_steps
+
+    @staticmethod
+    def _token_stream(path: str):
+        """Yield VCD tokens line-by-line to avoid loading the entire file."""
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                for tok in line.split():
+                    yield tok
 
     def parse(self, path: str):
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            text = f.read()
-
-        # Split into tokens
-        tokens = iter(text.split())
+        file_size = os.path.getsize(path)
+        max_size = 100 * 1024 * 1024  # 100 MB
+        if file_size > max_size:
+            raise ValueError(
+                f"VCD file too large ({file_size / 1024 / 1024:.0f} MB, "
+                f"max {max_size / 1024 / 1024:.0f} MB). "
+                f"Use a smaller dump or trim the waveform first."
+            )
+        tokens = self._token_stream(path)
         current_time = 0
+        time_step_count = 0
 
         try:
             tok = next(tokens)
@@ -138,11 +163,26 @@ class VCDParser:
                 elif tok == "$dumpvars" or tok == "$dumpall":
                     tok = next(tokens)
                     while tok != "$end":
-                        self._parse_value_change(tok, current_time, tokens)
+                        if tok[0] in "01xXzZ" and len(tok) > 1:
+                            val = tok[0].lower()
+                            var_id = tok[1:]
+                            if var_id in self.id_to_name:
+                                self.changes[current_time][self.id_to_name[var_id]] = val
+                        elif tok[0] in "bBrR":
+                            val = tok[1:]
+                            var_id = next(tokens)
+                            if var_id in self.id_to_name:
+                                self.changes[current_time][self.id_to_name[var_id]] = val
                         tok = next(tokens)
 
                 elif tok.startswith("#"):
                     current_time = int(tok[1:])
+                    time_step_count += 1
+                    if time_step_count > self._max_time_steps:
+                        raise ValueError(
+                            f"VCD has too many time steps (>{self._max_time_steps}). "
+                            f"Use a smaller dump or increase max_time_steps."
+                        )
 
                 elif tok[0] in "01xXzZ":
                     # Scalar: 0/1/x/z followed by id
@@ -166,24 +206,6 @@ class VCDParser:
         return self
 
 
-    def _parse_value_change(self, tok, time, tokens=None):
-        if tok[0] in "01xXzZ" and len(tok) > 1:
-            val = tok[0].lower()
-            var_id = tok[1:]
-            if var_id in self.id_to_name:
-                self.changes[time][self.id_to_name[var_id]] = val
-        elif tok[0] in "bBrR":
-            # Vector: b<value> <id> — need to read the id from the next token
-            val = tok[1:]
-            if tokens is not None:
-                try:
-                    var_id = next(tokens)
-                    if var_id in self.id_to_name:
-                        self.changes[time][self.id_to_name[var_id]] = val
-                except StopIteration:
-                    pass
-
-
 # ─── Signal Selection ─────────────────────────────────────────────────────────
 
 def extract_failing_signals_from_log(log_path: str) -> list[str]:
@@ -199,81 +221,13 @@ def extract_failing_signals_from_log(log_path: str) -> list[str]:
     fail_lines = [l for l in text.splitlines() if re.search(r'\[FAIL\]|FAILED:', l)]
 
     for line in fail_lines:
-        # Extract identifiers that look like signal names (snake_case words)
-        words = re.findall(r'\b([a-z][a-z0-9_]+(?:_reg|_next|_out|_in|_valid|_ready|_en|_flag)?)\b', line)
+        # Extract identifiers that look like signal names (snake_case or mixed case)
+        words = re.findall(r'\b([a-zA-Z][a-zA-Z0-9_]+(?:_reg|_next|_out|_in|_valid|_ready|_en|_flag)?)\b', line)
         signals.extend(words)
 
     # Remove common non-signal words
     noise = {"expected", "got", "test", "cycle", "failed", "assert", "module", "at", "in"}
     return [s for s in dict.fromkeys(signals) if s not in noise]
-
-
-def extract_timing_assertions(timing_yaml_path: str) -> list[dict]:
-    """Parse timing_model.yaml assertions into structured form.
-
-    Returns list of {name, description, assertions: [str], stimulus: [dict]}
-    """
-    if not Path(timing_yaml_path).exists():
-        return []
-
-    text = Path(timing_yaml_path).read_text(encoding="utf-8", errors="replace")
-    scenarios = []
-
-    # Simple YAML parser for our known structure
-    current = None
-    in_assertions = False
-    in_stimulus = False
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- name:"):
-            if current:
-                scenarios.append(current)
-            current = {"name": stripped[7:].strip(), "assertions": [], "stimulus": []}
-            in_assertions = False
-            in_stimulus = False
-        elif current and stripped.startswith("assertions:"):
-            in_assertions = True
-            in_stimulus = False
-        elif current and stripped.startswith("stimulus:"):
-            in_stimulus = True
-            in_assertions = False
-        elif current and in_assertions and stripped.startswith("- "):
-            current["assertions"].append(stripped[2:].strip().strip('"'))
-        elif current and in_stimulus and stripped.startswith("- {"):
-            current["stimulus"].append(stripped[2:])
-
-    if current:
-        scenarios.append(current)
-
-    return scenarios
-
-
-def parse_assertion(assertion_str: str) -> dict | None:
-    """Parse SVA-style assertion string into {signal, delay_min, delay_max, expected}.
-
-    Supports: "signal_A |-> ##N signal_B" and "condition |-> ##[min:max] expected"
-    Returns None if unparseable.
-    """
-    m = re.match(r'(.+?)\s*\|->\s*##(\[[\d:]+\]|\d+)\s*(.+)', assertion_str)
-    if not m:
-        return None
-    antecedent = m.group(1).strip()
-    delay_str = m.group(2).strip()
-    consequent = m.group(3).strip()
-
-    if delay_str.startswith("["):
-        parts = delay_str[1:-1].split(":")
-        delay_min, delay_max = int(parts[0]), int(parts[1])
-    else:
-        delay_min = delay_max = int(delay_str)
-
-    return {
-        "antecedent": antecedent,
-        "consequent": consequent,
-        "delay_min": delay_min,
-        "delay_max": delay_max,
-    }
 
 
 # ─── Waveform Table Builder ───────────────────────────────────────────────────
@@ -352,10 +306,14 @@ def build_cycle_table(
     if not show_cycles:
         return "(No cycles in display window)\n", cycle_snapshots
 
-    # Shorten signal names — strip common scope prefix
+    # Shorten signal names — strip common scope prefix and Verilog _reg suffix
     def short_name(name: str) -> str:
         parts = name.split(".")
-        return parts[-1] if len(parts) > 1 else name
+        base = parts[-1] if len(parts) > 1 else name
+        # Strip Verilog _reg suffix (added by iverilog for registered outputs)
+        if base.endswith("_reg") and not base.endswith("__reg"):
+            base = base[:-4]
+        return base
 
     col_names = ["Cycle"] + [short_name(s) for s in include_signals] + ["NOTES"]
 
@@ -457,9 +415,6 @@ def run_golden_model_comparison(
 
     Returns a diff report string, or None if the golden model cannot be loaded.
     """
-    import subprocess
-    import importlib.util
-
     golden_path = str(Path(golden_path).resolve())
     if not Path(golden_path).exists():
         return f"ERROR: Golden model not found: {golden_path}\n"
@@ -522,7 +477,54 @@ def run_golden_model_comparison(
     lines.append("=" * 72)
     lines.append("")
 
-    short_names = {s: s.split(".")[-1] for s in include_signals}
+    # Build name mapping: golden signal name → VCD signal name
+    # Accounts for: Verilog _reg suffix, u_ instance prefix, module hierarchy
+    def _strip_reg(name: str) -> str:
+        if name.endswith("_reg") and not name.endswith("__reg"):
+            return name[:-4]
+        return name
+
+    def _fuzzy_match(golden_name: str, vcd_names: list[str]) -> str | None:
+        """Find the VCD signal name that best matches a golden model signal name."""
+        golden_stripped = _strip_reg(golden_name.split(".")[-1])
+        golden_parts = golden_name.split(".")
+
+        for vcd_name in vcd_names:
+            vcd_stripped = _strip_reg(vcd_name.split(".")[-1])
+            vcd_parts = vcd_name.split(".")
+
+            # Exact basename match (after _reg stripping)
+            if golden_stripped == vcd_stripped:
+                return vcd_name
+
+            # Module-qualified match: golden "module.signal" matches VCD "u_module.signal_reg"
+            if len(golden_parts) >= 2 and len(vcd_parts) >= 2:
+                golden_mod = golden_parts[-2]
+                vcd_mod = vcd_parts[-2].removeprefix("u_")
+                if golden_mod == vcd_mod and golden_stripped == vcd_stripped:
+                    return vcd_name
+
+        return None
+
+    all_vcd_names = list({s.split(".")[-1] for s in include_signals})
+    # Build mapping: golden_short → VCD full name
+    short_to_vcd = {}
+    for sig in include_signals:
+        short = _strip_reg(sig.split(".")[-1])
+        short_to_vcd[short] = sig
+
+    # Map golden signal names to VCD signal names
+    golden_to_vcd = {}
+    for golden_key in set(k for gc in golden_cycles.values() for k in gc.keys()):
+        match = _fuzzy_match(golden_key, list(include_signals))
+        if match:
+            golden_to_vcd[golden_key] = match
+            continue
+        # Fallback: try matching stripped basename
+        stripped = _strip_reg(golden_key.split(".")[-1])
+        if stripped in short_to_vcd:
+            golden_to_vcd[golden_key] = short_to_vcd[stripped]
+
     first_divergence = None
     first_divergence_info = None
     divergence_count = 0
@@ -548,15 +550,15 @@ def run_golden_model_comparison(
             continue
         golden = golden_cycles[golden_cycle]
 
-        for sig in include_signals:
-            short = short_names[sig]
-            if short not in golden:
+        for golden_name, golden_val in golden.items():
+            # Map golden signal name to VCD signal name
+            vcd_sig = golden_to_vcd.get(golden_name)
+            if vcd_sig is None:
                 continue
 
-            raw_rtl_val = state.get(sig, "?")
+            raw_rtl_val = state.get(vcd_sig, "?")
             rtl_val = format_vcd_value(raw_rtl_val)
 
-            golden_val = golden[short]
             rtl_norm = normalize_for_compare(raw_rtl_val)
             golden_norm = normalize_for_compare(golden_val)
 
@@ -565,7 +567,7 @@ def run_golden_model_comparison(
                     first_divergence = cycle_num
                     first_divergence_info = {
                         "cycle": cycle_num,
-                        "signal": short,
+                        "signal": golden_name,
                         "golden": golden_val,
                         "rtl": rtl_val,
                         "rtl_kind": rtl_norm[0],
@@ -573,7 +575,7 @@ def run_golden_model_comparison(
                     }
                 divergence_count += 1
                 lines.append(
-                    f"  CYCLE {cycle_num}: {short} — golden={golden_val} rtl={rtl_val}"
+                    f"  CYCLE {cycle_num}: {golden_name} — golden={golden_val} rtl={rtl_val}"
                 )
 
     lines.append("")
@@ -615,7 +617,6 @@ def main():
     parser.add_argument("vcd_file", nargs="?", help="Path to .vcd file")
     parser.add_argument("--vcd", dest="vcd_file_alias", help="Path to .vcd file")
     parser.add_argument("--sim-log", help="sim.log path — extract failing signal names")
-    parser.add_argument("--timing-yaml", help="timing_model.yaml — annotate assertion violations")
     parser.add_argument("--signals", help="Extra signals to always include (comma-separated)")
     parser.add_argument("--window", type=int, default=15, help="Cycles around each failure (default 15)")
     parser.add_argument("--module", help="Filter signals to this module scope")
@@ -705,14 +706,8 @@ def main():
             if m and re.search(r'\[FAIL\]|FAILED:', line):
                 fail_cycles.append(int(m.group(1)))
 
-    # 5. Build annotations from timing_model.yaml assertions
+    # 5. Build annotations from fail cycles
     annotations: dict[int, list[str]] = defaultdict(list)
-
-    timing_scenarios = []
-    if args.timing_yaml:
-        timing_scenarios = extract_timing_assertions(args.timing_yaml)
-
-    # Mark fail cycles in annotations
     for fc in fail_cycles:
         annotations[fc].append("[FAIL]")
 
@@ -742,15 +737,6 @@ def main():
     output_parts.append("=" * 72)
     output_parts.append("")
 
-    # Timing assertion summary
-    if timing_scenarios:
-        output_parts.append("TIMING ASSERTIONS (from timing_model.yaml):")
-        for sc in timing_scenarios:
-            output_parts.append(f"  Scenario: {sc['name']}")
-            for a in sc["assertions"]:
-                output_parts.append(f"    {a}")
-        output_parts.append("")
-
     output_parts.append(table)
 
     # 9. Golden model comparison (if available)
@@ -775,7 +761,7 @@ def main():
         output_parts.append("  1. Look at the [FAIL] row — note the cycle number.")
         output_parts.append("  2. Trace the failing signal backwards: when did it last change?")
         output_parts.append("  3. Check FSM state at [FAIL] cycle — is it the expected state?")
-        output_parts.append("  4. Compare with timing_model.yaml assertions above.")
+        output_parts.append("  4. Compare RTL register values against the golden_model trace.")
         output_parts.append("  5. Common causes: off-by-one pipeline stage, reset not clearing"
                              " output register, handshake held too long/short.")
 

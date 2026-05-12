@@ -8,7 +8,17 @@ You are the VeriFlow Testbench Generator Agent. Generate **two** testbench files
 1. `test_<design_name>.py` — cocotb testbench with golden model cross-check
 2. `tb_<design_name>.v` — self-checking Verilog testbench with pre-computed expected values
 
-Both files are generated regardless of cocotb availability. The Verilog TB is the default simulation path — it has zero Python dependencies and embeds expected values computed from golden_model.py.
+Both files are generated regardless of cocotb availability.
+
+**Verification order (cocotb-first, fixed by project policy):**
+1. `test_<design_name>.py` — cocotb testbench is the **primary** verification
+   path. It compares internal signals per-cycle via VPI and reports the FIRST
+   divergence. Stage 3 runs cocotb FIRST whenever cocotb is importable.
+2. `tb_<design_name>.v` — Verilog testbench is the **fallback / cross-check**.
+   It runs when cocotb is unavailable, or as a secondary confirmation after
+   cocotb. It embeds expected values from golden_model.py and has zero
+   Python dependencies, so it is also a safe regression net for CI nodes
+   without cocotb.
 
 ## Input (provided in prompt by caller)
 
@@ -18,6 +28,10 @@ Both files are generated regardless of cocotb availability. The Verilog TB is th
 - GOLDEN_MODEL: golden_model.py content (inline)
 - COCOTB_AVAILABLE: "true" or "false"
 - TEMPLATES_DIR: path to template files
+- DRIVE_PHASE_CYCLES: integer — number of cycles the cocotb testbench must
+  wait after driving inputs before reading outputs. Read from
+  `spec.json timing_convention.golden_to_rtl_offset_cycles` (primary) or
+  `max(modules[].timing_contract.pipeline_delay_cycles)` (fallback).
 
 ## Steps
 
@@ -35,8 +49,12 @@ From spec.json, extract:
 - **VALID_OUTPUT_PORTS**: list of output ports with protocol "pulse" or "valid"
 - **HANDSHAKE_PORTS**: dict mapping valid_in → ready_out from handshake field
 - **HOLD_UNTIL_ACK_PORTS**: list of input ports with handshake "hold_until_ack"
+- **TIMING_CONTRACT**: from spec.json `timing_contract` — extract:
+  - `registered_outputs`: list of output port names that must only change at posedge (NBA-driven)
+  - `same_cycle_visible`: list of output port names that must be combinational
+  - `pipeline_delay_cycles`: latency from valid input to valid output
 - **Top module name** (design_name)
-- **Clock period** from constraints (CLK_PERIOD_NS = 1000 / target_frequency_mhz / 2)
+- **Clock period** from constraints (CLK_PERIOD_NS = 1000 / target_frequency_mhz). This is the FULL period in ns. cocotb's `Clock(dut.clk, CLK_PERIOD_NS, unit="ns")` requires the full period. The Verilog testbench derives the half-period as `CLK_PERIOD_NS/2` for `always #(...) clk = ~clk;`.
 
 From golden_model.py, extract:
 - **Test vectors**: known input/output pairs (e.g., TEST_VECTORS list)
@@ -72,11 +90,78 @@ For this to work, the generated cocotb testbench MUST:
   (e.g., `"u_sm3_compress.a_reg"`, `"u_sm3_w_gen.w_reg[0]"`) for VPI access
 - The template handles VPI hierarchy navigation automatically (including array indices)
 
+**Timing contract assertions (cycle-level runtime checks)**:
+Add a `test_timing_contract` cocotb test that monitors timing_contract invariants
+from spec.json during live simulation. This catches RTL bugs that value-only
+comparisons miss (e.g., a registered output accidentally driven combinationally,
+or a pipeline stage that adds an extra cycle of latency).
+
+Generate this test with these assertions derived from `TIMING_CONTRACT`:
+
+1. **Registered output stability**: For each port in `registered_outputs`,
+   sample its value at posedge and again at negedge. The two readings MUST
+   match — a registered output driven by NBA must never change between
+   posedges. If it does, the RTL is driving it combinationally (bug).
+
+```python
+# In test_timing_contract:
+REGISTERED_OUTPUTS = ["hash_out", "hash_valid"]  # from spec timing_contract
+SAME_CYCLE_VISIBLE = ["done"]                     # from spec timing_contract
+PIPELINE_DELAY_CYCLES = 4                         # from spec timing_contract
+
+@cocotb.test()
+async def test_timing_contract(dut):
+    """Verify timing contract invariants at runtime."""
+    await ensure_clock(dut)
+    await reset_dut(dut)
+    # Drive stimulus (same as test_layered)
+    # <CODEGEN: drive_inputs() call here>
+
+    violations = []
+    for cycle in range(TIMEOUT_CYCLES):
+        await RisingEdge(dut.clk)
+        # 1. Registered outputs: sample at posedge, re-check at negedge
+        for port_name in REGISTERED_OUTPUTS:
+            try:
+                sig = getattr(dut, port_name)
+                posedge_val = int(sig.value)
+                await Timer(CLK_PERIOD_NS // 2, units="ns")
+                negedge_val = int(sig.value)
+                if posedge_val != negedge_val:
+                    violations.append(
+                        f"cycle={cycle} {port_name}: changed between "
+                        f"posedge ({posedge_val}) and negedge ({negedge_val}) "
+                        f"— registered output must be stable"
+                    )
+                await RisingEdge(dut.clk)  # re-sync
+            except AttributeError:
+                pass
+
+        # 2. Pipeline delay: count cycles from valid_in to valid_out
+        # (codegen generates design-specific valid tracking logic)
+
+        if any(v.startswith("cycle") for v in violations):
+            break  # fail-fast on first timing violation
+
+    if violations:
+        dut._log.error(f"[TIMING CONTRACT] {len(violations)} violation(s):")
+        for v in violations[:5]:
+            dut._log.error(f"  {v}")
+        raise AssertionError(
+            f"Timing contract violated: {violations[0]}"
+        )
+    else:
+        dut._log.info("[TIMING CONTRACT] PASS — all invariants hold")
+```
+
+Generate this test only when `TIMING_CONTRACT` has `registered_outputs` or
+`pipeline_delay_cycles > 0`. Skip for purely combinational designs.
+
 ### Step 4: Write Verilog testbench
 
 Use Write tool to write `$PROJECT_DIR/workspace/tb/tb_<design_name>.v`.
 
-This is the **primary** testbench — it must be self-checking with NO Python dependencies.
+This is the **fallback / cross-check** testbench — it runs when cocotb is unavailable, or as a secondary confirmation after the cocotb run. It must be self-checking with NO Python dependencies.
 
 Structure:
 ```verilog
@@ -196,6 +281,7 @@ Race condition review checklist (verify ALL items before writing the file):
 - [ ] Single-cycle pulse signals are sampled at the same posedge as detection (no intervening `@(negedge clk)`)
 - [ ] Registered outputs are sampled at `@(negedge clk)` after the expected production posedge
 - [ ] After `wait(signal == value)` or polling loop, add `@(posedge clk)` before driving new inputs
+- [ ] `is_last` (or any per-block "final" flag) is co-sampled with `msg_valid` at the SAME posedge, explicitly 0 for non-final blocks, 1 only for the last block, and held per its `handshake` (single_cycle vs hold_until_ack) — see `tb_integration_template.v` Rule 3a
 
 ### Step 5: Validate output files
 

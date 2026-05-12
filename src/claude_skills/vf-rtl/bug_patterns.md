@@ -170,8 +170,6 @@ For each output signal, trace backwards through the computation:
 
 ## Pattern 4: Off-By-One Pipeline Delay
 
-*(From SKILL.md Pattern A)*
-
 ### Symptom
 
 Output data is correct but arrives one cycle late (or early). Simulation shows
@@ -187,8 +185,6 @@ off, check for an extra register stage in the output path.
 
 ## Pattern 5: Reset Not Clearing Output Register
 
-*(From SKILL.md Pattern B)*
-
 ### Prevention
 
 **verify_fix stage**: Verify that every output port is driven by a register
@@ -198,8 +194,6 @@ reset block.
 ---
 
 ## Pattern 6: FSM Stuck / Missing Transition
-
-*(From SKILL.md Pattern C)*
 
 ### Prevention
 
@@ -211,8 +205,6 @@ all input combinations (explicit `default` branch).
 
 ## Pattern 7: Handshake Violation
 
-*(From SKILL.md Pattern D)*
-
 ### Prevention
 
 **verify_fix stage**: Verify that the testbench's handshake scenarios
@@ -223,8 +215,6 @@ persistence.
 ---
 
 ## Pattern 8: Counter Range Off-By-One
-
-*(From SKILL.md Pattern E)*
 
 ### Prevention
 

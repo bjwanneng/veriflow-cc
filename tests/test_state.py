@@ -20,7 +20,7 @@ from state import (
 def test_stage_order_is_4_stages():
     """Pipeline must have exactly 4 stages."""
     assert len(STAGE_ORDER) == 4
-    assert STAGE_ORDER == ["spec_golden", "codegen", "verify_fix", "lint_synth"]
+    assert STAGE_ORDER == ("spec_golden", "codegen", "verify_fix", "lint_synth")
 
 
 def test_next_pending_empty():
@@ -306,6 +306,41 @@ def test_validate_spec_accepts_valid_fanout_groups():
         s = PipelineState(project_dir=tmp)
         ok, missing = s.validate_spec_completeness(tmp)
         assert ok, f"Expected complete but missing: {missing}"
+
+
+# ── detect_fix_loop exact matching ──────────────────────────────────
+
+
+def test_detect_fix_loop_no_false_positive_on_similar_signatures():
+    """Signatures like 'lint:line42' must NOT match 'lint:line421'."""
+    s = PipelineState(project_dir="/tmp/test")
+    # Record two failures with a similar but different signature
+    s.error_history["verify_fix"] = [
+        {"time": 1.0, "errors": ["cycle:5:signal:w_reg"]},
+        {"time": 2.0, "errors": ["cycle:5:signal:w_reg_0"]},  # different signal
+    ]
+    # Exact match for first signature should NOT count the second one
+    assert not s.detect_fix_loop("verify_fix", "cycle:5:signal:w_reg")
+
+
+def test_detect_fix_loop_detects_exact_repeat():
+    """Same exact error signature appearing twice should be detected."""
+    s = PipelineState(project_dir="/tmp/test")
+    s.error_history["verify_fix"] = [
+        {"time": 1.0, "errors": ["cycle:5:signal:w_reg"]},
+        {"time": 2.0, "errors": ["cycle:5:signal:w_reg"]},
+    ]
+    assert s.detect_fix_loop("verify_fix", "cycle:5:signal:w_reg")
+
+
+def test_detect_fix_loop_single_occurrence_no_loop():
+    """Single occurrence of a signature should NOT trigger loop detection."""
+    s = PipelineState(project_dir="/tmp/test")
+    s.error_history["verify_fix"] = [
+        {"time": 1.0, "errors": ["cycle:5:signal:w_reg"]},
+        {"time": 2.0, "errors": ["cycle:10:signal:hash_out"]},
+    ]
+    assert not s.detect_fix_loop("verify_fix", "cycle:5:signal:w_reg")
 
 
 if __name__ == "__main__":

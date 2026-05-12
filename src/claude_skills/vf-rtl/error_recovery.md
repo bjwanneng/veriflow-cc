@@ -24,7 +24,7 @@ for m in spec.get('modules', []):
     if m.get('module_type') == 'top':
         print(m['module_name']); break
 ")
-VCD_FILE=$(ls workspace/sim/*.vcd 2>/dev/null | head -1)
+VCD_FILE=$(ls -t workspace/sim/*.vcd 2>/dev/null | head -1)
 ```
 
 3. Run vcd2table golden model diff:
@@ -56,8 +56,8 @@ fi
    datapath. Example: if divergence is at cycle 14, signal `u_sm3_w_gen.w_reg[0]`,
    the bug is in W expansion logic, likely in the round BEFORE cycle 14.
 
-6. **Expected per-cycle trace from timing_model.py**: SKILL.md Stage 3 step 1.5
-   generated `logs/expected_trace_*.md` (one per @vf_block). These tables show
+6. **Expected per-cycle trace from golden_model.py**: SKILL.md Stage 3 generates
+   `logs/expected_trace_golden.md` from the golden model. This table shows
    the *exact* register values the RTL should hold each cycle. Compare them
    against the VCD-derived table from step 4 to read off the divergence:
    ```
@@ -77,10 +77,26 @@ fi
 | **D. Initialization** | First output offset by constant | Check register init values, algorithm IV loading |
 | **E. Expansion** | W/message scheduling output wrong from specific round | Trace expansion formula: bit-slice widths, P0/P1 inputs |
 
-**Anti-pattern warning**: Do NOT assume timing issues without data.
-- Zero or constant at divergence → Type A or D (logic/init), NOT timing.
-- Correct value, wrong cycle → Type B
-- Most bugs in single-clock-domain designs are Type A or D.
+**Classification rule — read the value, then decide**: Match the symptom to a
+type using the divergence values; do NOT preselect one based on the design's
+clock topology.
+
+- `actual` is `x`/`z` or `actual==0` while `expected!=0` → Type **D** (init/uninitialized).
+- `actual` matches `golden_trace[cycle ± offset]` for some small `offset` →
+  Type **B** (timing/pipeline). This is the SM3 failure mode and is common in
+  pipelined hash/cipher cores even when there is a single clock domain — do
+  NOT skip Type B hypotheses because the design is single-clock.
+- `actual` is a plausible-looking but wrong value, and no nearby golden cycle
+  matches it → Type **A** (computation).
+- valid/ready or handshake protocol misbehaviour → Type **C**.
+- Output is off by a constant offset from cycle 0 → Type **D** (algorithm IV
+  not loaded).
+- Trace shows divergence starting at a specific round of a message expansion
+  → Type **E** (expansion formula / bit-slice bug).
+
+If `timing_diagnostic.py` already classified the divergence (B_late/B_early
+vs A vs D), trust its classification — it has the golden trace and the
+spec.json timing_contract to back the decision.
 
 ---
 
@@ -94,7 +110,7 @@ fi
 
 ## Step 1.5: Structured Root Cause Analysis (MANDATORY)
 
-Before modifying ANY file, complete the analysis and write to `stage_journal.md`.
+Before modifying ANY file, complete the analysis and write to `logs/stage_journal.md`.
 
 ### 5-point root cause analysis
 
@@ -139,7 +155,7 @@ After fixing, re-run simulation to verify.
 ## Step 3: Log recovery to journal
 
 ```bash
-printf "\n### Recovery: <stage_name>\n**Timestamp**: $(date -Iseconds)\n**Attempt**: <N>\n**Error type**: <syntax|logic|timing>\n**Fix summary**: <description>\n**Result**: <PASS|FAIL|PENDING>\n" >> "$PROJECT_DIR/workspace/docs/stage_journal.md"
+printf "\n### Recovery: <stage_name>\n**Timestamp**: $(date -Iseconds)\n**Attempt**: <N>\n**Error type**: <syntax|logic|timing>\n**Fix summary**: <description>\n**Result**: <PASS|FAIL|PENDING>\n" >> "$PROJECT_DIR/logs/stage_journal.md"
 ```
 
 ---

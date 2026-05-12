@@ -18,7 +18,9 @@ module tb_<design_name>;
 
     // Clock generation
     initial clk = 0;
-    // codegen: replace #5 with half-period from spec timing.target_frequency_mhz
+    // codegen: replace #5 with HALF-period from spec timing.target_frequency_mhz.
+    // half_period_ns = 1000 / (2 * target_frequency_mhz) = CLK_PERIOD_NS / 2.
+    // For 100 MHz: full period = 10 ns, half period = 5 ns -> `always #5 clk = ~clk;`.
     always #5 clk = ~clk;
 
     // Cycle counter — increment every posedge
@@ -63,25 +65,43 @@ module tb_<design_name>;
     //
     // Rule 3: MULTI-BLOCK/MESSAGE SENDING PATTERN
     //   When sending multiple blocks to a processing core:
-    //     // Block 1:
+    //     // Block 1 (NOT the last):
     //     msg_block <= BLOCK1_DATA;
     //     msg_valid <= 1'b1;
-    //     is_last   <= 1'b0;
-    //     @(posedge clk);          // DUT samples inputs
+    //     is_last   <= 1'b0;       // MUST be 0 for all non-final blocks
+    //     @(posedge clk);          // DUT samples inputs (msg_valid + is_last together)
     //     msg_valid <= 1'b0;
+    //     is_last   <= 1'b0;       // hold 0 — never let it float into the gap
     //     // ... wait for block to complete ...
     //     @(posedge clk);          // inter-block gap — DUT FSM returns to IDLE
     //
-    //     // Block 2:
+    //     // Block 2 (the LAST block):
     //     msg_block <= BLOCK2_DATA;
     //     msg_valid <= 1'b1;
-    //     is_last   <= 1'b1;
-    //     @(posedge clk);
-    //     ...
+    //     is_last   <= 1'b1;       // MUST be 1 at the SAME posedge as msg_valid
+    //     @(posedge clk);          // DUT samples both signals here
+    //     msg_valid <= 1'b0;
+    //     // is_last hold rule: see is_last sub-rule below.
     //
     //   CRITICAL: After a valid pulse, add at least one @(posedge clk) gap
     //   before driving the next block. The DUT FSM needs time to transition
     //   back to IDLE and re-assert ready.
+    //
+    // Rule 3a: is_last SEMANTICS (CRITICAL — was wrong in SM3 run)
+    //   `is_last` is a *per-block* flag co-sampled with `msg_valid`. Strict rules:
+    //   - All non-final blocks: `is_last <= 1'b0` at the same posedge as `msg_valid <= 1'b1`.
+    //     Never leave is_last at its prior value — always re-drive 0 explicitly.
+    //   - The final block: `is_last <= 1'b1` at the same posedge as `msg_valid <= 1'b1`.
+    //   - Hold lifetime:
+    //       * If the port's `handshake` is `single_cycle` / `pulse`:
+    //           Deassert `is_last` together with `msg_valid` at the next posedge.
+    //       * If the port's `handshake` is `hold_until_ack`:
+    //           Hold `is_last` stable along with `msg_valid` until DUT asserts the
+    //           ack/ready confirming the last block was consumed; then deassert
+    //           BOTH together at the next posedge.
+    //   - `is_last` MUST be driven with `<=` (non-blocking) like all other DUT inputs.
+    //   - When the testbench has only ONE block, `is_last <= 1'b1` at the sole
+    //     msg_valid posedge. Do not split it into a separate posedge.
     //
     // Rule 4: OUTPUT SAMPLING — posedge vs negedge
     //   - Registered outputs (most outputs): sample at @(negedge clk) AFTER
