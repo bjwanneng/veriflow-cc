@@ -129,20 +129,14 @@ Then: `TaskUpdate` mark the stage task as completed.
 
 ## Stage 1: spec_golden
 
-### Pre-stage: Web Research + Template Pre-read
+### Pre-stage: Web Research
 
-**Read all input files first** (run in main session, parallel Read calls):
-- `${CLAUDE_SKILL_DIR}/templates/spec_template.json` → passed as `SPEC_TEMPLATE`
-- `${CLAUDE_SKILL_DIR}/templates/golden_model_template.py` → passed as `GOLDEN_TEMPLATE`
-- `$PROJECT_DIR/requirement.md`
-- `$PROJECT_DIR/constraints.md` (if exists)
-- `$PROJECT_DIR/design_intent.md` (if exists)
-- `$PROJECT_DIR/context/*.md` (if exists)
-- `$PROJECT_DIR/.veriflow/clarifications.md`
+**Read requirement.md** (run in main session) to decide if WebSearch is needed.
+Do NOT read templates or other input files — the agent will read them itself.
 
-**Web Research** (run in main session, results passed inline to sub-agents):
+**Web Research** (run in main session, only if needed):
 
-After reading all input files above, judge whether WebSearch is needed:
+After reading requirement.md, judge whether WebSearch is needed:
 - If `requirement.md` + `context/*.md` already contain: algorithm specification, test vectors,
   pin/protocol definitions, and enough detail to build spec.json and golden_model.py →
   **skip WebSearch**. Write a note to `$PROJECT_DIR/.veriflow/web_research.md`:
@@ -157,12 +151,25 @@ After reading all input files above, judge whether WebSearch is needed:
 
 ### Agent Dispatch: Single spec-golden agent
 
+**Build INPUT_FILES list** (paths only, no content):
+```
+INPUT_FILES:
+- $PROJECT_DIR/requirement.md
+- $PROJECT_DIR/constraints.md (if exists)
+- $PROJECT_DIR/design_intent.md (if exists)
+- $PROJECT_DIR/context/*.md (if any)
+- $PROJECT_DIR/.veriflow/clarifications.md
+- $PROJECT_DIR/.veriflow/web_research.md (if exists)
+```
+
 **Run vf-spec-golden** (single Agent call):
 
 - **vf-spec-golden** (subagent_type: general-purpose)
-  - Prompt includes: PROJECT_DIR, CLARIFICATIONS path, SPEC_TEMPLATE content,
-    GOLDEN_TEMPLATE content, WEB_RESEARCH content, all input file contents inline
-  - The agent generates **both** spec.json and golden_model.py in one pass,
+  - Prompt includes: PROJECT_DIR, TEMPLATES_DIR (path to `${CLAUDE_SKILL_DIR}/templates`),
+    INPUT_FILES (list of paths), CLARIFICATIONS path
+  - DO NOT embed template content or input file content in the prompt.
+  - The agent reads all files itself using its Read tool, then generates
+    **both** spec.json and golden_model.py in one pass,
     with timing alignment done internally (it writes spec.json first, then uses
     its cycle_timing to align golden_model.py trace cycles).
 
