@@ -301,14 +301,14 @@ values.
 STATE_DONE: begin
     V0 <= V0 ^ a_new;   // a_new = TT1 (an extra compression round!)
     V1 <= V1 ^ b_new;
-    hash_out_r <= {V0 ^ a_new, V1 ^ b_new, ...};
+    result_out_r <= {V0 ^ a_new, V1 ^ b_new, ...};
 end
 
 // CORRECT — reads current registered values in DONE state
 STATE_DONE: begin
     V0 <= V0 ^ A_reg;   // A_reg holds the result after 64 rounds
     V1 <= V1 ^ B_reg;
-    hash_out_r <= {V0 ^ A_reg, V1 ^ B_reg, ...};
+    result_out_r <= {V0 ^ A_reg, V1 ^ B_reg, ...};
 end
 ```
 
@@ -607,7 +607,7 @@ Example at posedge T where `reg_x <= new_value`:
 1. **Golden model offset**: Golden trace cycle K is compared against DUT state
    that is actually cycle K+1 or K-1. Fix: adjust DRIVE_PHASE_CYCLES or block_start.
 
-2. **Registered output delay**: Signals like `ready_reg` and `hash_valid_reg`
+2. **Registered output delay**: Signals like `ready_reg` and `valid_out_reg`
    are registered outputs. They reflect the combinational `_next` signal from
    the PREVIOUS posedge. For example:
    - IDLE state always sets `ready_next=1`, even when transitioning to CALC

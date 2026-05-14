@@ -178,8 +178,10 @@ vectors. This catches algorithmic and syntax bugs before RTL is generated.
 ```bash
 cd "$PROJECT_DIR"
 if [ -f workspace/docs/golden_model.py ]; then
-    $PYTHON_EXE workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
-    if grep -q "FAIL" logs/golden_selfcheck.log; then
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
+        --golden-check workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
+    # ${PIPESTATUS[0]} reads the runner's exit, not tee's. Bash-only.
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         echo "[GOLDEN] Self-check FAILED — fix golden_model.py before proceeding."
         $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --fail
         echo "[GOLDEN] Stage 1 marked failed; Stage 2 will not run. Main session: fix golden_model.py and re-run Stage 1."
@@ -402,6 +404,7 @@ except Exception:
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/expected_trace_gen.py" \
     --golden workspace/docs/golden_model.py \
     --cycles "$EXPECTED_TRACE_CYCLES" \
+    --skip-cycles 1 \
     --output logs/expected_trace_golden.md \
     2>&1 | tee logs/expected_trace_gen.log
 ```

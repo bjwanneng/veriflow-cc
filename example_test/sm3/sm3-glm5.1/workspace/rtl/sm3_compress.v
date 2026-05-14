@@ -1,33 +1,44 @@
-// -----------------------------------------------------------------------------
-// File   : sm3_compress.v
-// Author : vf-coder
-// Date   : 2026-05-09
-// -----------------------------------------------------------------------------
-// Description: SM3 compression function data path. Computes SS1, SS2, TT1, TT2
-//              per round and updates A~H working registers. Contains V0~V7
-//              state registers updated at update_v_en.
-// -----------------------------------------------------------------------------
+//=============================================================================
+// sm3_compress — SM3 Compression Function Datapath
+//
+// Maintains two register groups:
+//   1. V0~V7  (8 x 32-bit) : Persistent hash state across blocks.
+//      Initialized to SM3 IV on reset.  XOR-updated with A~H on update_v_en.
+//   2. A~H    (8 x 32-bit) : Working registers for the current 512-bit block.
+//      Loaded from V on load_en.  Updated every calc_en cycle with one round
+//      of the SM3 compression function.
+//
+// Compression round (combinational):
+//   T_j   = j<16 ? 0x79cc4519 : 0x7a879d8a
+//   SS1   = ROL( ROL(A,12) + E + ROL(T_j, j%32), 7 )
+//   SS2   = SS1 ^ ROL(A,12)
+//   TT1   = FF(A,B,C) + D + SS2 + w'_j
+//   TT2   = GG(E,F,G) + H + SS1 + w_j
+//   A_new = TT1,  B_new = A,  C_new = ROL(B,9),  D_new = C
+//   E_new = P0(TT2),  F_new = E,  G_new = ROL(F,19),  H_new = G
+//
+// Clock domain: clk_core @ 150 MHz, sync active-low reset
+//=============================================================================
 
 `resetall
-`timescale 1ns / 1ps
+`timescale 1ns/1ps
 `default_nettype none
 
-module sm3_compress
-(
-    input  wire         clk,
-    input  wire         rst_n,
-    input  wire         load_en,
-    input  wire         calc_en,
-    input  wire         update_v_en,
-    input  wire [5:0]   round_cnt,
-    input  wire [31:0]  w_j,
-    input  wire [31:0]  w_prime_j,
+module sm3_compress (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        load_en,
+    input  wire        calc_en,
+    input  wire        update_v_en,
+    input  wire [5:0]  round_cnt,
+    input  wire [31:0] w_j,
+    input  wire [31:0] w_prime_j,
     output wire [255:0] hash_out
 );
 
-    // ---------------------------------------------------------------------
-    // SM3 initial vector constants (GM/T 0004-2012 Section 5.3.2)
-    // ---------------------------------------------------------------------
+    //-------------------------------------------------------------------------
+    // SM3 Initialization Vector (IV)
+    //-------------------------------------------------------------------------
     localparam [31:0] IV0 = 32'h7380166f;
     localparam [31:0] IV1 = 32'h4914b2b9;
     localparam [31:0] IV2 = 32'h172442d7;
@@ -37,226 +48,179 @@ module sm3_compress
     localparam [31:0] IV6 = 32'he38dee4d;
     localparam [31:0] IV7 = 32'hb0fb0e4e;
 
-    // Round constants Tj (GM/T 0004-2012 Section 5.3.2)
-    localparam [31:0] TJ_0_15  = 32'h79cc4519;
-    localparam [31:0] TJ_16_63 = 32'h7a879d8a;
+    //-------------------------------------------------------------------------
+    // T constants
+    //-------------------------------------------------------------------------
+    localparam [31:0] T_EARLY = 32'h79cc4519;   // rounds 0..15
+    localparam [31:0] T_LATE  = 32'h7a879d8a;   // rounds 16..63
 
-    // ---------------------------------------------------------------------
-    // Internal registers — V0~V7 state registers (initialized to SM3 IV)
-    // ---------------------------------------------------------------------
-    reg [31:0] V0_reg = IV0, V0_next;
-    reg [31:0] V1_reg = IV1, V1_next;
-    reg [31:0] V2_reg = IV2, V2_next;
-    reg [31:0] V3_reg = IV3, V3_next;
-    reg [31:0] V4_reg = IV4, V4_next;
-    reg [31:0] V5_reg = IV5, V5_next;
-    reg [31:0] V6_reg = IV6, V6_next;
-    reg [31:0] V7_reg = IV7, V7_next;
+    //-------------------------------------------------------------------------
+    // State registers: V (persistent) and A~H (working)
+    //-------------------------------------------------------------------------
+    reg [31:0] v0_reg, v1_reg, v2_reg, v3_reg, v4_reg, v5_reg, v6_reg, v7_reg;
+    reg [31:0] a_reg,  b_reg,  c_reg,  d_reg,  e_reg,  f_reg,  g_reg,  h_reg;
 
-    // Working registers A~H
-    reg [31:0] A_reg = 32'h00000000, A_next;
-    reg [31:0] B_reg = 32'h00000000, B_next;
-    reg [31:0] C_reg = 32'h00000000, C_next;
-    reg [31:0] D_reg = 32'h00000000, D_next;
-    reg [31:0] E_reg = 32'h00000000, E_next;
-    reg [31:0] F_reg = 32'h00000000, F_next;
-    reg [31:0] G_reg = 32'h00000000, G_next;
-    reg [31:0] H_reg = 32'h00000000, H_next;
+    //-------------------------------------------------------------------------
+    // Combinational next-state signals
+    //-------------------------------------------------------------------------
+    reg [31:0] a_next, b_next, c_next, d_next, e_next, f_next, g_next, h_next;
 
-    // ---------------------------------------------------------------------
-    // Output assignment — mux V_next when update_v_en active (read-before-update)
-    // ---------------------------------------------------------------------
-    assign hash_out = update_v_en ? {V0_next, V1_next, V2_next, V3_next,
-                                     V4_next, V5_next, V6_next, V7_next}
-                                  : {V0_reg, V1_reg, V2_reg, V3_reg,
-                                     V4_reg, V5_reg, V6_reg, V7_reg};
+    //-------------------------------------------------------------------------
+    // Combinational wires
+    //-------------------------------------------------------------------------
+    wire [4:0]  j5;         // round_cnt mod 32 (shift amount for ROL(T_j, j))
+    wire [31:0] tj;         // T_j selected by round
+    wire        is_early;   // 1 for rounds 0..15, 0 for rounds 16..63
 
-    // ---------------------------------------------------------------------
-    // Combinational helper wires
-    // ---------------------------------------------------------------------
+    assign j5       = round_cnt[4:0];
+    assign is_early = (round_cnt[5:4] == 2'b00);
+    assign tj       = is_early ? T_EARLY : T_LATE;
 
-    // --- Tj selection based on round_cnt ---
-    wire [31:0] Tj = (round_cnt <= 6'd15) ? TJ_0_15 : TJ_16_63;
+    //-------------------------------------------------------------------------
+    // Combinational: compression round datapath
+    //-------------------------------------------------------------------------
+    reg [31:0] rol12_a, rol_tj, sum1, ss1, ss2;
+    reg [31:0] ff_out, gg_out;
+    reg [31:0] tt1, tt2, p0_tt2;
 
-    // --- ROL(A, 12) via concatenation ---
-    wire [31:0] rol_A_12 = {A_reg[19:0], A_reg[31:20]};
-
-    // --- ROL(Tj, round_cnt % 32) via 32-to-1 MUX ---
-    // round_cnt[4:0] gives round_cnt % 32 for 6-bit round_cnt (0..63)
-    wire [4:0]  tj_shift = round_cnt[4:0];
-    wire [31:0] rol_Tj;
-
-    // 32-to-1 MUX for variable rotation of Tj
-    assign rol_Tj = (tj_shift == 5'd0)  ? Tj                          :
-                    (tj_shift == 5'd1)  ? {Tj[30:0], Tj[31]}          :
-                    (tj_shift == 5'd2)  ? {Tj[29:0], Tj[31:30]}       :
-                    (tj_shift == 5'd3)  ? {Tj[28:0], Tj[31:29]}       :
-                    (tj_shift == 5'd4)  ? {Tj[27:0], Tj[31:28]}       :
-                    (tj_shift == 5'd5)  ? {Tj[26:0], Tj[31:27]}       :
-                    (tj_shift == 5'd6)  ? {Tj[25:0], Tj[31:26]}       :
-                    (tj_shift == 5'd7)  ? {Tj[24:0], Tj[31:25]}       :
-                    (tj_shift == 5'd8)  ? {Tj[23:0], Tj[31:24]}       :
-                    (tj_shift == 5'd9)  ? {Tj[22:0], Tj[31:23]}       :
-                    (tj_shift == 5'd10) ? {Tj[21:0], Tj[31:22]}       :
-                    (tj_shift == 5'd11) ? {Tj[20:0], Tj[31:21]}       :
-                    (tj_shift == 5'd12) ? {Tj[19:0], Tj[31:20]}       :
-                    (tj_shift == 5'd13) ? {Tj[18:0], Tj[31:19]}       :
-                    (tj_shift == 5'd14) ? {Tj[17:0], Tj[31:18]}       :
-                    (tj_shift == 5'd15) ? {Tj[16:0], Tj[31:17]}       :
-                    (tj_shift == 5'd16) ? {Tj[15:0], Tj[31:16]}       :
-                    (tj_shift == 5'd17) ? {Tj[14:0], Tj[31:15]}       :
-                    (tj_shift == 5'd18) ? {Tj[13:0], Tj[31:14]}       :
-                    (tj_shift == 5'd19) ? {Tj[12:0], Tj[31:13]}       :
-                    (tj_shift == 5'd20) ? {Tj[11:0], Tj[31:12]}       :
-                    (tj_shift == 5'd21) ? {Tj[10:0], Tj[31:11]}       :
-                    (tj_shift == 5'd22) ? {Tj[9:0],  Tj[31:10]}       :
-                    (tj_shift == 5'd23) ? {Tj[8:0],  Tj[31:9]}        :
-                    (tj_shift == 5'd24) ? {Tj[7:0],  Tj[31:8]}        :
-                    (tj_shift == 5'd25) ? {Tj[6:0],  Tj[31:7]}        :
-                    (tj_shift == 5'd26) ? {Tj[5:0],  Tj[31:6]}        :
-                    (tj_shift == 5'd27) ? {Tj[4:0],  Tj[31:5]}        :
-                    (tj_shift == 5'd28) ? {Tj[3:0],  Tj[31:4]}        :
-                    (tj_shift == 5'd29) ? {Tj[2:0],  Tj[31:3]}        :
-                    (tj_shift == 5'd30) ? {Tj[1:0],  Tj[31:2]}        :
-                                          {Tj[0],    Tj[31:1]}        ;
-
-    // --- SS1 = ROL((ROL(A,12) + E + ROL(Tj, round_cnt%32)), 7) mod 2^32 ---
-    wire [31:0] ss1_sum = rol_A_12 + E_reg + rol_Tj;  // natural 32-bit wrap
-    wire [31:0] SS1 = {ss1_sum[24:0], ss1_sum[31:25]};  // ROL by 7
-
-    // --- SS2 = SS1 ^ ROL(A, 12) ---
-    wire [31:0] SS2 = SS1 ^ rol_A_12;
-
-    // --- FFj: Boolean function ---
-    wire [31:0] FFj = (round_cnt <= 6'd15)
-                      ? (A_reg ^ B_reg ^ C_reg)
-                      : ((A_reg & B_reg) | (A_reg & C_reg) | (B_reg & C_reg));
-
-    // --- GGj: Boolean function ---
-    wire [31:0] GGj = (round_cnt <= 6'd15)
-                      ? (E_reg ^ F_reg ^ G_reg)
-                      : ((E_reg & F_reg) | (~E_reg & G_reg));
-
-    // --- TT1 = (FFj(A,B,C) + D) + (SS2 + w_prime_j) [tree structure] ---
-    wire [31:0] tt1_left  = FFj + D_reg;
-    wire [31:0] tt1_right = SS2 + w_prime_j;
-    wire [31:0] TT1 = tt1_left + tt1_right;
-
-    // --- TT2 = (GGj(E,F,G) + H) + (SS1 + w_j) [tree structure] ---
-    wire [31:0] tt2_left  = GGj + H_reg;
-    wire [31:0] tt2_right = SS1 + w_j;
-    wire [31:0] TT2 = tt2_left + tt2_right;
-
-    // --- P0(TT2) = TT2 ^ ROL(TT2,9) ^ ROL(TT2,17) ---
-    wire [31:0] rol_TT2_9  = {TT2[22:0], TT2[31:23]};
-    wire [31:0] rol_TT2_17 = {TT2[14:0], TT2[31:15]};
-    wire [31:0] P0_TT2 = TT2 ^ rol_TT2_9 ^ rol_TT2_17;
-
-    // --- ROL(B, 9) and ROL(F, 19) for register updates ---
-    wire [31:0] rol_B_9  = {B_reg[22:0], B_reg[31:23]};
-    wire [31:0] rol_F_19 = {F_reg[12:0], F_reg[31:13]};
-
-    // ---------------------------------------------------------------------
-    // Block 1: Combinational — compute all _next signals
-    // ---------------------------------------------------------------------
     always @* begin
-        // Default: hold current values
-        V0_next = V0_reg;
-        V1_next = V1_reg;
-        V2_next = V2_reg;
-        V3_next = V3_reg;
-        V4_next = V4_reg;
-        V5_next = V5_reg;
-        V6_next = V6_reg;
-        V7_next = V7_reg;
+        // Defaults (prevent latches)
+        rol12_a = 32'd0;
+        rol_tj  = 32'd0;
+        sum1    = 32'd0;
+        ss1     = 32'd0;
+        ss2     = 32'd0;
+        ff_out  = 32'd0;
+        gg_out  = 32'd0;
+        tt1     = 32'd0;
+        tt2     = 32'd0;
+        p0_tt2  = 32'd0;
+        a_next  = 32'd0;
+        b_next  = 32'd0;
+        c_next  = 32'd0;
+        d_next  = 32'd0;
+        e_next  = 32'd0;
+        f_next  = 32'd0;
+        g_next  = 32'd0;
+        h_next  = 32'd0;
 
-        A_next = A_reg;
-        B_next = B_reg;
-        C_next = C_reg;
-        D_next = D_reg;
-        E_next = E_reg;
-        F_next = F_reg;
-        G_next = G_reg;
-        H_next = H_reg;
+        // ROL(A, 12) = {A[19:0], A[31:20]}
+        rol12_a = {a_reg[19:0], a_reg[31:20]};
 
-        // load_en: copy V registers into A~H working registers
-        if (load_en) begin
-            A_next = V0_reg;
-            B_next = V1_reg;
-            C_next = V2_reg;
-            D_next = V3_reg;
-            E_next = V4_reg;
-            F_next = V5_reg;
-            G_next = V6_reg;
-            H_next = V7_reg;
-        end
+        // ROL(T_j, j % 32) — dynamic barrel rotate
+        // Guard j5==0 to avoid >>32 (undefined in Verilog)
+        if (j5 == 5'd0)
+            rol_tj = tj;
+        else
+            rol_tj = (tj << j5) | (tj >> (6'd32 - j5));
 
-        // calc_en: per-round compression (independent if block per 23.9)
-        if (calc_en) begin
-            A_next = TT1;
-            B_next = A_reg;
-            C_next = rol_B_9;
-            D_next = C_reg;
-            E_next = P0_TT2;
-            F_next = E_reg;
-            G_next = rol_F_19;
-            H_next = G_reg;
-        end
+        // SS1 = ROL( ROL(A,12) + E + ROL(T_j, j), 7 )
+        sum1 = rol12_a + e_reg + rol_tj;
+        ss1  = {sum1[24:0], sum1[31:25]};
 
-        // update_v_en: V[i] = V[i] ^ {A,B,C,D,E,F,G,H}[i]
-        if (update_v_en) begin
-            V0_next = V0_reg ^ A_reg;
-            V1_next = V1_reg ^ B_reg;
-            V2_next = V2_reg ^ C_reg;
-            V3_next = V3_reg ^ D_reg;
-            V4_next = V4_reg ^ E_reg;
-            V5_next = V5_reg ^ F_reg;
-            V6_next = V6_reg ^ G_reg;
-            V7_next = V7_reg ^ H_reg;
-        end
+        // SS2 = SS1 ^ ROL(A, 12)
+        ss2 = ss1 ^ rol12_a;
+
+        // FF(A, B, C):  j<16 → xor,  j>=16 → majority
+        if (is_early)
+            ff_out = a_reg ^ b_reg ^ c_reg;
+        else
+            ff_out = (a_reg & b_reg) | (a_reg & c_reg) | (b_reg & c_reg);
+
+        // GG(E, F, G):  j<16 → xor,  j>=16 → select
+        if (is_early)
+            gg_out = e_reg ^ f_reg ^ g_reg;
+        else
+            gg_out = (e_reg & f_reg) | ((~e_reg) & g_reg);
+
+        // TT1 = FF(A,B,C) + D + SS2 + w_prime_j
+        tt1 = ff_out + d_reg + ss2 + w_prime_j;
+
+        // TT2 = GG(E,F,G) + H + SS1 + w_j
+        tt2 = gg_out + h_reg + ss1 + w_j;
+
+        // P0(TT2) = TT2 ^ ROL(TT2, 9) ^ ROL(TT2, 17)
+        p0_tt2 = tt2 ^ {tt2[22:0], tt2[31:23]} ^ {tt2[14:0], tt2[31:15]};
+
+        // Next-state A~H
+        a_next = tt1;
+        b_next = a_reg;
+        c_next = {b_reg[22:0], b_reg[31:23]};   // ROL(B, 9)
+        d_next = c_reg;
+        e_next = p0_tt2;
+        f_next = e_reg;
+        g_next = {f_reg[12:0], f_reg[31:13]};   // ROL(F, 19)
+        h_next = g_reg;
     end
 
-    // ---------------------------------------------------------------------
-    // Block 2: Sequential — register sampling with async active-low reset
-    // ---------------------------------------------------------------------
-    always @(posedge clk or negedge rst_n) begin
+    //-------------------------------------------------------------------------
+    // Sequential: register update
+    //-------------------------------------------------------------------------
+    always @(posedge clk) begin
         if (!rst_n) begin
-            V0_reg <= IV0;
-            V1_reg <= IV1;
-            V2_reg <= IV2;
-            V3_reg <= IV3;
-            V4_reg <= IV4;
-            V5_reg <= IV5;
-            V6_reg <= IV6;
-            V7_reg <= IV7;
-            A_reg  <= 32'h00000000;
-            B_reg  <= 32'h00000000;
-            C_reg  <= 32'h00000000;
-            D_reg  <= 32'h00000000;
-            E_reg  <= 32'h00000000;
-            F_reg  <= 32'h00000000;
-            G_reg  <= 32'h00000000;
-            H_reg  <= 32'h00000000;
-        end else begin
-            V0_reg <= V0_next;
-            V1_reg <= V1_next;
-            V2_reg <= V2_next;
-            V3_reg <= V3_next;
-            V4_reg <= V4_next;
-            V5_reg <= V5_next;
-            V6_reg <= V6_next;
-            V7_reg <= V7_next;
-            A_reg  <= A_next;
-            B_reg  <= B_next;
-            C_reg  <= C_next;
-            D_reg  <= D_next;
-            E_reg  <= E_next;
-            F_reg  <= F_next;
-            G_reg  <= G_next;
-            H_reg  <= H_next;
+            // V registers reset to IV
+            v0_reg <= IV0;
+            v1_reg <= IV1;
+            v2_reg <= IV2;
+            v3_reg <= IV3;
+            v4_reg <= IV4;
+            v5_reg <= IV5;
+            v6_reg <= IV6;
+            v7_reg <= IV7;
+            // Working registers reset to 0
+            a_reg  <= 32'd0;
+            b_reg  <= 32'd0;
+            c_reg  <= 32'd0;
+            d_reg  <= 32'd0;
+            e_reg  <= 32'd0;
+            f_reg  <= 32'd0;
+            g_reg  <= 32'd0;
+            h_reg  <= 32'd0;
+        end
+        else begin
+            // Load: A~H ← V0~V7
+            if (load_en) begin
+                a_reg <= v0_reg;
+                b_reg <= v1_reg;
+                c_reg <= v2_reg;
+                d_reg <= v3_reg;
+                e_reg <= v4_reg;
+                f_reg <= v5_reg;
+                g_reg <= v6_reg;
+                h_reg <= v7_reg;
+            end
+            // Calc: one compression round
+            else if (calc_en) begin
+                a_reg <= a_next;
+                b_reg <= b_next;
+                c_reg <= c_next;
+                d_reg <= d_next;
+                e_reg <= e_next;
+                f_reg <= f_next;
+                g_reg <= g_next;
+                h_reg <= h_next;
+            end
+
+            // Update V: V_i ← V_i ^ A_i  (XOR working state back into persistent state)
+            if (update_v_en) begin
+                v0_reg <= v0_reg ^ a_reg;
+                v1_reg <= v1_reg ^ b_reg;
+                v2_reg <= v2_reg ^ c_reg;
+                v3_reg <= v3_reg ^ d_reg;
+                v4_reg <= v4_reg ^ e_reg;
+                v5_reg <= v5_reg ^ f_reg;
+                v6_reg <= v6_reg ^ g_reg;
+                v7_reg <= v7_reg ^ h_reg;
+            end
         end
     end
+
+    //-------------------------------------------------------------------------
+    // Output: combinational concatenation of V registers
+    //-------------------------------------------------------------------------
+    assign hash_out = {v0_reg, v1_reg, v2_reg, v3_reg,
+                       v4_reg, v5_reg, v6_reg, v7_reg};
 
 endmodule
 
-`resetall
+`default_nettype wire

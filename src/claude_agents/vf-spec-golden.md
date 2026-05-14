@@ -54,6 +54,13 @@ Constraints:
 - `constraints` block is REQUIRED
 - `design_intent` block is REQUIRED
 - `timing_convention` block is REQUIRED — must include `golden_to_rtl_offset_cycles`
+  - **Calculation**: `golden_to_rtl_offset_cycles = max(pipeline_delay_cycles)` (no +1)
+    - `pipeline_delay_cycles` already counts every register between input and output, including the input sampling register
+    - Combinational designs (no registers): set to `0`
+    - Single-register designs: set to `1`
+    - Multi-stage pipelines: value MUST equal the deepest `pipeline_delay_cycles` across all `module_connectivity` entries
+    - Example: a 4-stage pipeline with `pipeline_delay_cycles = 4` → `golden_to_rtl_offset_cycles = 4`
+    - Enforced by `timing_contract_checker.py`: `offset == max(pipeline_delay_cycles)`. A larger offset causes `drive_inputs()` to over-hold and the compare loop to compare stale golden entries.
 - `critical_path_budget` = floor(1000 / target_frequency_mhz / 0.1)
 - `resource_strategy` must be `"distributed_ram"` or `"block_ram"`
 - Do NOT generate any Verilog files
@@ -77,9 +84,11 @@ to write `$PROJECT_DIR/workspace/docs/golden_model.py`.
 
 **Timing alignment**: Use spec.json's `cycle_timing` and `timing_contract` (just
 written in Step 2) to align golden_model.py's trace cycles:
-- `cycles.append({...})` must go BEFORE the computation step (PRE-NBA convention)
-- Signal names must use `_reg` suffix matching RTL
-- Cycle count must match spec.json `input_to_output_latency_cycles`
+- Golden model uses **software-instantaneous** semantics — each `cycles.append({...})` goes AFTER the computation step and records the NEW register values produced by that step. No NBA delay added inside the golden model.
+- Cycle 0 records the post-reset state (all-zero or IV load).
+- Signal names must use `_reg` suffix matching RTL register names, and must be **lower_snake_case** (e.g. `a_reg`, NOT `A_reg`). Verilog convention is lower_snake_case and cocotb VPI paths are case-sensitive.
+- Cycle count must match spec.json `input_to_output_latency_cycles`.
+- Alignment with RTL is handled by the cocotb testbench via `DRIVE_PHASE_CYCLES` (= `max(pipeline_delay_cycles)`) — golden_model.py does NOT add any offset itself.
 
 #### Required Structure
 
@@ -87,8 +96,9 @@ written in Step 2) to align golden_model.py's trace cycles:
 2. **Helper functions**: Bit manipulation primitives (ROL, etc.) as standalone functions
 3. **`compute(inputs, trace=False) -> dict | list[dict]`**: ONE implementation with two modes:
    - `trace=False`: Returns final output values only
-   - `trace=True`: Returns per-cycle state as `list[dict]`. Signal names should
-     match RTL register names (use `_reg` suffix). Cycle numbering aligned with spec.json.
+   - `trace=True`: Returns per-cycle state as `list[dict]`. Signal names must
+     be lower_snake_case matching RTL register names (use `_reg` suffix,
+     e.g. `a_reg` not `A_reg`). Cycle numbering aligned with spec.json.
 4. **`TEST_VECTORS`**: Known input/output pairs from the standard specification
 5. **`run(test_vector_index=0) -> list[dict]`**: Calls `compute(inputs, trace=True)`
 6. **`get_test_vectors() -> list[dict]`**: Returns `[{name, inputs, expected}]`

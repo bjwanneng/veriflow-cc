@@ -123,6 +123,9 @@ Use `{WIDTH{1'b0}}` for parameterized zero.
 
 - `hold_until_ack`: valid stays HIGH until ack.
 - `single_cycle`: valid HIGH for exactly one cycle.
+- **Back-pressure (`ready`) must be combinational output**: `assign ready = !fifo_full;`
+  — never `reg ready` with NBA delay. The upstream source must see the current state
+  in the same cycle. `valid` may be registered (spec-driven), but `ready` must not.
 
 ## 14. Memory Arrays
 

@@ -103,13 +103,38 @@ module tb_<design_name>;
     //   - When the testbench has only ONE block, `is_last <= 1'b1` at the sole
     //     msg_valid posedge. Do not split it into a separate posedge.
     //
-    // Rule 4: OUTPUT SAMPLING — posedge vs negedge
-    //   - Registered outputs (most outputs): sample at @(negedge clk) AFTER
-    //     the @(posedge clk) where the output is expected. The negedge gives
-    //     NBA region time to apply new register values.
-    //   - Single-cycle pulse signals (hash_valid, ready, done): sample at
-    //     the SAME @(posedge clk) where detection occurs. Do NOT insert
-    //     @(negedge clk) between detection and sampling. (See Rule 5 below.)
+    // Rule 4: OUTPUT SAMPLING — posedge vs negedge (CRITICAL — caused SM3 Bug 3)
+    //
+    //   Two categories of output signals with DIFFERENT sampling rules:
+    //
+    //   A) PULSE signals (valid_out, ready, done, valid_out):
+    //      These are single-cycle pulses. Detect AND sample at the SAME @(posedge clk).
+    //      Do NOT insert @(negedge clk) between detection and sampling — the pulse
+    //      may be cleared on the next posedge.
+    //
+    //   B) REGISTERED DATA outputs (result_out, result, data_out):
+    //      These are NBA-driven register values. They MUST be sampled at @(negedge clk)
+    //      AFTER the posedge where the valid pulse was detected. Reason: at the posedge
+    //      where valid_out first appears, the DUT's NBA has just scheduled the new
+    //      result_out value but it hasn't propagated through the event queue yet.
+    //      Reading result_out at the SAME posedge as valid_out returns the PREVIOUS value.
+    //
+    //   CORRECT pattern (pulse detection + data sampling):
+    //     // Wait for valid pulse at posedge
+    //     while (valid_out !== 1'b1) @(posedge clk);
+    //     // valid_out is 1 here — detected at posedge ✓
+    //     // result_out is STALE here — NBA hasn't settled yet ✗
+    //     @(negedge clk);  // wait for NBA to settle on result_out
+    //     // result_out now has the correct new value ✓
+    //     check_result(expected, "test_name");
+    //
+    //   WRONG pattern (reads stale result_out):
+    //     while (valid_out !== 1'b1) @(posedge clk);
+    //     check_result(expected, "test_name");  // result_out = OLD value!
+    //
+    //   Note: If the data output is purely combinational (assign data_out = data_reg),
+    //   a simple #1 delay after posedge also works. But @(negedge clk) is the
+    //   universal pattern that works for both registered and combinational outputs.
     //
     // Rule 5: TIMING CONTRACT QUICK REFERENCE
     //   When spec.json timing_contract shows:
@@ -146,24 +171,29 @@ module tb_<design_name>;
     // MACROS: Race-free sampling helpers
     // ===========================================================================
     // Use these macros instead of raw @(negedge clk) to avoid race conditions.
+    //
+    // Failure log format (parsed by timing_diagnostic.py):
+    //   [FAIL] test=<name> cycle=<n> signal=<s> kind=<registered|pulse>
+    //          width=<w>b expected=0x<hex> actual=0x<hex> xor=0x<hex> phase=<edge>
+    // Keep this format stable — the diagnostic tool relies on it.
     `define SAMPLE_REGISTERED_OUTPUT(sig, expected, test_name) \
         @(negedge clk); \
         if (sig !== expected) begin \
-            $display("[FAIL] test=%s cycle=%0d signal=%s expected=0x%0h actual=0x%0h phase=negedge", \
-                     test_name, cycle_count, `"sig`", expected, sig); \
+            $display("[FAIL] test=%s cycle=%0d signal=%s kind=registered width=%0db expected=0x%0h actual=0x%0h xor=0x%0h phase=negedge", \
+                     test_name, cycle_count, `"sig`", $bits(sig), expected, sig, (expected ^ sig)); \
             fail_count = fail_count + 1; \
         end else \
-            $display("[PASS] test=%s cycle=%0d signal=%s actual=0x%0h phase=negedge", \
-                     test_name, cycle_count, `"sig`", sig);
+            $display("[PASS] test=%s cycle=%0d signal=%s kind=registered width=%0db actual=0x%0h phase=negedge", \
+                     test_name, cycle_count, `"sig`", $bits(sig), sig);
 
     `define SAMPLE_PULSE_OUTPUT(sig, expected, test_name) \
         if (sig !== expected) begin \
-            $display("[FAIL] test=%s cycle=%0d signal=%s expected=0x%0h actual=0x%0h phase=posedge", \
-                     test_name, cycle_count, `"sig`", expected, sig); \
+            $display("[FAIL] test=%s cycle=%0d signal=%s kind=pulse width=%0db expected=0x%0h actual=0x%0h xor=0x%0h phase=posedge", \
+                     test_name, cycle_count, `"sig`", $bits(sig), expected, sig, (expected ^ sig)); \
             fail_count = fail_count + 1; \
         end else \
-            $display("[PASS] test=%s cycle=%0d signal=%s actual=0x%0h phase=posedge", \
-                     test_name, cycle_count, `"sig`", sig);
+            $display("[PASS] test=%s cycle=%0d signal=%s kind=pulse width=%0db actual=0x%0h phase=posedge", \
+                     test_name, cycle_count, `"sig`", $bits(sig), sig);
 
     // ===========================================================================
     // RESET TASK: Must be called at start of EVERY independent test
@@ -194,19 +224,20 @@ module tb_<design_name>;
         // state accumulation (e.g., hash chaining variables retaining stale values).
         apply_reset();
 
-        // IMPORTANT: When polling for single-cycle pulse signals (hash_valid, ready):
-        //   - Detect the signal at posedge in a wait loop
-        //   - Check output IMMEDIATELY after wait returns — NO @(negedge clk) delay
-        //   - The pulse signal is cleared on the next posedge, so any delay misses it
+        // IMPORTANT: When polling for single-cycle pulse signals (valid_out, ready):
+        //   - PULSE detection: Detect the signal at posedge in a wait loop
+        //   - DATA sampling: Read the guarded data output at @(negedge clk) AFTER
+        //     detecting the pulse — this gives NBA time to settle on registered outputs
+        //   - Do NOT read data outputs at the same posedge as pulse detection
         //
-        // Correct pattern:
-        //   wait_hash_valid(cycles);   // polls @(posedge clk) until hash_valid==1
-        //   check_hash(expected, ...); // reads hash_out at SAME posedge — no delay!
+        // Correct pattern (pulse at posedge, data at negedge):
+        //   wait_valid(cycles);   // polls @(posedge clk) until valid_out==1
+        //   @(negedge clk);            // wait for NBA to settle on result_out
+        //   check_result(expected, ...); // NOW result_out has the correct value
         //
-        // Wrong pattern:
-        //   wait_hash_valid(cycles);
-        //   @(negedge clk);            // BUG: hash_valid already cleared!
-        //   check_hash(expected, ...); // sees hash_valid=0
+        // Wrong pattern (reads stale data — SM3 Bug 3):
+        //   wait_valid(cycles);
+        //   check_result(expected, ...); // result_out still has PREVIOUS value!
 
         // --- Summary ---
         if (fail_count == 0) $display("ALL TESTS PASSED");

@@ -43,6 +43,7 @@ class Divergence:
     signal: str
     expected: int
     actual: int
+    degraded: bool = False  # True when parsed from vcd2table without full signal/value data
 
 
 @dataclass
@@ -68,16 +69,43 @@ class TimingDiagnosis:
 # ---------------------------------------------------------------------------
 
 _DIV_PATTERNS = [
-    # INTERNAL first — it pinpoints the exact register, more useful than LAYERED
+    # INTERNAL — pinpoints the exact register. Matches multi-line format:
+    #   [INTERNAL] FIRST DIVERGENCE at cycle=N signal=S (width=Wb)[ kind=K]:
+    #     expected = 0xHHHH
+    #     actual   = 0xHHHH
     re.compile(
         r'\[INTERNAL\]\s+FIRST\s+DIVERGENCE\s+at\s+cycle=(\d+)\s+'
-        r'signal=(\S+):\s+expected=(0x[0-9a-fA-F]+)\s+got=(0x[0-9a-fA-F]+)'
+        r'signal=(\S+)\s+\(width=\d+b\)(?:\s+kind=\S+)?:\s*\n'
+        r'\s+expected\s*=\s*(0x[0-9a-fA-F]+)\s*\n'
+        r'\s+actual\s*=\s*(0x[0-9a-fA-F]+)'
     ),
+    # LAYERED — same multi-line format without kind= tag
     re.compile(
         r'\[LAYERED\]\s+FIRST\s+DIVERGENCE\s+at\s+cycle=(\d+)\s+'
-        r'signal=(\S+):\s+expected=(0x[0-9a-fA-F]+)\s+got=(0x[0-9a-fA-F]+)'
+        r'signal=(\S+)\s+\(width=\d+b\):\s*\n'
+        r'\s+expected\s*=\s*(0x[0-9a-fA-F]+)\s*\n'
+        r'\s+actual\s*=\s*(0x[0-9a-fA-F]+)'
     ),
-    # vcd2table format
+    # Verilog testbench [FAIL] single-line format emitted by
+    # SAMPLE_REGISTERED_OUTPUT / SAMPLE_PULSE_OUTPUT macros in
+    # tb_integration_template.v. Width/kind/xor are present but not all
+    # required by the regex — only cycle, signal, expected, actual are
+    # consumed by the diagnostic core.
+    re.compile(
+        r'\[FAIL\]\s+test=\S+\s+cycle=(\d+)\s+signal=(\S+)'
+        r'(?:\s+kind=\S+)?(?:\s+width=\d+b)?'
+        r'\s+expected=(0x[0-9a-fA-F]+)\s+actual=(0x[0-9a-fA-F]+)'
+    ),
+    # vcd2table FIRST DIVERGENCE SUMMARY (rich format with all fields):
+    #   FIRST DIVERGENCE SUMMARY: cycle=N signal=S golden=0xHHH rtl=0xHHH type=T
+    re.compile(
+        r'FIRST\s+DIVERGENCE\s+SUMMARY:\s+'
+        r'cycle=(\d+)\s+signal=(\S+)\s+'
+        r'golden=(0x[0-9a-fA-F]+|\d+)\s+rtl=(0x[0-9a-fA-F]+|\d+)',
+        re.IGNORECASE,
+    ),
+    # vcd2table basic format (only cycle — degraded, no signal/value data):
+    #   FIRST DIVERGENCE: cycle N
     re.compile(
         r'FIRST\s+DIVERGENCE:\s+cycle\s+(\d+)',
         re.IGNORECASE,
@@ -93,11 +121,31 @@ def parse_divergence(log_path: Path) -> Divergence | None:
         match = pattern.search(log_text)
         if match:
             groups = match.groups()
+            cycle = int(groups[0])
+
+            # vcd2table basic format: only cycle captured (1 group)
+            if len(groups) == 1:
+                return Divergence(
+                    cycle=cycle,
+                    signal="unknown_from_vcd2table",
+                    expected=0,
+                    actual=0,
+                    degraded=True,
+                )
+
+            # Full formats (INTERNAL, LAYERED, Verilog, vcd2table SUMMARY): 4 groups
+            signal = groups[1] if len(groups) > 1 else "unknown"
+            expected_raw = groups[2] if len(groups) > 2 else "0"
+            actual_raw = groups[3] if len(groups) > 3 else "0"
+
+            expected = int(expected_raw, 16) if expected_raw.startswith("0x") else int(expected_raw, 0)
+            actual = int(actual_raw, 16) if actual_raw.startswith("0x") else int(actual_raw, 0)
+
             return Divergence(
-                cycle=int(groups[0]),
-                signal=groups[1] if len(groups) > 1 else "unknown",
-                expected=int(groups[2], 16) if len(groups) > 2 and isinstance(groups[2], str) and groups[2].startswith("0x") else 0,
-                actual=int(groups[3], 16) if len(groups) > 3 and isinstance(groups[3], str) and groups[3].startswith("0x") else 0,
+                cycle=cycle,
+                signal=signal,
+                expected=expected,
+                actual=actual,
             )
 
     return None
@@ -110,81 +158,14 @@ def parse_divergence(log_path: Path) -> Divergence | None:
 def load_golden_trace(golden_path: Path) -> list[dict[str, int]]:
     """Import golden model and obtain its per-cycle trace.
 
-    Supports three interfaces (must match SKILL.md expected_trace_gen):
-      1. ``mod.run(test_vector_index=0)`` or ``mod.run()`` -> list[dict]
-      2. ``mod.compute(inputs, trace=True)`` -> list[dict]
-         with inputs from ``mod.TEST_VECTORS[0]`` (full dict or its ``inputs`` field)
-      3. ``mod.simulate(inputs, trace=True)`` -> list[dict] (legacy interface)
-
-    Returns the first non-empty list[dict] it can produce, or [] if none work.
+    Delegates to rtl_utils.load_golden_trace_as_list() for the actual loading.
+    Returns [] on failure.
     """
-    spec_mod = importlib.util.spec_from_file_location(
-        "golden_model", str(golden_path)
-    )
-    if not spec_mod or not spec_mod.loader:
-        return []
-
-    mod = importlib.util.module_from_spec(spec_mod)
+    from rtl_utils import load_golden_trace_as_list as _load
     try:
-        spec_mod.loader.exec_module(mod)
-    except Exception as e:
-        print(f"[timing_diagnostic] Failed to load golden model: {e}", file=sys.stderr)
+        return _load(str(golden_path), test_vector_index=0)
+    except RuntimeError:
         return []
-
-    def _normalize(data) -> list[dict[str, int]]:
-        if not isinstance(data, list):
-            return []
-        out = []
-        for entry in data:
-            if isinstance(entry, dict):
-                # Coerce values to int where possible; skip non-numeric entries
-                clean = {}
-                for k, v in entry.items():
-                    if isinstance(v, int):
-                        clean[k] = v
-                    elif isinstance(v, str):
-                        try:
-                            clean[k] = int(v, 0)
-                        except (TypeError, ValueError):
-                            pass
-                out.append(clean)
-        return out
-
-    # Interface 1: run()
-    if hasattr(mod, "run"):
-        for kwargs in ({"test_vector_index": 0}, {}):
-            try:
-                trace = _normalize(mod.run(**kwargs))
-                if trace:
-                    return trace
-            except TypeError:
-                continue
-            except Exception:
-                break
-
-    # Interface 2: compute(inputs, trace=True) + TEST_VECTORS
-    if hasattr(mod, "compute") and hasattr(mod, "TEST_VECTORS"):
-        try:
-            tv = mod.TEST_VECTORS[0]
-            inputs = tv.get("inputs", tv) if isinstance(tv, dict) else tv
-            trace = _normalize(mod.compute(inputs, trace=True))
-            if trace:
-                return trace
-        except Exception:
-            pass
-
-    # Interface 3: simulate(inputs, trace=True) + TEST_VECTORS (legacy)
-    if hasattr(mod, "simulate") and hasattr(mod, "TEST_VECTORS"):
-        try:
-            tv = mod.TEST_VECTORS[0]
-            inputs = tv.get("inputs", tv) if isinstance(tv, dict) else tv
-            trace = _normalize(mod.simulate(inputs, trace=True))
-            if trace:
-                return trace
-        except Exception:
-            pass
-
-    return []
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +192,7 @@ def _classify_signal(
     - A: none of the above (computation)
     """
     if expected == actual:
-        return SignalDiagnosis(signal, "A", 0, expected, actual)
+        return SignalDiagnosis(signal, "unclassifiable", 0, expected, actual)
 
     for offset in range(1, WINDOW + 1):
         # B_late: actual value matches what golden had offset cycles ago
@@ -259,6 +240,9 @@ def classify_all_signals(
         diag = _classify_signal(
             divergence.signal, cycle, expected, actual, golden_trace
         )
+    elif divergence.degraded:
+        # Degraded divergence with no golden trace — cannot classify meaningfully.
+        diag = SignalDiagnosis(divergence.signal, "unclassifiable", 0, expected, actual)
     else:
         # Out of trace range — fall back to D/A heuristic.
         if actual == 0 and expected != 0:
@@ -326,10 +310,24 @@ def _generate_fix(diagnosis: TimingDiagnosis, spec: dict) -> str:
     b_signals = [s for s in diagnosis.all_signals if s.classification.startswith("B_")]
     a_signals = [s for s in diagnosis.all_signals if s.classification == "A"]
     d_signals = [s for s in diagnosis.all_signals if s.classification == "D"]
+    u_signals = [s for s in diagnosis.all_signals if s.classification == "unclassifiable"]
 
     lines = []
 
-    if b_signals:
+    if u_signals:
+        for s in u_signals[:3]:
+            lines.append(
+                f"Signal '{s.signal}' has INCOMPLETE divergence data at cycle {div.cycle}: "
+                f"expected=0x{s.expected_value:x}, actual=0x{s.actual_value:x} (values identical or missing)."
+            )
+        lines.append("")
+        lines.append("The divergence was parsed from a degraded source (vcd2table basic format)")
+        lines.append("that does not include signal name or value details.")
+        lines.append("Fix: Re-run simulation with cocotb INTERNAL mode for accurate per-signal classification.")
+        if diagnosis.divergence.degraded:
+            lines.append("     (This diagnosis was produced from a vcd2table log without FIRST DIVERGENCE SUMMARY.)")
+
+    elif b_signals:
         for s in b_signals[:3]:  # top 3
             direction = "late" if s.classification == "B_late" else "early"
             lines.append(
@@ -424,8 +422,14 @@ def diagnose(
     diagnosis.fix_suggestion = _generate_fix(diagnosis, spec)
 
     # Determine severity
+    u_signals = [s for s in all_signals if s.classification == "unclassifiable"]
     b_signals = [s for s in all_signals if s.classification.startswith("B_")]
-    diagnosis.severity = "high" if b_signals else "medium"
+    if u_signals:
+        diagnosis.severity = "low"  # degraded data — cannot act on it reliably
+    elif b_signals:
+        diagnosis.severity = "high"
+    else:
+        diagnosis.severity = "medium"
 
     return diagnosis
 
@@ -460,6 +464,7 @@ def main() -> int:
             "signal": result.divergence.signal,
             "expected": f"0x{result.divergence.expected:x}",
             "actual": f"0x{result.divergence.actual:x}",
+            "degraded": result.divergence.degraded,
         },
         "signal_classifications": [
             {
@@ -470,7 +475,7 @@ def main() -> int:
                 "actual": f"0x{s.actual_value:x}",
             }
             for s in result.all_signals
-            if s.classification != "A" or s.signal == result.divergence.signal
+            if s.classification not in ("A",) or s.signal == result.divergence.signal
         ],
         "timing_contract_context": result.timing_contract_context,
         "fix_suggestion": result.fix_suggestion,

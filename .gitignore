@@ -11,7 +11,9 @@ workspace/synth/
 
 *.vcd
 *.vvp
+*.fst
 *.tgz
+sim_cocotb/
 
 articles/
 docs/
@@ -29,4 +31,5 @@ lib/
 package.json
 example_test/**/sim_build/
 example_test/**/results.xml
+example_test/**/workspace/tb/simv
 example_test/**/workspace/synth/

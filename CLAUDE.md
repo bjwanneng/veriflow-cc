@@ -41,16 +41,17 @@ All non-trivial changes must follow this cycle:
 - `src/claude_skills/vf-rtl/SKILL.md` — Pipeline orchestrator. Contains Step 0 (init + batch clarification), 4-stage dispatch, and Error Recovery. Installed to `~/.claude/skills/vf-rtl/`. Invoked via `/vf-rtl <project_dir>`.
 - `src/claude_skills/vf-rtl/templates/` — Template files loaded on demand by subagents: spec_template.json, golden_model_template.py, cocotb_template.py, tb_integration_template.v.
 - `src/claude_skills/vf-rtl/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
-- `src/claude_agents/vf-architect.md` — Sub-agent for spec.json + golden_model.py generation (Stage 1: spec_golden).
+- `src/claude_agents/vf-spec-golden.md` — Sub-agent for spec.json + golden_model.py generation (Stage 1: spec_golden).
 - `src/claude_agents/vf-coder.md` — Sub-agent for RTL code generation (Stage 2: codegen).
+- `src/claude_agents/vf-tb-gen.md` — Sub-agent for cocotb + Verilog testbench generation (Stage 2 → Stage 3 handoff).
 - `src/claude_agents/vf-linter.md` — Sub-agent for lint (Stage 4: lint_synth, parallel).
 - `src/claude_agents/vf-synthesizer.md` — Sub-agent for synthesis (Stage 4: lint_synth, parallel).
   - **CRITICAL**: Agent `tools` field MUST be comma-separated capitalized names: `tools: Read, Write, Glob, Grep, Bash`. YAML list syntax causes silent tool permission failure (see GitHub #12392).
-- `install.py` — Installs 1 skill (SKILL.md + state.py + coding_style.md + templates) + 4 agents to `~/.claude/`. Reads from `src/`.
+- `install.py` — Installs 1 skill (SKILL.md + state.py + coding_style.md + templates) + 5 agents to `~/.claude/`. Reads from `src/`.
 - **Multi-file input**: Projects accept `requirement.md` (required), `constraints.md` (optional), `design_intent.md` (optional), `context/*.md` (optional). Missing optional files trigger targeted clarification questions in Step 0b.
 - Stage 1 (spec_golden) produces: spec.json (interface-only) + golden_model.py (algorithm + test vectors). golden_model.py replaces behavior_spec.md and micro_arch.md.
 - spec.json contains: ports, parameters, module connectivity, constraints (timing/area/power/io/verification), and design_intent.
-- Pipeline flow: Step 0 (init + clarification in main session). Stage 1: vf-architect subagent. Stage 2: vf-coder subagent (parallel per module). Stage 3: verify_fix (inline sim + error recovery). Stage 4: vf-linter + vf-synthesizer (parallel).
+- Pipeline flow: Step 0 (init + clarification in main session). Stage 1: vf-spec-golden subagent. Stage 2: vf-coder subagent (parallel per module). Stage 3: verify_fix (inline sim + error recovery). Stage 4: vf-linter + vf-synthesizer (parallel).
 - Error recovery: Main Claude reads errors, fixes RTL, re-runs. 3-retry budget, then asks user.
 - EDA environment: Discovered once in Step 0, saved to `.veriflow/eda_env.sh`, sourced before every EDA command.
 - Logs: `logs/lint.log`, `logs/sim.log`, `workspace/synth/synth_report.txt`.

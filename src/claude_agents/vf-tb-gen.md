@@ -20,6 +20,216 @@ Both files are generated regardless of cocotb availability.
    Python dependencies, so it is also a safe regression net for CI nodes
    without cocotb.
 
+## ABSOLUTE RULES (violation = testbench REJECTED)
+
+These rules are non-negotiable. They were derived from real pipeline failures
+(SM3 run, 2026-05-11) where their absence caused 3 bugs that took hours to
+diagnose because the generated testbench was a black box with zero diagnostic
+power.
+
+### RULE 1: Per-cycle comparison is MANDATORY
+
+The cocotb testbench **MUST** follow the `cocotb_template.py` structure exactly:
+- **MUST** import `golden_model.py`'s `run()` function
+- **MUST** generate `test_layered` — per-cycle output port comparison
+- **MUST** generate `test_internal_signals` — per-cycle internal register
+  comparison via VPI
+- **MUST** populate `GOLDEN_TO_PORT` mapping from spec.json port names
+- **MUST** populate `DRIVE_PHASE_CYCLES` from spec.json timing_convention
+- **MUST** populate `CLK_PERIOD_NS` from spec.json timing constraints
+- **MUST** fill in the `<CODEGEN: drive_inputs() call here>` placeholders in
+  both `test_layered` and `test_internal_signals` with the same drive_inputs()
+  call
+
+**PROHIBITED** (black-box-only pattern — causes silent bugs):
+```python
+# WRONG — this is a black-box test with ZERO diagnostic power
+# It only tells you the final answer is wrong, not WHERE it went wrong
+async def drive_and_check(dut, msg_block_val, expected_result, test_name):
+    # ... drive inputs ...
+    while dut.valid_out.value != 1:
+        await RisingEdge(dut.clk)
+    actual = int(dut.result_out.value)
+    assert actual == expected_result  # Only checks final output — USELESS for debug
+```
+
+If you generate a testbench that only checks final outputs without per-cycle
+comparison, ALL three bugs from the SM3 incident would go undetected until a
+human manually writes a debug TB. Per-cycle comparison catches Bug 1 (wrong
+MSG_BLOCK) on cycle 1 and Bug 2 (round_cnt offset) on the first CALC cycle.
+
+### RULE 2: Wide integer construction — NO addition-based concatenation
+
+When constructing wide hex values from multiple segments (e.g., 512-bit message
+blocks from 128-bit words), **NEVER** use addition to combine segments. Addition
+of hex literals loses the implicit bit positions of upper segments.
+
+**PROHIBITED** (loses upper bits silently):
+```python
+# WRONG — 0xA + 0xB + 0xC + 0xD is plain addition, NOT bit concatenation
+# The upper segments (0xC, 0xD) are added as small integers, not shifted
+MSG_BLOCK = 0x61626380_00000000_00000000 + 0x00000000_00000000_00000018
+```
+
+**REQUIRED** — use one of these patterns:
+```python
+# Pattern A: string concatenation + int() — simplest, no math errors
+MSG_BLOCK = int('61626380' + '00' * 56 + '00000018', 16)
+
+# Pattern B: explicit shift + OR — clear bit positions
+MSG_BLOCK = (WORD_A << 384) | (WORD_B << 256) | (WORD_C << 128) | WORD_D
+```
+
+This rule applies to ALL hex literal construction in both cocotb and Verilog TBs.
+
+### RULE 3: Verilog TB registered output sampling
+
+After detecting a valid/ready pulse at posedge, registered DATA outputs must be
+sampled at `@(negedge clk)` — NOT at the same posedge as the pulse. The pulse
+signal itself is sampled at posedge (it's a single-cycle signal), but the data
+it guards (e.g., result_out, result) is registered and needs NBA time to settle.
+
+```verilog
+// CORRECT — pulse at posedge, data at negedge
+wait_valid(cycles);          // polls @(posedge clk) until valid_out==1
+@(negedge clk);                   // wait for NBA to settle on result_out
+check_result(expected, "test_name");
+
+// WRONG — reads stale result_out (NBA hasn't propagated yet)
+wait_valid(cycles);
+check_result(expected, "test_name"); // result_out still has OLD value!
+```
+
+Exception: If the output is combinational (`assign data_out = data_reg`), `#1`
+after the posedge is sufficient. But `@(negedge clk)` works in ALL cases, so
+prefer it as the default pattern.
+
+### RULE 4: NO GUESSING — every error must contain concrete simulation data
+
+When a test fails, the developer must be able to diagnose the root cause from
+the error message alone, WITHOUT running additional debug simulations or
+inspecting waveforms. Every divergence report MUST contain ALL of:
+
+1. **Cycle number** — which clock cycle diverged (0-indexed from comparison start)
+2. **Signal name** — full VPI path (e.g., `u_datapath.a_reg`, `result_out`)
+3. **Signal width** — bit width of the signal (e.g., `width=256b`)
+4. **Expected value** — full hex, zero-padded to signal width (e.g., `0x00ab...cdef`)
+5. **Actual value** — full hex, zero-padded to signal width
+6. **XOR diff** — `expected ^ actual` in hex, highlights which bits differ
+7. **Root cause category** — one of:
+   - `signal_mismatch` — DUT computation is wrong (RTL bug)
+   - `stimulus_mismatch` — testbench driver doesn't match golden model (TB bug)
+
+**PROHIBITED** — error messages that require guessing:
+```
+# BAD — no cycle, no signal width, truncated hex
+AssertionError: hash mismatch expected=0x66c7f0f4 got=0x00000000
+```
+
+**REQUIRED** — complete diagnostic data:
+```
+[INTERNAL] FIRST DIVERGENCE at cycle=3 signal=u_datapath.a_reg (width=32b):
+  expected = 0x61626380
+  actual   = 0x00000000
+  xor diff = 0x61626380
+```
+
+This rule exists because in the SM3 pipeline run (2026-05-11), three bugs took
+hours to diagnose because error messages lacked cycle numbers, used truncated
+hex (`:08x` on 256-bit signals), and didn't distinguish between stimulus and
+DUT errors. The developer was forced to guess and write manual debug TBs.
+
+### RULE 5: Multi-block designs MUST exercise chaining at testbench time
+
+If the design accepts multiple blocks per operation (any of the following
+applies), the generated cocotb testbench MUST include `test_multi_block_chaining`
+populated with at least one 2-block message:
+
+- spec.json port list contains `is_last` (or any `*_last*`, `is_final`)
+- design name / category indicates hash, Merkle-Damgård, sponge, CBC/CTR
+  cipher chain, accumulator, or streaming filter
+- golden_model.py exports `MULTI_BLOCK_INPUTS` and `MULTI_BLOCK_EXPECTED_DIGEST`
+
+For these designs, codegen MUST:
+
+1. Set `DIGEST_OUTPUT_PORT = "<name>"` in the cocotb testbench (final output port)
+2. Confirm golden_model.py exports `MULTI_BLOCK_INPUTS: list[list[dict]]` and
+   `MULTI_BLOCK_EXPECTED_DIGEST: list[int]` with matching lengths and at least
+   one message of length ≥ 2.
+3. Leave `test_multi_block_chaining` intact — do not delete or `return` early.
+
+Why this rule: Patterns 11 (Merkle-Damgård chaining register not reset) and
+14 (valid signal not gated by `is_last`) only manifest on the **second** block.
+A single-block test will pass even when the design is broken for any
+real-world use case. The earliest stage these bugs can be caught is at
+testbench-time, which is what `test_multi_block_chaining` guarantees.
+
+If golden_model.py does NOT export the multi-block exports above, vf-tb-gen
+MUST request them from vf-spec-golden before generating the testbench — do
+not silently fall back to a single-block test for a multi-block design.
+
+### RULE 6: Every cocotb test MUST start with `await ensure_clock(dut)`
+
+In cocotb v2.0+, background tasks (including `cocotb.start_soon(Clock(...).start())`)
+are **terminated between tests**. A test whose first `await` is anything other
+than `await ensure_clock(dut)` will see `dut.clk` frozen — every
+`await RisingEdge(dut.clk)` blocks forever until cocotb's test-level watchdog
+fires (default 120s). The failure mode is a timeout with NO divergence data —
+exactly the "black box failure" RULE 4 forbids.
+
+The template's `ensure_clock(dut)` coroutine handles this: it asserts that
+`CLK_PERIOD_NS` was populated by codegen, then starts a fresh `Clock(dut.clk,
+CLK_PERIOD_NS, unit="ns")` and awaits the first `RisingEdge`. Codegen MUST
+NOT delete it and MUST NOT replace it with a global `_CLOCK_STARTED` flag —
+the flag pattern was the SM3 run's symptom (test 2 hung silently while test 1
+passed).
+
+**REQUIRED** — the FIRST `await` in every `@cocotb.test()` body MUST be
+`await ensure_clock(dut)`. Synchronous setup (skip guards, golden_model
+imports, parameter reads) is allowed before it, but no `await` may run first:
+
+```python
+@cocotb.test()
+async def test_<name>(dut):
+    """Docstring is fine."""
+    global FAIL_COUNT
+    if not GOLDEN_AVAILABLE:    # sync skip guard — allowed
+        return
+    await ensure_clock(dut)     # MUST be the first await
+    await reset_dut(dut)        # reset_dut needs the clock running
+    # ... rest of the test ...
+```
+
+**PROHIBITED**:
+
+```python
+# WRONG — RisingEdge before clock starts will hang silently
+@cocotb.test()
+async def test_layered(dut):
+    await RisingEdge(dut.clk)     # hangs: dut.clk is frozen
+    await ensure_clock(dut)       # never reached
+    ...
+
+# WRONG — reset_dut awaits ClockCycles internally, also hangs
+@cocotb.test()
+async def test_internal_signals(dut):
+    await reset_dut(dut)          # hangs inside the first await
+    await ensure_clock(dut)       # never reached
+    ...
+
+# WRONG — global flag does not survive cocotb v2.0 test boundaries
+_CLOCK_STARTED = False
+async def start_clock_once(dut):
+    global _CLOCK_STARTED
+    if not _CLOCK_STARTED:
+        cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+        _CLOCK_STARTED = True
+```
+
+This rule applies to EVERY test in the file, including `test_reset`,
+`test_protocol`, `test_summary`, and any codegen-added test (e.g.,
+`test_timing_contract`, `test_multi_block_chaining`). No exceptions.
+
 ## Input (provided in prompt by caller)
 
 - PROJECT_DIR: path to project root
@@ -87,7 +297,7 @@ ALL golden model trace signals (including internal registers) via VPI hierarchy.
 For this to work, the generated cocotb testbench MUST:
 - Include the same `drive_inputs()` call in `test_internal_signals` as in `test_layered`
 - Ensure golden_model.py trace output uses module-qualified signal names
-  (e.g., `"u_sm3_compress.a_reg"`, `"u_sm3_w_gen.w_reg[0]"`) for VPI access
+  (e.g., `"u_datapath.a_reg"`, `"u_expansion.w_reg[0]"`) for VPI access
 - The template handles VPI hierarchy navigation automatically (including array indices)
 
 **Timing contract assertions (cycle-level runtime checks)**:
@@ -105,7 +315,7 @@ Generate this test with these assertions derived from `TIMING_CONTRACT`:
 
 ```python
 # In test_timing_contract:
-REGISTERED_OUTPUTS = ["hash_out", "hash_valid"]  # from spec timing_contract
+REGISTERED_OUTPUTS = []  # populated from spec timing_contract registered_outputs
 SAME_CYCLE_VISIBLE = ["done"]                     # from spec timing_contract
 PIPELINE_DELAY_CYCLES = 4                         # from spec timing_contract
 
@@ -119,13 +329,12 @@ async def test_timing_contract(dut):
 
     violations = []
     for cycle in range(TIMEOUT_CYCLES):
-        await RisingEdge(dut.clk)
         # 1. Registered outputs: sample at posedge, re-check at negedge
         for port_name in REGISTERED_OUTPUTS:
             try:
                 sig = getattr(dut, port_name)
                 posedge_val = int(sig.value)
-                await Timer(CLK_PERIOD_NS // 2, units="ns")
+                await FallingEdge(dut.clk)
                 negedge_val = int(sig.value)
                 if posedge_val != negedge_val:
                     violations.append(
@@ -133,12 +342,13 @@ async def test_timing_contract(dut):
                         f"posedge ({posedge_val}) and negedge ({negedge_val}) "
                         f"— registered output must be stable"
                     )
-                await RisingEdge(dut.clk)  # re-sync
             except AttributeError:
                 pass
 
         # 2. Pipeline delay: count cycles from valid_in to valid_out
         # (codegen generates design-specific valid tracking logic)
+
+        await RisingEdge(dut.clk)  # advance to next cycle
 
         if any(v.startswith("cycle") for v in violations):
             break  # fail-fast on first timing violation
@@ -156,6 +366,32 @@ async def test_timing_contract(dut):
 
 Generate this test only when `TIMING_CONTRACT` has `registered_outputs` or
 `pipeline_delay_cycles > 0`. Skip for purely combinational designs.
+
+#### Step 3d: Multi-block chaining wiring (RULE 5)
+
+For designs that consume multiple blocks per operation (see RULE 5 for
+detection), codegen MUST populate the multi-block scaffolding that already
+exists in cocotb_template.py:
+
+```python
+# Codegen MUST replace None with the final-output port name from spec.json.
+# Example: "result_out" for hash, "ciphertext_out" for ciphers, "tag_out" for MACs.
+DIGEST_OUTPUT_PORT = "<digest_port_name>"
+```
+
+Also verify `golden_model.py` exports:
+
+- `MULTI_BLOCK_INPUTS: list[list[dict]]` — at least one outer entry with
+  `len(blocks) >= 2`. Each block dict provides the per-cycle input port
+  values, EXCLUDING `is_last` (the testbench wires that automatically based
+  on the block index).
+- `MULTI_BLOCK_EXPECTED_DIGEST: list[int]` — final-block expected output,
+  one entry per outer message. Length MUST match MULTI_BLOCK_INPUTS.
+
+If either export is missing, do NOT silently disable `test_multi_block_chaining`
+— stop, request the additions from vf-spec-golden, then resume. A single-block
+test will pass even when Patterns 11 / 14 are present in the RTL, and these
+bugs are catastrophic in production.
 
 ### Step 4: Write Verilog testbench
 
@@ -237,20 +473,28 @@ endmodule
 - For multi-cycle operations, poll for `valid` or `ready` signals with a timeout counter
 - For wide signals (>32 bits), use proper hex formatting in `$display`
 
-**CRITICAL — Single-cycle pulse sampling rule**:
-When checking a single-cycle pulse signal (e.g., `hash_valid`, `ready`), sample it
-at the SAME posedge where detection occurs. Do NOT insert `@(negedge clk)` between
-detection and sampling — the signal may already be cleared by then.
+**CRITICAL — Pulse detection vs registered data sampling (SM3 Bug 3)**:
+When a valid/ready pulse guards a registered data output, they use DIFFERENT
+sampling points:
+
+1. **PULSE signal** (valid_out, ready, done): detect at `@(posedge clk)`.
+   This is a single-cycle signal — the detection must happen at posedge.
+
+2. **REGISTERED DATA** (result_out, result): sample at `@(negedge clk)` AFTER
+   the posedge where the pulse was detected. At the posedge where valid_out
+   first appears, the DUT's NBA has just scheduled result_out's new value but
+   it hasn't settled yet. Reading result_out at the same posedge returns the
+   PREVIOUS value.
 
 ```verilog
-// CORRECT — back-to-back, no delay between detection and sampling
-wait_hash_valid(cycles_waited);   // polls until hash_valid==1 at posedge
-check_hash(expected, "test_name"); // reads hash_out at SAME posedge
+// CORRECT — pulse at posedge, data at negedge
+while (valid_out !== 1'b1) @(posedge clk);  // detect pulse at posedge
+@(negedge clk);                               // wait for NBA to settle
+check_result(expected, "test_name");            // now result_out is correct
 
-// WRONG — @(negedge clk) causes miss of single-cycle pulse
-wait_hash_valid(cycles_waited);
-@(negedge clk);                    // hash_valid already cleared!
-check_hash(expected, "test_name"); // sees hash_valid=0, wrong data
+// WRONG — reads stale result_out (SM3 Bug 3)
+while (valid_out !== 1'b1) @(posedge clk);
+check_result(expected, "test_name");  // result_out = PREVIOUS value!
 ```
 
 **CRITICAL — Hex literal digit count**:
@@ -278,21 +522,100 @@ Race condition review checklist (verify ALL items before writing the file):
 - [ ] All DUT input ports are driven with `<=` (non-blocking) in the initial block, except `rst` during the reset sequence
 - [ ] Reset sequence holds for at least 2 posedge cycles and waits for `@(negedge clk)` after deassert
 - [ ] Multi-block messages include at least one `@(posedge clk)` gap between blocks
-- [ ] Single-cycle pulse signals are sampled at the same posedge as detection (no intervening `@(negedge clk)`)
+- [ ] Single-cycle pulse signals are detected at posedge; registered data outputs guarded by that pulse are sampled at `@(negedge clk)` after pulse detection
 - [ ] Registered outputs are sampled at `@(negedge clk)` after the expected production posedge
 - [ ] After `wait(signal == value)` or polling loop, add `@(posedge clk)` before driving new inputs
 - [ ] `is_last` (or any per-block "final" flag) is co-sampled with `msg_valid` at the SAME posedge, explicitly 0 for non-final blocks, 1 only for the last block, and held per its `handshake` (single_cycle vs hold_until_ack) — see `tb_integration_template.v` Rule 3a
 
 ### Step 5: Validate output files
 
-```bash
-# Verify both files exist
-test -f "$PROJECT_DIR/workspace/tb/test_<design_name>.py" || echo "[HOOK] FAIL: cocotb TB missing"
-test -f "$PROJECT_DIR/workspace/tb/tb_<design_name>.v" || echo "[HOOK] FAIL: Verilog TB missing"
+Run these checks via Bash. Each check that fails prints `[HOOK] FAIL: ...` —
+if any FAIL line appears, regenerate the file before returning. These checks
+are CRITICAL: an unfilled placeholder makes Stage 3 silently misalign and
+look like an RTL bug, breaking the "no guessing" promise.
 
-# Syntax check the Python file
-python -c "import py_compile; py_compile.compile('$PROJECT_DIR/workspace/tb/test_<design_name>.py', doraise=True)" 2>/dev/null && echo "[HOOK] cocotb TB: syntax OK" || echo "[HOOK] WARN: cocotb TB has syntax errors"
+```bash
+COCOTB_TB="$PROJECT_DIR/workspace/tb/test_<design_name>.py"
+VLOG_TB="$PROJECT_DIR/workspace/tb/tb_<design_name>.v"
+
+# A. Existence
+test -f "$COCOTB_TB" || echo "[HOOK] FAIL: cocotb TB missing"
+test -f "$VLOG_TB"   || echo "[HOOK] FAIL: Verilog TB missing"
+
+# B. Python syntax
+python -c "import py_compile; py_compile.compile('$COCOTB_TB', doraise=True)" 2>/dev/null \
+    && echo "[HOOK] cocotb TB: syntax OK" \
+    || echo "[HOOK] FAIL: cocotb TB has syntax errors"
+
+# C. Unfilled placeholders in cocotb TB (these MUST be populated by codegen)
+#    A test where any of these are empty/None will silently produce wrong
+#    timing alignment and misclassify A_reg/B_late bugs.
+grep -nE '^\s*INPUT_PORTS\s*=\s*\{\s*\}\s*(#.*)?$'       "$COCOTB_TB" \
+    && echo "[HOOK] FAIL: INPUT_PORTS not populated"
+grep -nE '^\s*OUTPUT_PORTS\s*=\s*\{\s*\}\s*(#.*)?$'      "$COCOTB_TB" \
+    && echo "[HOOK] FAIL: OUTPUT_PORTS not populated"
+grep -nE '^\s*GOLDEN_TO_PORT\s*=\s*\{\s*\}\s*(#.*)?$'    "$COCOTB_TB" \
+    && echo "[HOOK] FAIL: GOLDEN_TO_PORT not populated"
+grep -nE '^\s*CLK_PERIOD_NS\s*=\s*None\s*(#.*)?$'        "$COCOTB_TB" \
+    && echo "[HOOK] FAIL: CLK_PERIOD_NS not set from spec.timing.target_frequency_mhz"
+grep -nE '^\s*DRIVE_PHASE_CYCLES\s*=\s*0\s*(#.*)?$'      "$COCOTB_TB" \
+    && echo "[HOOK] WARN: DRIVE_PHASE_CYCLES literal 0 — rely on spec.json fallback or set explicitly"
+grep -nE '^\s*DIGEST_OUTPUT_PORT\s*=\s*None\s*(#.*)?$'   "$COCOTB_TB" \
+    && {
+        # FAIL only for multi-block designs (is_last port present).
+        # WARN for everyone else (single-block designs don't run this test).
+        if grep -qE '"is_last"\s*:|^\s*is_last\s*=|is_last_name' "$COCOTB_TB"; then
+            echo "[HOOK] FAIL: DIGEST_OUTPUT_PORT not set — multi-block design (is_last port detected)"
+        else
+            echo "[HOOK] WARN: DIGEST_OUTPUT_PORT=None — test_multi_block_chaining will SKIP. OK if design is single-block."
+        fi
+    }
+grep -n  '<CODEGEN:'                                     "$COCOTB_TB" \
+    && echo "[HOOK] FAIL: cocotb TB has unfilled <CODEGEN:...> placeholders"
+
+# C2. Every @cocotb.test() body MUST start with `await ensure_clock(dut)`
+#     (RULE 6). Missing it = silent test-level hang with no divergence data.
+python - "$COCOTB_TB" <<'PY' || true
+import re, sys
+path = sys.argv[1]
+src = open(path).read()
+# For every @cocotb.test(), the FIRST `await` in the body must be
+# `await ensure_clock(dut)`. Anything earlier (RisingEdge, ClockCycles,
+# reset_dut, etc.) without the clock running will hang silently until
+# cocotb's test-level watchdog fires (RULE 6). Skip-guards (`if ...:
+# return`) and synchronous setup are allowed before the first await.
+pattern = re.compile(
+    r'@cocotb\.test\(\)\s*\n'
+    r'async\s+def\s+(?P<name>\w+)\s*\(\s*dut\s*\)\s*:\s*\n'
+    r'(?P<body>(?:[ \t]+.*\n|[ \t]*\n)+)',
+    re.MULTILINE,
+)
+missing = []
+for m in pattern.finditer(src):
+    name = m.group("name")
+    body = m.group("body")
+    await_match = re.search(r'^\s*await\s+(\S.*?)$', body, re.MULTILINE)
+    if not await_match:
+        continue  # no await in the test — nothing can hang
+    first_await = await_match.group(1).strip()
+    if not first_await.startswith("ensure_clock(dut)"):
+        missing.append((name, first_await))
+if missing:
+    for name, first_await in missing:
+        print(f"[HOOK] FAIL: {name}() first `await` is "
+              f"'await {first_await}' — must be 'await ensure_clock(dut)' (RULE 6)")
+    sys.exit(1)
+print("[HOOK] ensure_clock(dut) is first await in every cocotb test")
+PY
+
+# D. Unfilled placeholders in Verilog TB
+grep -nE '<design_name>|<output_port>|<EXPECTED_VALUE>|<HALF_PERIOD>|<WIDTH-1:0>|<test_name>|<N>|<input_port>|<valid_signal>|<ready_signal>|<port>' "$VLOG_TB" \
+    && echo "[HOOK] FAIL: Verilog TB has unfilled <...> placeholders"
 ```
+
+If any `[HOOK] FAIL` is printed, the testbench is REJECTED — re-read the
+template, populate every constant from spec.json/golden_model.py, and rewrite
+the file. Do NOT proceed to Step 6 with FAIL lines present.
 
 ### Step 6: Return result
 

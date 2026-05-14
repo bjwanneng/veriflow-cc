@@ -33,6 +33,41 @@ from pathlib import Path
 from rtl_utils import collect_rtl_sources
 
 
+def _find_docs_dir(tb_dir: Path) -> Path | None:
+    """Find the workspace docs directory containing spec.json and golden_model.py.
+
+    Searches in order:
+      1. <tb_dir>/../docs/  (canonical layout: workspace/tb + workspace/docs)
+      2. Walk up from tb_dir looking for docs/golden_model.py
+      3. $PROJECT_DIR/workspace/docs/
+    Returns the docs Path if found, else None.
+    """
+    # 1. Canonical layout
+    candidate = tb_dir.parent / "docs"
+    if (candidate / "golden_model.py").exists() and (candidate / "spec.json").exists():
+        return candidate
+
+    # 2. Walk up from tb_dir
+    current = tb_dir.parent
+    for _ in range(5):  # max 5 levels up
+        candidate = current / "docs"
+        if (candidate / "golden_model.py").exists() and (candidate / "spec.json").exists():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    # 3. $PROJECT_DIR/workspace/docs/
+    project_dir = os.environ.get("PROJECT_DIR", "")
+    if project_dir:
+        candidate = Path(project_dir) / "workspace" / "docs"
+        if (candidate / "golden_model.py").exists() and (candidate / "spec.json").exists():
+            return candidate
+
+    return None
+
+
 def check_environment():
     """Verify cocotb is importable. Exit 2 if not."""
     try:
@@ -47,8 +82,35 @@ def check_environment():
         sys.exit(2)
 
 
-def find_test_module(tb_dir: Path, module_name: str) -> str:
-    """Find the cocotb test file: test_<module>.py."""
+def find_test_module(tb_dir: Path, module_name: str,
+                     test_file_override: str = None) -> str:
+    """Find the cocotb test module.
+
+    Args:
+        tb_dir: Directory containing test files.
+        module_name: Top-level module name (used for default test file lookup).
+        test_file_override: If set, use this file path instead of the default
+            test_<module>.py naming convention. Can be an absolute path or
+            relative to tb_dir. The module name (without .py) is extracted
+            from the filename and returned.
+
+    Returns:
+        The Python module name (e.g., "test_sm3_core" or "test_sm3_debug").
+    """
+    if test_file_override:
+        # Resolve the override path
+        override_path = Path(test_file_override)
+        if not override_path.is_absolute():
+            override_path = tb_dir / override_path
+        if not override_path.exists():
+            print(json.dumps({
+                "tests": 0, "passed": 0, "failed": 0,
+                "error": f"Test file not found: {override_path}"
+            }))
+            sys.exit(2)
+        # Return the module name derived from the filename
+        return override_path.stem
+    # Default: look for test_<module>.py
     test_file = tb_dir / f"test_{module_name}.py"
     if not test_file.exists():
         print(json.dumps({
@@ -78,14 +140,208 @@ def _build_cocotb_diff_summary(
         msg = f.get("message", "")
         lines.append(f"  #{i+1} test={test_name}")
         if msg:
-            # Show first line of the message (usually contains cycle/signal info)
-            first_line = msg.split("\n")[0] if "\n" in msg else msg[:120]
-            lines.append(f"     {first_line}")
+            # Show the first 3 lines of the message to capture full
+            # expected/actual/xor diff data (no truncation — debug data
+            # must be complete, never guess from truncated values).
+            msg_lines = msg.split("\n")[:3]
+            for ml in msg_lines:
+                lines.append(f"     {ml}")
     if len(failures) > 10:
         lines.append(f"  ... and {len(failures) - 10} more failure(s)")
     lines.append("=" * 60)
     lines.append("")
     return "\n".join(lines)
+
+
+def _try_timing_diagnostic(
+    failures: list[dict],
+    tb_dir: Path,
+    build_dir: Path,
+) -> dict | None:
+    """Auto-run timing_diagnostic.diagnose() on the cocotb failures.
+
+    Writes failure messages to <build_dir>/cocotb_failures.log so the existing
+    log-scanning diagnose() can find FIRST DIVERGENCE patterns. Looks for
+    spec.json and golden_model.py at <tb_dir>/../docs/ (the canonical
+    workspace layout). Returns a dict with the diagnosis, or None if no
+    diagnosis could be produced (no divergence pattern, missing files, etc.).
+
+    Failure to produce a diagnosis is silent — it is a "no extra hint"
+    outcome, not an error. The cocotb failure stays the source of truth.
+    """
+    if not failures:
+        return None
+
+    # Concatenate every failure's message + traceback into a single log blob
+    blob_lines: list[str] = []
+    for f in failures:
+        msg = f.get("message", "") or ""
+        tb = f.get("traceback", "") or ""
+        if msg:
+            blob_lines.append(msg)
+        if tb:
+            blob_lines.append(tb)
+    blob = "\n".join(blob_lines)
+    if not blob.strip():
+        return None
+
+    log_path = build_dir / "cocotb_failures.log"
+    try:
+        log_path.write_text(blob, encoding="utf-8")
+    except OSError:
+        return None
+
+    # Find docs dir with fallback search
+    docs_dir = _find_docs_dir(tb_dir)
+    if docs_dir is None:
+        # Cannot run timing_diagnostic without golden model and spec.
+        # Fall through to degraded diagnosis below.
+        pass
+    else:
+        golden_path = docs_dir / "golden_model.py"
+        spec_path = docs_dir / "spec.json"
+
+        try:
+            from timing_diagnostic import diagnose
+        except ImportError:
+            golden_path = None  # type: ignore
+        else:
+            try:
+                diagnosis = diagnose(log_path, golden_path, spec_path)
+            except Exception:
+                diagnosis = None
+
+            if diagnosis is not None:
+                # Run bug-pattern matcher over the classified signals (best effort)
+                pattern_matches: list[dict] = []
+                try:
+                    from bug_pattern_match import match_patterns
+                    divs_for_match = [
+                        {
+                            "signal": s.signal,
+                            "classification": s.classification,
+                            "offset_cycles": s.offset_cycles,
+                            "expected": s.expected_value,
+                            "actual": s.actual_value,
+                            "cycle": diagnosis.divergence.cycle,
+                        }
+                        for s in diagnosis.all_signals
+                    ]
+                    pattern_matches = [m.to_dict() for m in match_patterns(divs_for_match)]
+                except Exception:
+                    pattern_matches = []
+
+                return {
+                    "divergence": {
+                        "cycle": diagnosis.divergence.cycle,
+                        "signal": diagnosis.divergence.signal,
+                        "expected": f"0x{diagnosis.divergence.expected:x}",
+                        "actual": f"0x{diagnosis.divergence.actual:x}",
+                        "degraded": diagnosis.divergence.degraded,
+                    },
+                    "signal_classifications": [
+                        {
+                            "signal": s.signal,
+                            "classification": s.classification,
+                            "offset_cycles": s.offset_cycles,
+                            "expected": f"0x{s.expected_value:x}",
+                            "actual": f"0x{s.actual_value:x}",
+                        }
+                        for s in diagnosis.all_signals
+                    ],
+                    "timing_contract_context": diagnosis.timing_contract_context,
+                    "fix_suggestion": diagnosis.fix_suggestion,
+                    "severity": diagnosis.severity,
+                    "pattern_matches": pattern_matches,
+                    "log_path": str(log_path),
+                }
+
+    # Degraded diagnosis: no FIRST DIVERGENCE found or docs unavailable.
+    # Extract structured info from failure messages so Stage 3 has something
+    # actionable instead of a blank slate.
+    fix_lines = []
+    for f in failures:
+        test_name = f.get("test", "?")
+        msg = f.get("message", "")
+        if "Timeout waiting for ready" in msg:
+            fix_lines.append(
+                f"Test '{test_name}': DUT never asserted ready — check reset "
+                f"initialization and FSM IDLE state."
+            )
+        elif "drive_inputs() was never called" in msg:
+            fix_lines.append(
+                f"Test '{test_name}': no stimulus delivered — codegen did not "
+                f"fill in the drive_inputs() call in this test."
+            )
+        elif "GOLDEN_TO_PORT is empty" in msg:
+            fix_lines.append(
+                f"Test '{test_name}': port mapping not populated — codegen "
+                f"did not fill in GOLDEN_TO_PORT from spec.json."
+            )
+        elif "ZERO signals were compared" in msg or "no signals compared" in msg.lower():
+            fix_lines.append(
+                f"Test '{test_name}': golden trace signal names don't match "
+                f"DUT hierarchy — check naming convention (_reg suffix, module prefix)."
+            )
+        elif msg:
+            fix_lines.append(f"Test '{test_name}': {msg[:200]}")
+
+    return {
+        "degraded": True,
+        "divergence": {"cycle": None, "signal": None,
+                       "expected": None, "actual": None, "degraded": True},
+        "fix_suggestion": (
+            "No FIRST DIVERGENCE pattern found in cocotb output.\n"
+            + ("\n".join(fix_lines) if fix_lines else
+               "Tests failed before per-cycle comparison started. "
+               "Read logs/cocotb.log for full traceback.")
+        ),
+        "severity": "medium",
+        "log_path": str(log_path),
+    }
+
+    # Run bug-pattern matcher over the classified signals (best effort)
+    pattern_matches: list[dict] = []
+    try:
+        from bug_pattern_match import match_patterns
+        divs_for_match = [
+            {
+                "signal": s.signal,
+                "classification": s.classification,
+                "offset_cycles": s.offset_cycles,
+                "expected": s.expected_value,
+                "actual": s.actual_value,
+                "cycle": diagnosis.divergence.cycle,
+            }
+            for s in diagnosis.all_signals
+        ]
+        pattern_matches = [m.to_dict() for m in match_patterns(divs_for_match)]
+    except Exception:
+        pattern_matches = []
+
+    return {
+        "divergence": {
+            "cycle": diagnosis.divergence.cycle,
+            "signal": diagnosis.divergence.signal,
+            "expected": f"0x{diagnosis.divergence.expected:x}",
+            "actual": f"0x{diagnosis.divergence.actual:x}",
+        },
+        "signal_classifications": [
+            {
+                "signal": s.signal,
+                "classification": s.classification,
+                "offset_cycles": s.offset_cycles,
+                "expected": f"0x{s.expected_value:x}",
+                "actual": f"0x{s.actual_value:x}",
+            }
+            for s in diagnosis.all_signals
+        ],
+        "timing_contract_context": diagnosis.timing_contract_context,
+        "fix_suggestion": diagnosis.fix_suggestion,
+        "severity": diagnosis.severity,
+        "pattern_matches": pattern_matches,
+        "log_path": str(log_path),
+    }
 
 
 def main():
@@ -106,6 +362,10 @@ def main():
                         help="Disable VCD waveform dump (default: enabled)")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed per-test results")
+    parser.add_argument("--test-file", default=None,
+                        help="Override the default test_<module>.py with a specific "
+                             "test file (absolute path or relative to --tb-dir). "
+                             "Useful for running debug/alternative test files.")
     parser.set_defaults(vcd=True)
     args = parser.parse_args()
 
@@ -119,7 +379,7 @@ def main():
     tb_dir = Path(args.tb_dir).resolve()
     build_dir = Path(args.build_dir).resolve()
     module_name = args.module
-    test_module = find_test_module(tb_dir, module_name)
+    test_module = find_test_module(tb_dir, module_name, args.test_file)
 
     build_dir.mkdir(parents=True, exist_ok=True)
 
@@ -251,12 +511,92 @@ def main():
         "vcd_path": vcd_path,
         "failures": failures,
     }
+
+    # ── Alignment info (SLOW-3: single source of truth for cycle mapping) ──
+    # Emitted on failure so the orchestrator knows exactly how cocotb cycles
+    # map to golden model cycles without re-reading multiple source files.
+    if num_failed > 0:
+        drive_phase = None
+        try:
+            # Read DRIVE_PHASE_CYCLES from the test file if possible
+            import importlib.util as _ilu
+            for candidate in tb_dir.glob(f"test_{module_name}.py"):
+                pass  # just take the last one found
+            test_file = tb_dir / f"test_{module_name}.py"
+            if test_file.exists():
+                src = test_file.read_text(encoding="utf-8", errors="replace")
+                import re as _re
+                m = _re.search(r'DRIVE_PHASE_CYCLES\s*=\s*(\d+)', src)
+                if m:
+                    drive_phase = int(m.group(1))
+        except Exception:
+            pass
+        result["alignment_info"] = {
+            "reset_cycle_skip": 1,
+            "drive_phase_cycles": drive_phase,
+            "note": (
+                "cocotb compare cycle 0 = golden cycle 1 (after RESET_CYCLE_SKIP=1). "
+                "DRIVE_PHASE_CYCLES is consumed inside drive_inputs() before compare loop."
+            ),
+        }
+
+    # ── Auto-run timing_diagnostic on failure ─────────────────────────
+    # The whole point of this auto-wiring: when a cycle-level mismatch is
+    # found, do NOT make the orchestrator guess about timing offsets vs
+    # algorithm errors — the diagnostic gives a deterministic classification
+    # (A/B_late/B_early/D) and a concrete fix suggestion. The runner remains
+    # silent if there is no FIRST DIVERGENCE pattern or the inputs are
+    # missing, so this is a strict additive hint.
+    diagnosis = None
+    if num_failed > 0:
+        diagnosis = _try_timing_diagnostic(failures, tb_dir, build_dir)
+        if diagnosis is not None:
+            result["timing_diagnosis"] = diagnosis
+
     print(json.dumps(result))
 
     # Print inline diff summary to stderr for orchestrator visibility
     if num_failed > 0 and failures:
         diff_summary = _build_cocotb_diff_summary(failures, num_tests, num_passed, num_failed)
         print(diff_summary, file=sys.stderr)
+
+    if diagnosis is not None:
+        diag_lines = [
+            "",
+            "=" * 60,
+            "TIMING DIAGNOSIS",
+            "=" * 60,
+            f"  cycle    : {diagnosis['divergence']['cycle']}",
+            f"  signal   : {diagnosis['divergence']['signal']}",
+            f"  expected : {diagnosis['divergence']['expected']}",
+            f"  actual   : {diagnosis['divergence']['actual']}",
+            f"  severity : {diagnosis['severity']}",
+        ]
+        for s in diagnosis.get("signal_classifications", [])[:5]:
+            diag_lines.append(
+                f"  class    : {s['signal']} -> {s['classification']} "
+                f"(offset={s['offset_cycles']}, exp={s['expected']}, act={s['actual']})"
+            )
+        fix = diagnosis.get("fix_suggestion", "")
+        if fix:
+            diag_lines.append("-" * 60)
+            diag_lines.append("FIX SUGGESTION:")
+            for line in fix.split("\n"):
+                diag_lines.append(f"  {line}")
+        pattern_matches = diagnosis.get("pattern_matches", []) or []
+        if pattern_matches:
+            diag_lines.append("-" * 60)
+            diag_lines.append(
+                f"MATCHED BUG PATTERNS ({len(pattern_matches)}) — see bug_patterns.md:"
+            )
+            for m in pattern_matches[:5]:
+                diag_lines.append(
+                    f"  P{m['pattern_id']:02d} [{m['confidence']:.0%}] {m['title']}"
+                )
+                diag_lines.append(f"    why : {m['reason']}")
+                diag_lines.append(f"    rule: {m['prevention_rule']}")
+        diag_lines.append("=" * 60)
+        print("\n".join(diag_lines), file=sys.stderr)
 
     if num_failed > 0:
         sys.exit(1)

@@ -137,8 +137,8 @@ def check_latency_consistency(spec: dict) -> tuple[list[str], list[str]]:
         if latency is None:
             continue
 
-        # Sum pipeline_delay_cycles on paths involving this module
-        delay_sum = 0
+        # Max pipeline_delay_cycles across paths involving this module
+        max_delay = 0
         for conn in connectivity:
             src = conn.get("source", "")
             dst = conn.get("destination", "")
@@ -149,12 +149,12 @@ def check_latency_consistency(spec: dict) -> tuple[list[str], list[str]]:
             dst_mod = dst.split(".")[0] if "." in dst else dst
 
             if dst_mod == mod_name or src_mod == mod_name:
-                delay_sum += delay
+                max_delay = max(max_delay, delay)
 
-        if delay_sum > 0 and latency < delay_sum:
+        if max_delay > 0 and latency < max_delay:
             errors.append(
                 f"Module '{mod_name}': declared latency={latency} but "
-                f"sum of connectivity delays={delay_sum}"
+                f"max connectivity delay={max_delay}"
             )
 
     return errors, warnings

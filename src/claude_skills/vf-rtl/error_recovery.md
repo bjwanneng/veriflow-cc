@@ -53,8 +53,8 @@ fi
    reported a FIRST DIVERGENCE, use that as the PRIMARY diagnostic. The divergence
    cycle and signal name pinpoint exactly where the RTL first differs from golden model.
    Do NOT guess the root cause — trace from the divergence point backward through the
-   datapath. Example: if divergence is at cycle 14, signal `u_sm3_w_gen.w_reg[0]`,
-   the bug is in W expansion logic, likely in the round BEFORE cycle 14.
+   datapath. Example: if divergence is at cycle 14, signal `u_expansion.w_reg[0]`,
+   the bug is in expansion logic, likely in the round BEFORE cycle 14.
 
 6. **Expected per-cycle trace from golden_model.py**: SKILL.md Stage 3 generates
    `logs/expected_trace_golden.md` from the golden model. This table shows

@@ -557,11 +557,11 @@ if __name__ == "__main__":
         # Run hook if provided
         _hook_passed = True
         if _hook_cmd:
-            import shlex
             _hook_cmd_resolved = _hook_cmd.replace("$PROJECT_DIR", _project_dir)
             try:
                 result = subprocess.run(
-                    shlex.split(_hook_cmd_resolved),
+                    _hook_cmd_resolved,
+                    shell=True,
                     capture_output=True, text=True, cwd=_project_dir,
                     env={**os.environ, "PROJECT_DIR": _project_dir},
                 )

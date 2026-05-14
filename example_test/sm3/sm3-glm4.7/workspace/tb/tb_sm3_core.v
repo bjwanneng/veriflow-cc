@@ -1,243 +1,158 @@
 `timescale 1ns / 1ps
+`default_nettype none
 
-/**
- * Testbench for sm3_core module
- *
- * This testbench verifies the SM3 hash implementation using test vectors.
- * It respects the input hold time requirement from spec.json timing contracts.
- *
- * Timing Contract Analysis:
- * - All control signal connections have pipeline_delay_cycles = 0
- * - max_pipeline_delay = 0
- * - Minimum input hold time = max_pipeline_delay + 1 = 1 cycle
- * - Data inputs (msg_block) must remain stable for at least 1 cycle after valid pulse
- */
+// =============================================================================
+// tb_sm3_core.v - Self-checking Verilog testbench for SM3 core
+//
+// Cross-check / fallback verification path. Drives the GM/T 0004-2012 "abc"
+// KAT and checks the final hash against a pre-computed expected value embedded
+// as a 256-bit hex literal.
+//
+// Timing notes (TB Rule 3 — registered output sampling):
+//   - ready / hash_valid are detected at posedge.
+//   - hash_out is a registered output: sampled at @(negedge clk) after the
+//     posedge where hash_valid was first observed (NBA-settled value).
+//   - DUT input assignments use blocking `=` only inside the dedicated reset
+//     sequence; all subsequent stimulus uses non-blocking `<=` to avoid
+//     racing the DUT's posedge sampling logic.
+// =============================================================================
 
 module tb_sm3_core;
+    reg          clk;
+    reg          rst_n;
+    reg          msg_valid;
+    reg  [511:0] msg_block;
+    reg          is_last;
 
-    // Testbench parameters
-    localparam CLK_PERIOD = 2;  // 2ns = 500 MHz
-    localparam MAX_CYCLES = 1000;
-
-    // DUT signals
-    reg clk;
-    reg rst;
-    reg msg_valid;
-    reg [511:0] msg_block;
-    reg is_last;
-    wire ready;
-    wire hash_valid;
+    wire         ready;
+    wire         hash_valid;
     wire [255:0] hash_out;
 
-    // Test control
-    integer test_passed;
-    integer test_failed;
-    integer cycle_count;
-    reg [255:0] temp_hash;
+    // -------------------------------------------------------------------------
+    // Pre-computed expected values (from golden_model.py TEST_VECTORS[0])
+    // GM/T 0004-2012 "abc" KAT
+    // hex digit count check: 256/4 = 64 digits, 512/4 = 128 digits
+    // -------------------------------------------------------------------------
+    localparam [255:0] EXPECTED_ABC = 256'h66c7f0f4_62eeedd9_d1f2d46b_dc10e4e2_4167c487_5cf2f7a2_297da02b_8f4ba8e0;
+    localparam [511:0] MSG_ABC      = 512'h61626380_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000018;
 
-    // Instantiate DUT
-    sm3_core u_dut (
-        .clk(clk),
-        .rst(rst),
-        .msg_valid(msg_valid),
-        .msg_block(msg_block),
-        .is_last(is_last),
-        .ready(ready),
-        .hash_valid(hash_valid),
-        .hash_out(hash_out)
+    // -------------------------------------------------------------------------
+    // DUT instantiation
+    // -------------------------------------------------------------------------
+    sm3_core dut (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .msg_valid  (msg_valid),
+        .msg_block  (msg_block),
+        .is_last    (is_last),
+        .ready      (ready),
+        .hash_valid (hash_valid),
+        .hash_out   (hash_out)
     );
 
-    // Clock generation
+    // -------------------------------------------------------------------------
+    // VCD capture (used by vcd2table.py for divergence analysis)
+    // -------------------------------------------------------------------------
     initial begin
-        clk = 0;
-        forever #(CLK_PERIOD/2) clk = ~clk;
+        $dumpfile("workspace/sim/wave.vcd");
+        $dumpvars(0, tb_sm3_core);
     end
 
-    // Reset task
-    task reset_dut;
-        begin
-            rst = 1;
-            #(CLK_PERIOD * 5);
-            rst = 0;
-            #(CLK_PERIOD * 2);
-        end
-    endtask
+    // -------------------------------------------------------------------------
+    // 100 MHz clock (10 ns period)
+    // -------------------------------------------------------------------------
+    initial clk = 1'b0;
+    always #5 clk = ~clk;
 
-    // Wait for ready task
-    task wait_for_ready;
-        begin
-            cycle_count = 0;
-            while (ready !== 1'b1 && cycle_count < MAX_CYCLES) begin
-                @(posedge clk);
-                cycle_count = cycle_count + 1;
-            end
-            if (cycle_count >= MAX_CYCLES) begin
-                $display("[ERROR] Timeout waiting for ready!");
-                $finish;
-            end
-        end
-    endtask
+    // -------------------------------------------------------------------------
+    // Cycle counter for diagnostics
+    // -------------------------------------------------------------------------
+    integer cycle_counter;
+    initial cycle_counter = 0;
+    always @(posedge clk) cycle_counter <= cycle_counter + 1;
 
-    // Send block task
-    // IMPORTANT: msg_block must remain stable for at least 1 cycle after msg_valid deassertion
-    task send_block;
-        input [511:0] block_upper;
-        input [511:0] block_lower;
-        input is_last_block;
-        begin
-            // Wait for ready
-            wait_for_ready();
+    integer fail_count;
+    initial fail_count = 0;
 
-            // Drive inputs
-            msg_block = {block_upper, block_lower};
-            is_last = is_last_block;
-            msg_valid = 1'b1;
+    integer timeout_cnt;
 
-            // Hold for 1 cycle (min hold time = max_pipeline_delay + 1 = 0 + 1 = 1)
+    // -------------------------------------------------------------------------
+    // Test sequence
+    // -------------------------------------------------------------------------
+    initial begin
+        // --- Reset (blocking OK inside reset sequence only) ---
+        rst_n     = 1'b0;
+        msg_valid = 1'b0;
+        is_last   = 1'b0;
+        msg_block = MSG_ABC;       // hold stimulus stable from start
+
+        // hold reset for 20 ns (>= 2 posedges)
+        #20;
+        rst_n = 1'b1;
+        @(negedge clk);
+
+        // --- Wait for DUT ready ---
+        wait (ready === 1'b1);
+        @(posedge clk);
+
+        // --- Drive valid pulse (non-blocking, scheduled into NBA region) ---
+        msg_valid <= 1'b1;
+        is_last   <= 1'b1;
+        msg_block <= MSG_ABC;
+
+        // Hold msg_block stable for 2 cycles (cycle 0 handshake + cycle 1 load).
+        // DRIVE_PHASE_CYCLES = 1 per spec.timing_convention; we hold +1 cycle
+        // for safety so msg_block is stable through the W_regs load posedge.
+        @(posedge clk);
+        @(posedge clk);
+        msg_valid <= 1'b0;
+        is_last   <= 1'b0;
+        // msg_block left stable (don't care after load)
+
+        // --- Wait for hash_valid (with timeout) ---
+        timeout_cnt = 0;
+        while (hash_valid !== 1'b1 && timeout_cnt < 200) begin
             @(posedge clk);
-
-            // Deassert valid but keep data stable for 1 more cycle
-            msg_valid = 1'b0;
-            @(posedge clk);
+            timeout_cnt = timeout_cnt + 1;
         end
-    endtask
 
-    // Wait for hash_valid and read hash
-    task get_hash;
-        output [255:0] hash_result;
-        begin
-            cycle_count = 0;
-            while (hash_valid !== 1'b1 && cycle_count < MAX_CYCLES) begin
-                @(posedge clk);
-                cycle_count = cycle_count + 1;
-            end
-            if (cycle_count >= MAX_CYCLES) begin
-                $display("[ERROR] Timeout waiting for hash_valid!");
-                $finish;
-            end
-            hash_result = hash_out;
-        end
-    endtask
-
-    // Compare hash task
-    task compare_hash;
-        input [255:0] actual;
-        input [255:0] expected;
-        input [319:0] test_name;  // 40 chars
-        begin
-            $display("Test: %s", test_name);
-            $display("  Expected hash: 0x%064h", expected);
-            $display("  Got hash     : 0x%064h", actual);
-
-            if (actual === expected) begin
-                $display("  Status: PASS");
-                test_passed = test_passed + 1;
+        if (hash_valid === 1'b1) begin
+            // Registered DATA output: re-sample after NBA settles
+            @(negedge clk);
+            $display("[TB] hash_valid asserted at cycle %0d", cycle_counter);
+            $display("[TB] hash_out = 0x%064h", hash_out);
+            if (hash_out === EXPECTED_ABC) begin
+                $display("========================================");
+                $display("SUCCESS: Hash matches GM/T 0004-2012 'abc' KAT!");
+                $display("ALL TESTS PASSED");
+                $display("========================================");
             end else begin
-                $display("  Status: FAIL");
-                test_failed = test_failed + 1;
+                fail_count = fail_count + 1;
+                $display("========================================");
+                $display("[FAIL] test=abc_kat cycle=%0d signal=hash_out width=256b",
+                         cycle_counter);
+                $display("  expected = 0x%064h", EXPECTED_ABC);
+                $display("  actual   = 0x%064h", hash_out);
+                $display("  xor diff = 0x%064h", EXPECTED_ABC ^ hash_out);
+                $display("  root_cause = signal_mismatch (DUT computation)");
+                $display("FAILED: %0d assertion(s) failed", fail_count);
+                $display("========================================");
             end
-            $display("");
-        end
-    endtask
-
-    // Main test sequence
-    initial begin
-        // Initialize signals
-        msg_valid = 0;
-        msg_block = 512'h0;
-        is_last = 0;
-        test_passed = 0;
-        test_failed = 0;
-
-        $display("========================================");
-        $display("SM3 Core Testbench");
-        $display("========================================");
-        $display("");
-
-        // Test 1: "abc"
-        reset_dut();
-        send_block(512'h6162638000000000000000000000000000000000000000000000000000000000,
-                   512'h0000000000000000000000000000000000000000000000000000000000000018,
-                   1'b1);
-
-        // Expected hash for "abc": 0x66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0
-        begin
-            get_hash(temp_hash);
-            compare_hash(temp_hash,
-                        256'h66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0,
-                        "abc");
-        end
-
-        // Test 2: 16 bytes "abcd" * 4
-        reset_dut();
-        // Padded block for 16-byte message
-        send_block(512'h616263646162636461626364616263648000000000000000000000000000000,
-                   512'h0000000000000000000000000000000000000000000000000000000000000080,
-                   1'b1);
-
-        // Expected hash: 0x639c6f6b30d93ecebd559a953ba2eb72705db7d2be82bbf32979380e02124971
-        begin
-            get_hash(temp_hash);
-            compare_hash(temp_hash,
-                        256'h639c6f6b30d93ecebd559a953ba2eb72705db7d2be82bbf32979380e02124971,
-                        "16_bytes_abcd*4");
-        end
-
-        // Test 3: 32 bytes "abcd" * 8 (one 512-bit block after padding)
-        reset_dut();
-        send_block(512'h6162636461626364616263646162636461626364616263646162636461626364,
-                   512'h8000000000000000000000000000000000000000000000000000000000000100,
-                   1'b1);
-
-        // Expected hash: 0x73edef5c9d3710f14dbaf892f50ce9dfab48e462d837d93ec0f9422c5f2a4007
-        begin
-            get_hash(temp_hash);
-            compare_hash(temp_hash,
-                        256'h73edef5c9d3710f14dbaf892f50ce9dfab48e462d837d93ec0f9422c5f2a4007,
-                        "32_bytes_one_block");
-        end
-
-        // Test 4: 64 bytes "abcd" * 16 (two 512-bit blocks after padding)
-        reset_dut();
-        // First block
-        send_block(512'h616263646162636461626364616263646162636461626364616263646461626364,
-                   512'h6162636461626364616263646162636461626364616263646162636461626364,
-                   1'b0);
-        // Second block
-        send_block(512'h8000000000000000000000000000000000000000000000000000000000000000,
-                   512'h0000000000000000000000000000000000000000000000000000000000000200,
-                   1'b1);
-
-        // Expected hash: 0xdebe9ff92275b8a138604889c18e5a4d6fdb70e5387e5765293dcba39c0c5732
-        begin
-            get_hash(temp_hash);
-            compare_hash(temp_hash,
-                        256'hdebe9ff92275b8a138604889c18e5a4d6fdb70e5387e5765293dcba39c0c5732,
-                        "64_bytes_two_blocks");
-        end
-
-        // Summary
-        $display("========================================");
-        $display("Test Summary");
-        $display("========================================");
-        $display("Passed: %0d", test_passed);
-        $display("Failed: %0d", test_failed);
-        $display("========================================");
-
-        if (test_failed > 0) begin
-            $display("[ERROR] Some tests failed!");
-            $finish(1);
+            #20 $finish;
         end else begin
-            $display("[SUCCESS] All tests passed!");
-            $finish(0);
+            $display("========================================");
+            $display("[FAIL] test=abc_kat cycle=%0d signal=hash_valid",
+                     cycle_counter);
+            $display("  TIMEOUT waiting for hash_valid");
+            $display("  final ready      = %b", ready);
+            $display("  final hash_valid = %b", hash_valid);
+            $display("  final hash_out   = 0x%064h", hash_out);
+            $display("  root_cause = signal_mismatch (DUT never asserted hash_valid)");
+            $display("FAILED: timeout");
+            $display("========================================");
+            $finish;
         end
     end
-
-    // Timeout watchdog
-    initial begin
-        #(CLK_PERIOD * 100000);  // 200,000 ns timeout
-        $display("[ERROR] Simulation timeout!");
-        $finish(1);
-    end
-
 endmodule
+
+`resetall

@@ -134,10 +134,10 @@ def test_latency_mismatch():
         {"source": "m1.a", "destination": "top_mod.b",
          "timing_contract": {"producer_type": "registered", "pipeline_delay_cycles": 2}},
         {"source": "top_mod.c", "destination": "m2.d",
-         "timing_contract": {"producer_type": "registered", "pipeline_delay_cycles": 2}},
+         "timing_contract": {"producer_type": "registered", "pipeline_delay_cycles": 3}},
     ])
     errors, _ = check_latency_consistency(spec)
-    assert any("latency=2" in e for e in errors)
+    assert any("latency=2" in e and "max" in e for e in errors)
 
 
 def test_golden_trace_alignment_ok():
@@ -274,7 +274,7 @@ def test_cli_fix_valid_handshake():
 
 
 def test_cli_fix_latency_mismatch():
-    """--fix should bump latency to match connectivity delay sum."""
+    """--fix should bump latency to match connectivity max delay."""
     with tempfile.TemporaryDirectory() as tmp:
         spec = _minimal_spec(module_connectivity=[
             {"source": "m1.a", "destination": "top_mod.b",

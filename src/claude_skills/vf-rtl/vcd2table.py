@@ -442,25 +442,18 @@ def run_golden_model_comparison(
     except (subprocess.TimeoutExpired, Exception):
         pass
 
-    # Strategy 2: Import and call run() function
+    # Strategy 2: Import via canonical rtl_utils loader
     if not golden_cycles:
         try:
-            spec = importlib.util.spec_from_file_location("golden_model", golden_path)
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                if hasattr(mod, "run"):
-                    try:
-                        golden_data = mod.run(test_vector_index=test_vector_index)
-                    except TypeError:
-                        golden_data = mod.run()
-                    if isinstance(golden_data, list):
-                        for i, entry in enumerate(golden_data):
-                            if isinstance(entry, dict):
-                                golden_cycles[i] = {
-                                    k: hex(v) if isinstance(v, int) else str(v)
-                                    for k, v in entry.items()
-                                }
+            from rtl_utils import load_golden_trace as _rtl_utils_load
+            cycles_dict = _rtl_utils_load(golden_path, test_vector_index=test_vector_index)
+            for i, entry in cycles_dict.items():
+                golden_cycles[i] = {
+                    k: hex(v) if isinstance(v, int) else str(v)
+                    for k, v in entry.items()
+                }
+        except RuntimeError:
+            pass
         except Exception as e:
             if not golden_cycles:
                 return f"[GOLDEN] Could not load golden model: {e}\n"
@@ -506,7 +499,6 @@ def run_golden_model_comparison(
 
         return None
 
-    all_vcd_names = list({s.split(".")[-1] for s in include_signals})
     # Build mapping: golden_short → VCD full name
     short_to_vcd = {}
     for sig in include_signals:

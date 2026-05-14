@@ -12,7 +12,7 @@ Timing convention (IMPORTANT):
   Practical effect: the golden model records the NEW register values after each
   computation step. The comparison is aligned by DRIVE_PHASE_CYCLES offset.
 
-  Registered outputs (ready, hash_valid, etc.) have a 1-cycle delay: they
+  Registered outputs (ready, valid_out, etc.) have a 1-cycle delay: they
   reflect the combinational _next signal from the PREVIOUS posedge's state.
 
 Clock management (IMPORTANT):
@@ -34,14 +34,15 @@ import os, sys
 from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles, Timer
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles, Timer
 
 CLK_PERIOD_NS = None  # codegen: MUST set FULL period from spec.timing.target_frequency_mhz
                       # (period_ns = 1000 / target_frequency_mhz). cocotb's Clock()
                       # takes the FULL period, NOT half-period.
 RESET_CYCLE_SKIP = 1  # Golden cycle 0 is the reset state; comparison starts at cycle 1
 TIMEOUT_CYCLES = 500
-FAIL_COUNT = 0
+FAIL_COUNT = 0  # Accumulates across ALL tests; do NOT reset inside individual tests
+_STIMULUS_DELIVERED = False  # Set True by drive_inputs(); checked by comparison tests
 
 # ─── Golden model import ────────────────────────────────────────────────
 GOLDEN_AVAILABLE = False
@@ -99,6 +100,90 @@ if DRIVE_PHASE_CYCLES == 0:
         pass
 
 
+# ─── Divergence collection ──────────────────────────────────────────────
+# By default the comparison loops collect up to MAX_COLLECTED_DIVERGENCES
+# mismatches before raising. This surfaces *patterns* (same-cycle siblings
+# and steady-state offsets) instead of only the first signal that drifts.
+#
+# Env knobs:
+#   COCOTB_MAX_DIVERGENCES=N   raise the cap (default 8)
+#   COCOTB_FAIL_FAST=1         restore old behavior (stop at first mismatch)
+MAX_COLLECTED_DIVERGENCES = int(os.environ.get("COCOTB_MAX_DIVERGENCES", "8"))
+FAIL_FAST = os.environ.get("COCOTB_FAIL_FAST", "0") == "1"
+
+
+def _record_divergence(divergences, sig_name, expected_val, actual_val,
+                       cycle_idx, width, kind=None):
+    """Append a divergence dict to `divergences`.
+
+    Returns True when the caller should stop collecting (cap reached or
+    fail-fast mode). The divergence shape is the same dict that the
+    pre-collect implementation used, so downstream formatting code is
+    unchanged.
+    """
+    div = {
+        "cycle": cycle_idx,
+        "signal": sig_name,
+        "expected": expected_val,
+        "actual": actual_val,
+        "width": width,
+    }
+    if kind:
+        div["kind"] = kind
+    divergences.append(div)
+    return FAIL_FAST or len(divergences) >= MAX_COLLECTED_DIVERGENCES
+
+
+def _format_divergence_block(div, tag):
+    """Format one divergence as a [tag] FIRST DIVERGENCE-shaped block.
+
+    timing_diagnostic.parse_divergence regex matches the FIRST entry of
+    this block in the cocotb log, so the per-divergence emission MUST
+    keep this exact shape.
+    """
+    width = div.get("width") or 32
+    hex_digits = max((width + 3) // 4, 1)
+    kind = div.get("kind")
+    kind_tag = f" kind={kind}" if kind else ""
+    hint = (
+        "\n  (testbench driver wrong — DUT input doesn't match golden stimulus)"
+        if kind == "stimulus_mismatch" else ""
+    )
+    return (
+        f"[{tag}] FIRST DIVERGENCE at cycle={div['cycle']} "
+        f"signal={div['signal']} (width={width}b){kind_tag}:\n"
+        f"  expected = 0x{div['expected']:0{hex_digits}x}\n"
+        f"  actual   = 0x{div['actual']:0{hex_digits}x}\n"
+        f"  xor diff = 0x{div['expected'] ^ div['actual']:0{hex_digits}x}"
+        f"{hint}"
+    )
+
+
+def _finalize_divergences(dut, divergences, tag):
+    """Emit each divergence and raise AssertionError with a summary.
+
+    Caller must check `if divergences:` before invoking — this always
+    raises. The first block is reused as the assertion message so
+    timing_diagnostic's regex (which uses `search`, not `findall`) still
+    anchors on the chronologically first divergence.
+    """
+    blocks = [_format_divergence_block(d, tag) for d in divergences]
+    # Log every block separately so test logs show each mismatch on its own.
+    for b in blocks:
+        dut._log.error(b)
+    head = blocks[0]
+    if len(blocks) > 1:
+        more = "\n\n".join(blocks[1:])
+        msg = (
+            f"{head}\n\n"
+            f"(+{len(blocks) - 1} additional divergence(s) collected; "
+            f"set COCOTB_FAIL_FAST=1 to stop at the first):\n\n{more}"
+        )
+    else:
+        msg = head
+    raise AssertionError(msg)
+
+
 # ─── Clock management ───────────────────────────────────────────────────
 # CRITICAL: In cocotb v2.0+, background tasks (including Clock) are killed
 # between tests. Each test MUST call ensure_clock() to start a fresh clock.
@@ -115,9 +200,51 @@ async def ensure_clock(dut):
 
 # ─── Helpers ────────────────────────────────────────────────────────────
 
+def _lookup_signal_width(sig_name: str, default: int = 32) -> int:
+    """Best-effort width lookup from spec-populated port dicts.
+
+    Used when cocotb's `len(sig)` fails (e.g., VPI internal signal whose
+    handle does not expose a width). The default `32` is a last resort —
+    it truncates 256-bit hash signals and was the root cause of misleading
+    [INTERNAL] FIRST DIVERGENCE messages where expected hex was correct
+    but actual hex was zero-padded to 32 bits.
+
+    Generates all combinations of these strip operations:
+      - Strip module-qualified prefix (`u_x.y_reg` -> `y_reg`)
+      - Strip `_reg` suffix (`y_reg` -> `y`)
+      - Strip `[N]` array suffix (`y[0]` -> `y`)
+    Returns the first matching width in OUTPUT_PORTS, then INPUT_PORTS,
+    or `default` if nothing matches.
+    """
+    seen: set[str] = {sig_name}
+    candidates: list[str] = [sig_name]
+    cursor = 0
+    while cursor < len(candidates):
+        n = candidates[cursor]
+        cursor += 1
+        for stripped in (
+            n.rsplit(".", 1)[-1] if "." in n else "",
+            n[:-4] if n.endswith("_reg") else "",
+            n.split("[", 1)[0] if "[" in n else "",
+        ):
+            if stripped and stripped not in seen:
+                seen.add(stripped)
+                candidates.append(stripped)
+
+    for name in candidates:
+        if name in OUTPUT_PORTS:
+            return OUTPUT_PORTS[name]
+    for name in candidates:
+        if name in INPUT_PORTS:
+            return INPUT_PORTS[name]
+    return default
+
+
 async def reset_dut(dut):
     """Apply synchronous reset and wait for outputs to settle."""
     global FAIL_COUNT
+    global _STIMULUS_DELIVERED
+    _STIMULUS_DELIVERED = False  # Reset per-test stimulus flag
     dut.rst.value = 1
     # Zero all input ports only (not outputs — outputs are driven by DUT)
     for name in INPUT_PORTS:
@@ -151,6 +278,64 @@ def check(dut, expected, signal, test_name, cycle):
         )
         dut._log.error(msg)
         raise AssertionError(msg)
+
+
+def _validate_trace_signal_names(expected_cycles, dut, test_name):
+    """Pre-check that golden trace signal names exist in DUT hierarchy.
+
+    Returns (found_signals, missing_signals). Logs warnings for missing.
+    """
+    if not expected_cycles:
+        return [], []
+
+    all_trace_keys = set()
+    for entry in expected_cycles:
+        if isinstance(entry, dict):
+            all_trace_keys.update(entry.keys())
+
+    found = []
+    missing = []
+    for sig_name in sorted(all_trace_keys):
+        try:
+            if '.' in sig_name:
+                parts = sig_name.split('.')
+                obj = dut
+                for part in parts:
+                    while '[' in part:
+                        arr_name, rest = part.split('[', 1)
+                        if arr_name:
+                            obj = getattr(obj, arr_name)
+                        idx_str, part = rest.split(']', 1)
+                        obj = obj[int(idx_str)]
+                    if part:
+                        obj = getattr(obj, part)
+            elif '[' in sig_name:
+                base, rest = sig_name.split('[', 1)
+                obj = getattr(dut, base)
+                idx_str, _ = rest.split(']', 1)
+                obj = obj[int(idx_str)]
+            else:
+                getattr(dut, sig_name)
+            found.append(sig_name)
+        except (AttributeError, IndexError):
+            missing.append(sig_name)
+
+    if missing:
+        dut._log.warning(
+            f"[{test_name}] {len(missing)} golden trace signal(s) not found in DUT: "
+            f"{missing[:10]}"
+        )
+    return found, missing
+
+
+def _align_trace(expected_cycles):
+    """Slice the golden trace to skip the reset state (cycle 0).
+
+    DRIVE_PHASE_CYCLES is consumed entirely inside drive_inputs() via its
+    hold_data_cycles parameter. This function only skips golden cycle 0.
+    Do NOT re-add DRIVE_PHASE_CYCLES to this slice.
+    """
+    return expected_cycles[RESET_CYCLE_SKIP:]
 
 
 async def drive_inputs(dut, input_values, valid_name='valid_in',
@@ -194,6 +379,10 @@ async def drive_inputs(dut, input_values, valid_name='valid_in',
     # Wait one rising edge — DUT samples inputs at this posedge
     await RisingEdge(dut.clk)
 
+    # Mark that stimulus was delivered (for post-loop sanity check in tests)
+    global _STIMULUS_DELIVERED
+    _STIMULUS_DELIVERED = True
+
     # Deassert based on handshake protocol
     if valid_name in HOLD_UNTIL_ACK_PORTS:
         # hold_until_ack: keep valid high until DUT asserts ready
@@ -219,6 +408,69 @@ async def wait_valid(dut, valid_name='valid_out', max_cycles=200):
     return -1  # timeout
 
 
+async def drive_block_sequence(
+    dut,
+    blocks: list[dict],
+    valid_name: str = "valid_in",
+    ready_name: str = "ready_out",
+    is_last_name: str = "is_last",
+    done_name: str = "valid_out",
+    wait_for_done_each_block: bool = True,
+    max_wait_per_block: int = 200,
+):
+    """Drive a sequence of blocks back-to-back through a multi-block design.
+
+    For each block in `blocks`:
+      1. Wait for ready=1
+      2. Drive block inputs simultaneously, with `is_last` set to 1 only for
+         the final block. If the DUT does not have an `is_last_name` port,
+         it is skipped silently.
+      3. If `wait_for_done_each_block` is True, await done_name=1 before
+         starting the next block. Otherwise just hand off after the input
+         is sampled.
+
+    Returns the cycle index at which the FINAL block's done asserted (or -1
+    on timeout). After return, the DUT output ports hold the final result.
+
+    This helper is the build-time guard against Pattern 14 (valid not gated
+    by is_last) and Pattern 11 (Merkle-Damgård chaining reset): if either
+    bug is present, comparison of the final-block output against the golden
+    multi-block digest will mismatch.
+    """
+    has_is_last = hasattr(dut, is_last_name)
+    final_done_cycle = -1
+    for i, block in enumerate(blocks):
+        is_last = (i == len(blocks) - 1)
+        inputs = dict(block)
+        if has_is_last:
+            inputs[is_last_name] = int(is_last)
+        await drive_inputs(
+            dut, inputs,
+            valid_name=valid_name, ready_name=ready_name,
+        )
+        if wait_for_done_each_block:
+            waited = await wait_valid(dut, valid_name=done_name,
+                                      max_cycles=max_wait_per_block)
+            if waited < 0:
+                dut._log.error(
+                    f"[MULTI_BLOCK] block {i}/{len(blocks)-1} timed out "
+                    f"waiting for {done_name}=1"
+                )
+                return -1
+            if is_last:
+                final_done_cycle = waited
+            elif int(getattr(dut, done_name).value) == 1:
+                # Pattern 14 detection: intermediate block fired done.
+                # We don't fail here — the test owning this call decides
+                # whether the design is supposed to assert done per block
+                # or only at the end. Log it for visibility.
+                dut._log.warning(
+                    f"[MULTI_BLOCK] {done_name}=1 after intermediate block "
+                    f"{i} (is_last=0). Verify the design gates done with is_last."
+                )
+    return final_done_cycle
+
+
 # ─── VCD capture ──────────────────────────────────────────────────────
 # VCD is handled by cocotb_runner.py (waves=True) or the Makefile.
 # No in-test action needed — the runner configures iverilog to dump VCD.
@@ -230,7 +482,7 @@ async def wait_valid(dut, valid_name='valid_out', max_cycles=200):
 async def test_reset(dut):
     """Test 1: Reset behavior — outputs quiescent after reset."""
     global FAIL_COUNT
-    FAIL_COUNT = 0  # reset per-test counter
+    # NOTE: do NOT reset FAIL_COUNT here; it accumulates across all tests.
     await ensure_clock(dut)
     await reset_dut(dut)
 
@@ -325,6 +577,9 @@ async def test_layered(dut):
 
     dut._log.info(f"[LAYERED] Comparing {len(expected_cycles)} cycles against golden model")
 
+    # Pre-validate golden trace signal names against DUT hierarchy
+    _validate_trace_signal_names(expected_cycles, dut, "test_layered")
+
     # IMPORTANT: codegen MUST add drive_inputs() call here with golden model
     # test vectors before the comparison loop. Without driving inputs,
     # the DUT has no stimulus and all outputs will be initial values.
@@ -339,44 +594,28 @@ async def test_layered(dut):
     # If the design processes a single input block, drive once then wait.
     # <CODEGEN: drive_inputs() call here>
 
-    # Stimulus guard: verify that at least one input port was driven to non-zero.
-    # If drive_inputs() was never called, the DUT receives zero stimulus and
-    # any comparison against golden model is meaningless.
-    if INPUT_PORTS and all(int(getattr(dut, n).value) == 0 for n in INPUT_PORTS):
-        raise AssertionError(
-            "test_layered: no input stimulus detected — drive_inputs() was never called"
-        )
-
     # Map golden trace signal names to DUT port names.
     # Golden model uses "_reg" suffix; DUT output ports don't.
     # Codegen populates this from spec.json port names.
-    GOLDEN_TO_PORT = {}  # {"ready_reg": "ready", "hash_valid_reg": "hash_valid", ...}
+    GOLDEN_TO_PORT = {}  # {"ready_reg": "ready", "valid_out_reg": "valid_out", ...}
 
     if not GOLDEN_TO_PORT:
         raise AssertionError(
             "test_layered: GOLDEN_TO_PORT is empty — codegen did not populate port mapping"
         )
 
-    first_divergence = None
+    divergences: list[dict] = []
     cycles_checked = 0
     signals_compared = 0
+    signals_not_found = []
 
-    # Alignment derivation (avoid the double-offset bug from SM3 pipeline):
-    #   drive_inputs() already advanced the DUT through 1 sample posedge plus
-    #   DRIVE_PHASE_CYCLES "hold" posedges. After drive_inputs returns, the
-    #   DUT register state corresponds to golden cycle 1 (= "after the first
-    #   logical computation step"). DRIVE_PHASE_CYCLES is therefore consumed
-    #   inside drive_inputs and MUST NOT be added to the golden-trace slice
-    #   here as well — doing so caused (N-1)-cycle offsets in earlier runs.
-    #
-    # Slice rule: skip ONLY golden cycle 0 (reset state). Then compare
-    # BEFORE advancing the clock, so iteration 0 reads DUT at the state left
-    # by drive_inputs (= golden cycle 1), iteration 1 at golden cycle 2, etc.
-    compare_cycles = expected_cycles[RESET_CYCLE_SKIP:]
+    # Alignment: skip golden cycle 0 (reset state). See _align_trace() for rationale.
+    compare_cycles = _align_trace(expected_cycles)
 
     for cycle_idx, expected in enumerate(compare_cycles):
         # Compare each output signal against golden model — DUT state already
         # reflects this golden cycle, so do NOT await before comparing.
+        stop_outer = False
         for sig_name, expected_val in expected.items():
             # Map golden trace name to DUT port name
             dut_name = GOLDEN_TO_PORT.get(sig_name)
@@ -387,23 +626,37 @@ async def test_layered(dut):
                 actual_val = int(sig.value)
                 signals_compared += 1
                 if actual_val != expected_val:
-                    first_divergence = {
-                        "cycle": cycle_idx,
-                        "signal": sig_name,
-                        "expected": expected_val,
-                        "actual": actual_val,
-                    }
-                    break
+                    if _record_divergence(
+                        divergences, sig_name, expected_val, actual_val,
+                        cycle_idx, len(sig),
+                    ):
+                        stop_outer = True
+                        break
             except AttributeError:
-                pass  # signal not accessible in DUT hierarchy, skip
+                if dut_name not in signals_not_found:
+                    signals_not_found.append(dut_name)
 
         cycles_checked += 1
 
-        if first_divergence:
+        if stop_outer:
             break
 
         # Advance DUT one cycle for the NEXT golden entry.
         await RisingEdge(dut.clk)
+
+    # Stimulus sanity check — uses flag set by drive_inputs()
+    if INPUT_PORTS and not _STIMULUS_DELIVERED:
+        raise AssertionError(
+            "test_layered: drive_inputs() was never called (no stimulus delivered)"
+        )
+
+    # Warn about ports that could not be found
+    if signals_not_found:
+        dut._log.warning(
+            f"[LAYERED] {len(signals_not_found)} port(s) not found in DUT, "
+            f"skipped: {signals_not_found[:5]}"
+            + (f" ... and {len(signals_not_found)-5} more" if len(signals_not_found) > 5 else "")
+        )
 
     # Report results
     if signals_compared == 0:
@@ -411,19 +664,13 @@ async def test_layered(dut):
             "test_layered: ZERO signals were compared — GOLDEN_TO_PORT keys "
             "do not match any golden trace signal names"
         )
-    if first_divergence:
-        FAIL_COUNT += 1
-        div = first_divergence
-        msg = (
-            f"[LAYERED] FIRST DIVERGENCE at cycle={div['cycle']} "
-            f"signal={div['signal']}: "
-            f"expected=0x{div['expected']:08x} got=0x{div['actual']:08x}"
-        )
-        dut._log.error(msg)
-        raise AssertionError(msg)
+    if divergences:
+        FAIL_COUNT += len(divergences)
+        _finalize_divergences(dut, divergences, "LAYERED")
     else:
         dut._log.info(
-            f"[LAYERED] PASS — {cycles_checked} cycles matched golden model"
+            f"[LAYERED] PASS — {cycles_checked} cycles, "
+            f"{signals_compared} signal values matched"
         )
 
 
@@ -483,41 +730,24 @@ async def test_internal_signals(dut):
 
     dut._log.info(f"[INTERNAL] Comparing {len(expected_cycles)} cycles, internal signals")
 
+    # Pre-validate golden trace signal names against DUT hierarchy
+    _validate_trace_signal_names(expected_cycles, dut, "test_internal_signals")
+
     # IMPORTANT: codegen MUST add drive_inputs() call here with golden model
     # test vectors before the comparison loop. Without driving inputs,
     # the DUT has no stimulus and all outputs will be initial values.
     # <CODEGEN: drive_inputs() call here — same as test_layered>
 
-    # Stimulus tracking: drive_inputs() may have cleared data inputs by the
-    # time we reach this point (intentional, end-of-hold deassert), so we
-    # cannot decide "was stimulus driven?" from a single snapshot here.
-    # Instead we sample input ports inside the comparison loop and raise if
-    # NONE were ever non-zero across the full comparison window.
-    _stimulus_seen_nonzero = False
-
-    first_divergence = None
+    divergences: list[dict] = []
     cycles_checked = 0
     signals_compared = 0
     signals_not_found = []
 
-    # Alignment derivation — see the matching block in test_layered for the
-    # full rationale. drive_inputs() already consumed DRIVE_PHASE_CYCLES inside
-    # itself. The slice here only skips golden cycle 0 (reset state), and we
-    # compare BEFORE the await so iteration 0 sees the DUT state left by
-    # drive_inputs (= golden cycle 1).
-    compare_cycles = expected_cycles[RESET_CYCLE_SKIP:]
+    # Alignment: skip golden cycle 0 (reset state). See _align_trace() for rationale.
+    compare_cycles = _align_trace(expected_cycles)
 
     for cycle_idx, expected in enumerate(compare_cycles):
-        # Track stimulus: read every input port even when golden trace omits
-        # it, so a missing drive_inputs() is detected via the post-loop check.
-        for in_name in INPUT_PORTS:
-            try:
-                if int(getattr(dut, in_name).value) != 0:
-                    _stimulus_seen_nonzero = True
-                    break
-            except (AttributeError, ValueError):
-                pass
-
+        stop_outer = False
         for sig_name, expected_val in expected.items():
             if sig_name in INPUT_PORTS:
                 # Stimulus comparison: golden trace recorded the input value
@@ -527,14 +757,13 @@ async def test_internal_signals(dut):
                     actual_val = int(getattr(dut, sig_name).value)
                     signals_compared += 1
                     if actual_val != expected_val:
-                        first_divergence = {
-                            "cycle": cycle_idx,
-                            "signal": sig_name,
-                            "expected": expected_val,
-                            "actual": actual_val,
-                            "kind": "stimulus_mismatch",
-                        }
-                        break
+                        if _record_divergence(
+                            divergences, sig_name, expected_val, actual_val,
+                            cycle_idx, _lookup_signal_width(sig_name),
+                            kind="stimulus_mismatch",
+                        ):
+                            stop_outer = True
+                            break
                 except (AttributeError, ValueError):
                     pass
                 continue
@@ -545,47 +774,57 @@ async def test_internal_signals(dut):
                     parts = sig_name.split('.')
                     obj = dut
                     for part in parts:
-                        # Handle array indexing: w_reg[0] → w_reg, index 0
-                        if '[' in part:
-                            arr_name, idx_str = part.split('[')
-                            idx = int(idx_str.rstrip(']'))
-                            obj = getattr(obj, arr_name)
+                        # Handle array indexing: w_reg[0], mem[3][7]
+                        while '[' in part:
+                            arr_name, rest = part.split('[', 1)
+                            if arr_name:
+                                obj = getattr(obj, arr_name)
+                            idx_str, part = rest.split(']', 1)
+                            idx = int(idx_str)
                             obj = obj[idx]
-                        else:
+                        if part:  # remaining non-index part
                             obj = getattr(obj, part)
                     actual_val = int(obj.value)
                 else:
-                    sig = getattr(dut, sig_name)
-                    actual_val = int(sig.value)
+                    # Handle top-level array signals: sig_name[0]
+                    if '[' in sig_name:
+                        base, rest = sig_name.split('[', 1)
+                        obj = getattr(dut, base)
+                        idx_str, _ = rest.split(']', 1)
+                        obj = obj[int(idx_str)]
+                        actual_val = int(obj.value)
+                    else:
+                        sig = getattr(dut, sig_name)
+                        actual_val = int(sig.value)
 
                 signals_compared += 1
                 if actual_val != expected_val:
-                    first_divergence = {
-                        "cycle": cycle_idx,
-                        "signal": sig_name,
-                        "expected": expected_val,
-                        "actual": actual_val,
-                    }
-                    break
+                    # Try to get signal width for proper hex formatting
+                    try:
+                        sig_width = len(obj if '.' in sig_name else sig)
+                    except Exception:
+                        sig_width = _lookup_signal_width(sig_name)
+                    if _record_divergence(
+                        divergences, sig_name, expected_val, actual_val,
+                        cycle_idx, sig_width,
+                    ):
+                        stop_outer = True
+                        break
             except (AttributeError, IndexError):
                 if sig_name not in signals_not_found:
                     signals_not_found.append(sig_name)
 
         cycles_checked += 1
-        if first_divergence:
+        if stop_outer:
             break
 
         # Advance DUT one cycle for the NEXT golden entry.
         await RisingEdge(dut.clk)
 
-    # Stimulus sanity check: if INPUT_PORTS is non-empty but no input ever
-    # went non-zero across the entire comparison window, drive_inputs() was
-    # almost certainly never called (or called with all-zero values).
-    if INPUT_PORTS and not _stimulus_seen_nonzero:
+    # Stimulus sanity check — uses flag set by drive_inputs()
+    if INPUT_PORTS and not _STIMULUS_DELIVERED:
         raise AssertionError(
-            "test_internal_signals: no input stimulus observed across "
-            f"{cycles_checked} cycle(s) — drive_inputs() may have been "
-            "skipped or called with all-zero values"
+            "test_internal_signals: drive_inputs() was never called (no stimulus delivered)"
         )
 
     # Warn about signals that could not be found in DUT hierarchy
@@ -606,23 +845,9 @@ async def test_internal_signals(dut):
             "test_internal_signals: no signals compared, trace names may not match RTL"
         )
 
-    if first_divergence:
-        FAIL_COUNT += 1
-        div = first_divergence
-        kind = div.get("kind", "signal_mismatch")
-        kind_tag = " kind=stimulus_mismatch" if kind == "stimulus_mismatch" else ""
-        hint = (
-            "  (testbench driver wrong — DUT input doesn't match golden stimulus)"
-            if kind == "stimulus_mismatch" else ""
-        )
-        msg = (
-            f"[INTERNAL] FIRST DIVERGENCE at cycle={div['cycle']} "
-            f"signal={div['signal']}{kind_tag}: "
-            f"expected=0x{div['expected']:08x} got=0x{div['actual']:08x}"
-            f"{hint}"
-        )
-        dut._log.error(msg)
-        raise AssertionError(msg)
+    if divergences:
+        FAIL_COUNT += len(divergences)
+        _finalize_divergences(dut, divergences, "INTERNAL")
     else:
         dut._log.info(
             f"[INTERNAL] PASS — {cycles_checked} cycles, "
@@ -630,9 +855,128 @@ async def test_internal_signals(dut):
         )
 
 
+# ─── Multi-block chaining ─────────────────────────────────────────────
+# Mandatory for designs that consume multiple input blocks per operation
+# (Merkle-Damgård hashes, block ciphers, accumulator-style filters). Catches
+# Patterns 11 and 14 at testbench-time instead of at integration-time.
+#
+# Activation: golden_model.py MUST export:
+#   MULTI_BLOCK_INPUTS         : list[list[dict]] — one outer entry per test
+#                                message, each inner list is the per-block
+#                                input port dict (excluding `is_last`).
+#   MULTI_BLOCK_EXPECTED_DIGEST: list[int]       — final-block expected
+#                                output integer per message. Compared against
+#                                `dut.<DIGEST_OUTPUT_PORT>.value` after the
+#                                last block.
+#
+# DIGEST_OUTPUT_PORT below MUST be set by codegen to the name of the design's
+# final output port (e.g. "result_out", "ciphertext_out"). Leave None and the
+# test SKIPs.
+
+DIGEST_OUTPUT_PORT = None  # codegen: set to the design's final output port name
+
+
+@cocotb.test()
+async def test_multi_block_chaining(dut):
+    """Test 5: Multi-block chaining behavior — catches Patterns 11 & 14.
+
+    For multi-block designs (Merkle-Damgård hashes, block ciphers), drives
+    each test vector's blocks back-to-back and compares the FINAL output
+    against the golden expected digest. Verifies:
+      - Chaining registers are correctly re-initialized for a new message
+        (Pattern 11): if V0-V7 retain stale state, test 2's final digest
+        will differ from MULTI_BLOCK_EXPECTED_DIGEST[1].
+      - `done`/`valid_out` is correctly gated by `is_last` (Pattern 14):
+        a warning is logged if done asserts after an intermediate block.
+    """
+    global FAIL_COUNT
+
+    if not GOLDEN_AVAILABLE:
+        dut._log.info("[SKIP] test_multi_block_chaining: golden_model.py not available")
+        return
+    if DIGEST_OUTPUT_PORT is None:
+        dut._log.info(
+            "[SKIP] test_multi_block_chaining: DIGEST_OUTPUT_PORT not set "
+            "(codegen did not identify a digest port for this design)"
+        )
+        return
+
+    try:
+        from golden_model import MULTI_BLOCK_INPUTS, MULTI_BLOCK_EXPECTED_DIGEST
+    except ImportError:
+        dut._log.info(
+            "[SKIP] test_multi_block_chaining: MULTI_BLOCK_INPUTS / "
+            "MULTI_BLOCK_EXPECTED_DIGEST not exported by golden_model.py "
+            "(single-block design or codegen did not add multi-block vectors)"
+        )
+        return
+
+    if len(MULTI_BLOCK_INPUTS) != len(MULTI_BLOCK_EXPECTED_DIGEST):
+        raise AssertionError(
+            f"test_multi_block_chaining: MULTI_BLOCK_INPUTS len="
+            f"{len(MULTI_BLOCK_INPUTS)} != MULTI_BLOCK_EXPECTED_DIGEST len="
+            f"{len(MULTI_BLOCK_EXPECTED_DIGEST)} — golden_model.py mismatch."
+        )
+    # Force at least one message with 2+ blocks; a 1-block-only matrix
+    # cannot exercise the chaining path that this test exists to cover.
+    if not any(len(blocks) >= 2 for blocks in MULTI_BLOCK_INPUTS):
+        raise AssertionError(
+            "test_multi_block_chaining: no test vector has 2+ blocks — "
+            "MULTI_BLOCK_INPUTS must include at least one message that "
+            "exercises chaining."
+        )
+
+    await ensure_clock(dut)
+
+    for msg_idx, blocks in enumerate(MULTI_BLOCK_INPUTS):
+        # Reset between messages to test re-initialization of chaining state.
+        await reset_dut(dut)
+        dut._log.info(
+            f"[MULTI_BLOCK] msg {msg_idx}: driving {len(blocks)} block(s)"
+        )
+        final_done = await drive_block_sequence(
+            dut, blocks,
+            done_name=DIGEST_OUTPUT_PORT if DIGEST_OUTPUT_PORT.startswith("valid") else "valid_out",
+        )
+        if final_done < 0:
+            FAIL_COUNT += 1
+            dut._log.error(
+                f"[MULTI_BLOCK] msg {msg_idx}: timed out before final block done"
+            )
+            continue
+
+        actual = int(getattr(dut, DIGEST_OUTPUT_PORT).value)
+        expected = MULTI_BLOCK_EXPECTED_DIGEST[msg_idx]
+        if actual != expected:
+            FAIL_COUNT += 1
+            try:
+                width = len(getattr(dut, DIGEST_OUTPUT_PORT))
+            except Exception:
+                width = _lookup_signal_width(DIGEST_OUTPUT_PORT)
+            hex_digits = max((width + 3) // 4, 1)
+            dut._log.error(
+                f"[MULTI_BLOCK] msg {msg_idx} digest mismatch "
+                f"(width={width}b):\n"
+                f"  expected = 0x{expected:0{hex_digits}x}\n"
+                f"  actual   = 0x{actual:0{hex_digits}x}\n"
+                f"  xor diff = 0x{expected ^ actual:0{hex_digits}x}\n"
+                f"  ➜ Likely Pattern 11 (chaining reset) — chaining registers "
+                f"may not be re-initialized for the new message."
+            )
+        else:
+            dut._log.info(
+                f"[MULTI_BLOCK] msg {msg_idx}: digest matches "
+                f"(0x{actual:x})"
+            )
+
+
 @cocotb.test()
 async def test_summary(dut):
-    """Final test: reports overall pass/fail."""
+    """Final test: reports overall pass/fail.
+
+    MUST be the last test defined in this file — cocotb runs tests in
+    definition order. This test reads the accumulated FAIL_COUNT.
+    """
     global FAIL_COUNT
     await ensure_clock(dut)
     await RisingEdge(dut.clk)

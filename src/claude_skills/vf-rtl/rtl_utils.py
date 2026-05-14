@@ -144,3 +144,29 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
         "Golden model produced no parseable cycle data. "
         "Expected run() -> list[dict] or compute(inputs, trace=True)."
     )
+
+
+def load_golden_trace_as_list(golden_path: str, test_vector_index: int = 0) -> list[dict[str, int]]:
+    """Load golden model trace as a list[dict[str, int]].
+
+    Convenience wrapper around load_golden_trace() that returns a contiguous
+    list indexed by cycle number, with values coerced to int.
+    """
+    cycles_dict = load_golden_trace(golden_path, test_vector_index)
+    if not cycles_dict:
+        return []
+    max_cycle = max(cycles_dict.keys())
+    result = []
+    for i in range(max_cycle + 1):
+        entry = cycles_dict.get(i, {})
+        clean = {}
+        for k, v in entry.items():
+            if isinstance(v, int):
+                clean[k] = v
+            elif isinstance(v, str):
+                try:
+                    clean[k] = int(v, 0)
+                except (TypeError, ValueError):
+                    pass
+        result.append(clean)
+    return result

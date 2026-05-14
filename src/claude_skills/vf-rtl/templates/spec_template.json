@@ -49,7 +49,7 @@
     "golden_model": "software_instantaneous",
     "rtl": "post_nba_registered",
     "golden_to_rtl_offset_cycles": 1,
-    "description": "Golden model trace T=N corresponds to RTL T=N+offset (NBA delay). The cocotb testbench compensates with DRIVE_PHASE_CYCLES = golden_to_rtl_offset_cycles."
+    "description": "Set this to max(pipeline_delay_cycles) across all module_connectivity timing_contract entries. pipeline_delay_cycles already counts the input sampling register, so do NOT add +1. cocotb's drive_inputs() holds inputs for this many cycles before starting the per-cycle compare loop. timing_contract_checker.py enforces offset == max(pipeline_delay_cycles)."
   },
   "design_intent": {
     "architecture_style": "iterative",

@@ -43,24 +43,29 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
         trace=False -> dict: {"output_port": value, ...}
         trace=True  -> list[dict]: [{signal: value, ...}, ...] indexed by cycle
 
-    Trace timing convention (CRITICAL):
-        Trace cycle N records the register state that cocotb reads AFTER
-        `await RisingEdge(dut.clk)`.
+    Trace timing convention (CRITICAL — read carefully):
+        The golden model uses SOFTWARE-INSTANTANEOUS semantics:
+        each trace entry records the NEW values produced by step N of the
+        algorithm. There is no NBA delay added inside the golden model.
 
-        With cocotb + iverilog VPI, after `await RisingEdge`, cocotb reads
-        values produced by the PREVIOUS posedge's NBA. Equivalently:
-        at RisingEdge N, cocotb sees POST-NBA of posedge N-1 = PRE-NBA of
-        posedge N.
+        Cycle alignment with RTL is handled entirely by the cocotb testbench:
+          drive_inputs() in the cocotb template holds inputs for
+          DRIVE_PHASE_CYCLES posedges (sourced from
+          spec.timing_convention.golden_to_rtl_offset_cycles =
+          max(pipeline_delay_cycles)) BEFORE the compare loop starts.
+          That advances the DUT past the input sampling latency so the
+          per-cycle compare loop can read golden[N] and dut.<reg>.value
+          at the same logical step.
 
-        The practical effect: each trace entry should record register values
-        AFTER the NBA of each posedge (i.e., the NEW values computed in this
-        cycle). The cocotb test comparison loop reads these values at the
-        NEXT RisingEdge.
-
-        Implementation: record register values AFTER the computation step,
-        so the trace captures the state AFTER the NBA fires.
-        Example: computation cycle j should record A = new_value_after_computation,
-        not A = value_before_computation.
+        Implementation rule for the trace:
+          - `cycles.append({...})` AFTER each computation step, recording the
+            NEW register values produced by that step
+          - Signal names must be **lower_snake_case** matching RTL register names
+            (use the `_reg` suffix that VPI exposes, e.g. `a_reg`, `state_reg`,
+            `round_reg`). NEVER use uppercase (e.g. A_reg) — Verilog convention
+            is lower_snake_case, and cocotb VPI paths are case-sensitive.
+          - Cycle 0 SHOULD record the post-reset state (all-zero or IV load)
+            so RESET_CYCLE_SKIP=1 in the cocotb template aligns correctly
 
     CRITICAL: Registered outputs (ready, valid, etc.):
         Signals that are registered outputs (driven by a _reg flip-flop, not
@@ -76,16 +81,6 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
         Similarly, at DONE→IDLE transition: if DONE state sets ready_next=0,
         the trace records ready_reg=0 at the DONE→IDLE cycle. ready_reg=1
         appears one cycle later when IDLE sets ready_next=1.
-
-    SOFTWARE vs RTL timing offset (CRITICAL for testbench alignment):
-        This golden model uses SOFTWARE timing — state updates are instantaneous.
-        RTL has a 1-cycle delay for registered→combinational control paths:
-        - Golden cycle 1: LOAD (A = IV0) happens instantly
-        - RTL cycle 1: FSM transitions to CALC, load_en asserted in NBA wake
-        - RTL cycle 2: A_reg = IV0 (actual load)
-        The cocotb testbench compensates with DRIVE_PHASE_CYCLES, read from
-        spec.json timing_convention.golden_to_rtl_offset_cycles (primary) or
-        max(pipeline_delay_cycles) from module timing_contract (fallback).
 
     Implementation note:
         Write ONE algorithm implementation. When trace=True, record intermediate
