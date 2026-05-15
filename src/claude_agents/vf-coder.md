@@ -27,11 +27,17 @@ The prompt contains ALL context inline:
   spec.json (showing FSM states, registered signals, combinational signals per
   cycle)
 - `WEB_RESEARCH`: web search results for reference Verilog patterns (if any, provided inline)
-- `PREV_FAILURE` (only on retry): a 5-line summary of the LAST simulation
-  failure — `cycle N, signal X, expected=A, actual=B`, bug class, and a
-  suggested fix direction. When present, **you MUST address this exact
-  divergence before any other rewriting**. Do not re-architect the module if
-  the bug is local.
+- `PREV_FAILURE` (only on retry): a **prescriptive** fix directive containing:
+  - `ROOT CAUSE`: one-sentence diagnosis with file and line reference
+  - `BUG CLASS`: timing_diagnostic classification
+  - `DIVERGENCE`: cycle N, signal X, expected=A, actual=B
+  - `FIX`: numbered list of concrete changes (file, line, exact code)
+  - `CONSTRAINTS`: any restrictions on the fix scope
+  When present, **you MUST execute the FIX steps directly — no analysis phase,
+  no exploring alternatives, no re-architecting.** The main session has already
+  diagnosed the root cause; your job is to implement the fix and write the file.
+  If you disagree with the fix direction, implement it anyway and note your
+  concern in the output — do NOT silently substitute your own approach.
 - Condensed coding rules (from coding_style.md)
 
 ## Module Assembly Strategy
@@ -309,9 +315,11 @@ Before writing the file, mentally verify ALL 7:
    trace output. Mentally walk through your RTL with the same inputs. The
    register values at cycle 1, 2, 3 must match.
 7. **PREV_FAILURE address** (only on retry): If `PREV_FAILURE` is in your
-   prompt, locate the exact signal/cycle it names in your draft and confirm
-   your fix targets it. Do NOT submit if you cannot point to the line you
-   changed in response to it.
+   prompt with a `FIX` section, SKIP steps 1–1.5 (timing table, golden model
+   trace) and go directly to implementing the prescribed changes. The main
+   session has already done the diagnosis. Confirm each FIX step targets the
+   correct file/line, execute it, then run the remaining self-checks (1–6)
+   on the modified code.
 
 If ANY of the 7 fails, fix before writing.
 

@@ -276,10 +276,10 @@ Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to in
   - `WEB_RESEARCH`: content from `.veriflow/web_research.md` — **only if the file
     has substantive content** (more than just "skipped" or "unavailable"). If
     minimal, omit this field entirely to save prompt tokens.
-  - `PREV_FAILURE` (only on Stage 3 retry — see Stage 3 step 5b): a 5-line
-    summary of the last simulation failure ("cycle N, signal X, expected=A,
-    actual=B; bug class: <classification>"). When present, instruct vf-coder
-    to address this specific divergence first before any other rewriting.
+  - `PREV_FAILURE` (only on Stage 3 retry — see Stage 3 step 5b): a
+    **prescriptive** fix directive containing ROOT CAUSE + concrete FIX steps
+    (file, line, exact change). When present, vf-coder MUST execute the fix
+    directly — no analysis, no exploring alternatives. See vf-coder.md for rules.
   - Condensed coding_style.md content
   - For top modules: include submodule port definitions from spec.json
 
@@ -486,18 +486,37 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" \
     --fail --error-sig="$SIG"
 ```
 
-5b. **Build the failure-summary file** for the next vf-coder retry (D2: keep
-the divergence one Read away — main session always re-reads it before any
-inline fix; if step 6 falls back to codegen, it MUST inline this file into
-the new vf-coder prompt under `PREV_FAILURE`):
+5b. **Build the failure-summary file** for the next vf-coder retry.
+This MUST be a **prescriptive fix directive** — not just a description of what
+went wrong. The main session MUST diagnose the root cause and write concrete
+fix steps (file, line number, exact code change) before rolling back to codegen.
+
+**Format** (vf-coder expects this exact structure):
+```
+PREV_FAILURE:
+  ROOT CAUSE: <one-sentence diagnosis referencing specific file and line>
+  BUG CLASS: <timing_diagnostic bug_class>
+  DIVERGENCE: cycle <N>, signal <name>, expected=<hex>, actual=<hex>
+  FIX (mandatory — do NOT explore alternatives):
+  1. <file:line> — <exact change description>
+  2. <file:line> — <exact change description>
+  CONSTRAINTS: <any constraints on the fix, e.g. "only modify FSM logic">
+```
+
+The main session generates this by:
+1. Running the diagnostic script below to extract raw divergence data
+2. Reading the RTL file(s) at the divergence point to identify the root cause
+3. Writing the concrete FIX steps — this is the main session's diagnosis, not
+   the agent's job. The agent should ONLY execute.
+
 ```bash
-$PYTHON_EXE - <<'PY' 2>&1 | tee logs/prev_failure_summary.md
+$PYTHON_EXE - <<'PY' 2>&1 | tee logs/prev_failure_summary_raw.md
 import json, pathlib
 
 diag = pathlib.Path("logs/timing_diagnostic.json")
 expected = pathlib.Path("logs/expected_trace_golden.md")
 
-print("# Previous attempt failure summary")
+print("# Raw failure data (main session: add ROOT CAUSE and FIX steps below)")
 print()
 
 if not diag.exists():
@@ -513,7 +532,7 @@ else:
     fix = d.get("fix_suggestion") or {}
     if fix:
         print()
-        print("## Suggested fix direction")
+        print("## Suggested fix direction (from timing_diagnostic.py)")
         for k, v in fix.items():
             print(f"- **{k}**: {v}")
 
@@ -521,13 +540,26 @@ if expected.exists():
     print()
     print("## Expected trace (first 8 cycles, from golden_model.py)")
     lines = expected.read_text().splitlines()
-    # Skip the heading, keep up to 10 lines of the table
     body = [ln for ln in lines if ln.strip() and not ln.startswith("##")][:10]
     print("\n".join(body))
+
+print()
+print("---")
+print("## MAIN SESSION: Fill in ROOT CAUSE and FIX below before passing to vf-coder")
+print()
+print("ROOT CAUSE: <diagnose by reading the RTL at the divergence point>")
+print("FIX:")
+print("1. <file>:<line> — <specific change>")
+print("2. <file>:<line> — <specific change>")
 PY
 ```
-If `logs/prev_failure_summary.md` is non-empty, it MUST be passed as the
-`PREV_FAILURE` field on any subsequent vf-coder invocation.
+
+**CRITICAL**: The raw data above is NOT sufficient as PREV_FAILURE. The main
+session MUST read the RTL file(s), identify the root cause, and write concrete
+FIX steps in the `logs/prev_failure_summary.md` file before any rollback to
+codegen. The filled-in `prev_failure_summary.md` is what gets passed as
+PREV_FAILURE to vf-coder. If the main session cannot determine the root cause,
+ask the user rather than rolling back with a vague description.
 
 6. **Check whether we are looping on the same bug** BEFORE consuming another
    retry slot. If the same divergence signature has fired 2+ times, fixing
@@ -539,9 +571,10 @@ LOOP_STATUS=$?
 if [ "$LOOP_STATUS" -eq 2 ]; then
     echo "[STAGE3] Detected fix-loop on '$SIG' — rolling back to codegen."
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" --reset codegen
-    # Main session: re-dispatch Stage 2 (codegen) and pass the contents of
-    # logs/prev_failure_summary.md inline as PREV_FAILURE for every vf-coder
-    # invocation — without this, the agent will repeat the same bug.
+    # Main session: BEFORE re-dispatching Stage 2, read the RTL at the
+    # divergence point, diagnose root cause, write concrete FIX steps into
+    # logs/prev_failure_summary.md. Then pass it as PREV_FAILURE — the agent
+    # should ONLY execute the fix, not explore alternatives.
 fi
 ```
 
