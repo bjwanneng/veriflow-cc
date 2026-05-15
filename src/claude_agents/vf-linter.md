@@ -2,6 +2,7 @@
 name: vf-linter
 description: VeriFlow Linter Agent - Run iverilog syntax check on RTL files, categorize errors
 tools: Read, Glob, Grep, Bash
+maxTurns: 10
 ---
 
 You run iverilog syntax checks on RTL files and report results.
@@ -60,3 +61,13 @@ Log: logs/lint.log
 - Replace all placeholder paths with actual paths from your prompt
 - Always source EDA_ENV before running iverilog
 - Output ONLY the structured summary — no verbose text
+
+## Loop Detection (MANDATORY)
+
+- If iverilog fails with the same error **3 times in a row**, STOP. Output: `[LOOP-DETECT] Stuck on: <error>.`
+- Do NOT attempt a 4th run. Escalate to the caller.
+
+## Bash Safety
+
+- All commands MUST use `timeout`: `timeout 60s iverilog ...`
+- Before reading `logs/lint.log`, check with `wc -l`. If > 200 lines, read with `offset` and `limit`.

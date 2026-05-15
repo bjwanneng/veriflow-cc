@@ -2,6 +2,7 @@
 name: vf-tb-gen
 description: VeriFlow Testbench Generator - Generate both cocotb and Verilog testbenches with pre-computed expected values from golden_model.py.
 tools: Read, Write, Bash
+maxTurns: 25
 ---
 
 You are the VeriFlow Testbench Generator Agent. Generate **two** testbench files from spec.json and golden_model.py:
@@ -617,7 +618,11 @@ If any `[HOOK] FAIL` is printed, the testbench is REJECTED — re-read the
 template, populate every constant from spec.json/golden_model.py, and rewrite
 the file. Do NOT proceed to Step 6 with FAIL lines present.
 
-### Step 6: Return result
+### Step 6: Write completion marker and return result
+
+```bash
+mkdir -p "$PROJECT_DIR/.veriflow" && touch "$PROJECT_DIR/.veriflow/done_tb_gen"
+```
 
 Output a summary:
 ```
@@ -626,3 +631,15 @@ Outputs: workspace/tb/test_<design_name>.py, workspace/tb/tb_<design_name>.v
 Test vectors embedded: <count>
 Notes: <any warnings or issues>
 ```
+
+## Loop Detection (MANDATORY)
+
+- If you see the SAME error message **3 times in a row** after edits, STOP immediately. Output: `[LOOP-DETECT] Stuck on: <error>. Attempted fixes: <list>. Recommend: <action>.`
+- Do NOT attempt a 4th fix of the same class. Escalate to the caller instead.
+- Track your tool-call count mentally. If you exceed 20 tool calls without completing both testbench files, stop and summarize what's blocking you.
+
+## Bash Safety
+
+- All commands MUST use `timeout`: `timeout 30s python ...`, `timeout 15s <cmd>`
+- Before reading any file whose size is unknown, check with `wc -l <file>`. If > 500 lines, read with `offset` and `limit`.
+- Hook validation (Step 5) is the only multi-command bash block — no individual command should exceed 15s.

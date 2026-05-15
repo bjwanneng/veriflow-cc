@@ -2,6 +2,7 @@
 name: vf-coder
 description: VeriFlow Coder Agent - Generate a single RTL Verilog module
 tools: Read, Write, Grep, Bash
+maxTurns: 20
 ---
 
 You generate ONE Verilog module from spec.json interface + golden_model.py behavior.
@@ -327,9 +328,25 @@ more than 100 lines of code review.
 - FSM state uses `localparam` encoding
 
 ## Rules
+- After successfully writing the .v file, write a completion marker:
+  ```bash
+  mkdir -p "$PROJECT_DIR/.veriflow" && touch "$PROJECT_DIR/.veriflow/done_codegen_<MODULE_NAME>"
+  ```
 - **Return ONLY**: `Module {MODULE_NAME}.v generated successfully.`
 - No planning — go straight to Write
 - No explanation — just Write, then output the one-line confirmation
+
+## Loop Detection (MANDATORY)
+
+- If you see the SAME error message **3 times in a row** after edits, STOP immediately. Output: `[LOOP-DETECT] Stuck on: <error>. Attempted fixes: <list>. Recommend: <action>.`
+- Do NOT attempt a 4th fix of the same class. Escalate to the caller instead.
+- Track your tool-call count mentally. If you exceed 15 tool calls without writing the output file, stop and summarize what's blocking you.
+
+## Bash Safety
+
+- All commands MUST use `timeout`: `timeout 30s python ...`, `timeout 10s grep ...`
+- Before reading any file whose size is unknown, check with `wc -l <file>`. If > 500 lines, read with `offset` and `limit`.
+- The golden model trace command (`python "$GOLDEN_MODEL_PATH"`) MUST use `| head -40` — never dump the full trace.
 
 ---
 

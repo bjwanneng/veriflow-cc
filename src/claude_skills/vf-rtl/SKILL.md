@@ -27,6 +27,38 @@ cd "$ARGUMENTS" && "$PY_INIT" "${CLAUDE_SKILL_DIR}/init.py" "$ARGUMENTS"
 
 Read the output to determine: new project or resuming. If resuming, skip stages in `stages_completed`.
 
+### Stale-Stage Recovery (resume only)
+
+When resuming, if a stage is STARTED but not COMPLETE, the pipeline may have been
+interrupted or crashed. Before re-dispatching that stage, check if the output files
+already exist by looking for completion markers (`.veriflow/done_<stage>*`):
+
+```bash
+cd "$ARGUMENTS"
+# For spec_golden: check if both outputs exist and marker is present
+if [ -f ".veriflow/done_spec_golden" ] && [ -f "workspace/docs/spec.json" ] && [ -f "workspace/docs/golden_model.py" ]; then
+    echo "[RECOVERY] spec_golden outputs exist — running hook to mark complete"
+    python3 "${CLAUDE_SKILL_DIR}/state.py" "$ARGUMENTS" "spec_golden" \
+        --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py"
+fi
+
+# For codegen: check if ALL module .v files and TB files exist
+if ls .veriflow/done_codegen_* >/dev/null 2>&1; then
+    echo "[RECOVERY] codegen completion markers found — verifying outputs"
+    python3 "${CLAUDE_SKILL_DIR}/state.py" "$ARGUMENTS" "codegen" \
+        --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" \
+        --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" \
+        --journal-notes="Recovered from interrupted codegen via completion markers"
+fi
+```
+
+If the hook passes, the stage is marked COMPLETE and the pipeline advances. If it
+fails, stale markers are cleaned up and the stage is re-dispatched normally:
+
+```bash
+rm -f .veriflow/done_codegen_* .veriflow/done_spec_golden .veriflow/done_tb_gen
+```
+
 ### Permission Check (sub-agent tools)
 
 Sub-agents cannot interact with the user — any permission prompt will hang the pipeline.
