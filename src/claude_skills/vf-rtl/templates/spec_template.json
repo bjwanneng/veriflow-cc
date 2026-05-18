@@ -106,7 +106,21 @@
         "registered_outputs": ["output_port_name"],
         "same_cycle_visible": ["combinational_port_name"],
         "pipeline_delay_cycles": 1,
-        "description": "Per-module timing: registered_outputs change at posedge via NBA (1-cycle delay); same_cycle_visible are combinational (no delay)."
+        "streaming_fill_latency_cycles": 0,
+        "total_latency_cycles": 1,
+        "pipeline_register_locations": [
+          {
+            "after": "input_sampling",
+            "registers": ["data_reg", "valid_reg"],
+            "description": "Stage 1: capture input data and valid"
+          },
+          {
+            "after": "computation",
+            "registers": ["result_reg"],
+            "description": "Stage 2: capture computation result"
+          }
+        ],
+        "description": "Per-module timing: registered_outputs change at posedge via NBA (1-cycle delay); same_cycle_visible are combinational (no delay). streaming_fill_latency_cycles captures any fill/buffering phase before first output (0 if none). total_latency_cycles = pipeline_delay_cycles + streaming_fill_latency_cycles — use this for shortcut/delay path depth. pipeline_register_locations tells vf-coder WHERE to insert pipeline registers — the number of entries MUST equal pipeline_delay_cycles."
       },
       "cycle_timing": {
         "fsm_states": [

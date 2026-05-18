@@ -392,6 +392,28 @@ def main():
 
     rtl_sources = collect_rtl_sources(rtl_dir)
 
+    # ── Auto-detect VERILOG_PARAMS from test file ──────────────────────
+    # Test files can define: VERILOG_PARAMS = {"PARAM_NAME": value, ...}
+    # These are passed as iverilog -P<module>.<param>=<value> build args.
+    build_args = []
+    test_file_path = tb_dir / f"{test_module}.py"
+    if not test_file_path.exists():
+        for candidate in tb_dir.glob(f"test_{module_name}*.py"):
+            test_file_path = candidate
+            break
+    if test_file_path.exists():
+        import re as _re
+        src_text = test_file_path.read_text(encoding="utf-8", errors="replace")
+        m = _re.search(r'VERILOG_PARAMS\s*=\s*\{([^}]+)\}', src_text)
+        if m:
+            params_str = m.group(1)
+            for pm in _re.finditer(r'"(\w+)"\s*:\s*(\d+)', params_str):
+                pname, pval = pm.group(1), pm.group(2)
+                flag = f"-P{module_name}.{pname}={pval}"
+                build_args.append(flag)
+            if build_args and args.verbose:
+                print(f"[cocotb_runner] Verilog params: {build_args}", file=sys.stderr)
+
     if args.verbose:
         print(f"[cocotb_runner] RTL dir   : {rtl_dir}", file=sys.stderr)
         print(f"[cocotb_runner] RTL files : {len(rtl_sources)}", file=sys.stderr)
@@ -418,7 +440,7 @@ def main():
             sources=rtl_sources,
             hdl_toplevel=module_name,
             build_dir=str(build_dir),
-            build_args=[],
+            build_args=build_args,
             waves=args.vcd,
         )
     except Exception as e:

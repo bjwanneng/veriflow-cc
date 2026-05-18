@@ -246,6 +246,39 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
 ```
 Re-run the checker after `--fix` to confirm all errors are resolved. Only if errors remain after auto-fix, review `logs/timing_check.json` and manually fix spec.json or golden_model.py. Errors indicate timing contradictions that will cause RTL bugs.
 
+
+**Streaming fill latency check** (pre-codegen gate):
+
+If any module in spec.json has a non-zero `pipeline_delay_cycles` but is missing
+`streaming_fill_latency_cycles`, verify whether the module has a fill/buffering
+phase (line buffer, FIFO, shift-register window). If it does, the orchestrator
+MUST ensure that downstream delay-matching paths use `total_latency_cycles`
+(= `pipeline_delay_cycles + streaming_fill_latency_cycles`), not just the raw
+`pipeline_delay_cycles`.
+
+```bash
+$PYTHON_EXE -c "
+import json
+spec = json.load(open('workspace/docs/spec.json'))
+for m in spec.get('modules', []):
+    tc = m.get('timing_contract', {})
+    pd = tc.get('pipeline_delay_cycles', 0)
+    sf = tc.get('streaming_fill_latency_cycles')
+    name = m.get('module_name', '')
+    if sf is None:
+        print(f'[INFO] {name}: pipeline_delay_cycles={pd}, no streaming_fill_latency_cycles declared')
+    else:
+        print(f'[OK] {name}: pipeline_delay_cycles={pd}, streaming_fill={sf}')
+    if sf is None and pd > 0:
+        print(f'[CHECK] {name}: verify whether this module has a fill phase before first output. If yes, add streaming_fill_latency_cycles to its timing_contract.')
+"
+```
+If any module has `pd > 0` and no `streaming_fill_latency_cycles`, the
+orchestrator reviews its architecture to determine whether a fill phase exists.
+Do NOT proceed to Stage 2 with shortcut/delay paths that ignore fill latency.
+
+
+
 ```bash
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior"
 ```
@@ -379,6 +412,35 @@ fi
 ```
 
 If cocotb is not available, proceed with Verilog simulation as before.
+
+### Parameter consistency check (before simulation)
+
+When the DUT has Verilog parameters (e.g., `DATA_WIDTH`, `IMG_WIDTH`, `DEPTH`)
+that may differ from test vector dimensions, verify that the cocotb testbench
+has set `VERILOG_PARAMS` correctly. This catches the "0 outputs" failure mode
+where the DUT compiles with wrong dimensions.
+
+```bash
+# Check if DUT has parameters and test file has VERILOG_PARAMS
+cd "$PROJECT_DIR"
+HAS_PARAMS=$($PYTHON_EXE -c "
+import json
+spec = json.load(open('workspace/docs/spec.json'))
+params = []
+for m in spec.get('modules', []):
+    params.extend(p['name'] for p in m.get('parameters', []))
+print(' '.join(params) if params else '')
+")
+if [ -n "$HAS_PARAMS" ]; then
+    # DUT has parameters — check that cocotb test file defines VERILOG_PARAMS
+    TB_FILE=$(ls workspace/tb/test_*.py 2>/dev/null | head -1)
+    if [ -n "$TB_FILE" ] && ! grep -q "VERILOG_PARAMS" "$TB_FILE"; then
+        echo "[WARN] DUT has parameters ($HAS_PARAMS) but cocotb test file has no VERILOG_PARAMS."
+        echo "[WARN] If test vector dimensions differ from default parameters, cocotb will get 0 outputs."
+        echo "[WARN] Add VERILOG_PARAMS = {\"PARAM_NAME\": value, ...} to the cocotb test file."
+    fi
+fi
+```
 
 ### Run simulation
 

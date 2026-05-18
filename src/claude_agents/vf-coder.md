@@ -297,9 +297,31 @@ always @(posedge clk) begin
     if (rst) ... 
 ```
 
-## Mandatory Pre-Write Self-Check (7 points)
+### P8 — Shortcut delay ignores streaming fill latency
 
-Before writing the file, mentally verify ALL 7:
+❌ Wrong (only counts pipeline register stages, ignores fill phase before first output):
+```verilog
+// spec says pipeline_delay_cycles=2, so delay = 2+1+2 = 5
+localparam DELAY = 5;  // BUG: ignores the cycles spent filling buffers!
+```
+Result: delayed signal and main-path signal never overlap → output stuck at 0.
+
+✅ Right (read `total_latency_cycles` from spec.json timing_contract, NOT just `pipeline_delay_cycles`):
+```verilog
+// spec.json timing_contract for this module:
+//   pipeline_delay_cycles = 2        (register stages)
+//   streaming_fill_latency = F       (cycles to fill buffer before first output)
+//   total_latency_cycles  = F + 2    (use THIS for delay matching)
+localparam DELAY = F + 2;
+```
+
+**Root cause**: Many streaming designs (line buffers, shift-register windows, FIFO-based pipelines) have a **fill phase** — a number of cycles where input is consumed but no valid output is produced. `pipeline_delay_cycles` only counts register stages AFTER the fill phase. The sum `total_latency_cycles` is what shortcut/delay paths must match.
+
+**How to determine the fill latency**: Read the module's `timing_contract` in spec.json. The `streaming_fill_latency_cycles` field captures this. If absent, derive it from the module's architecture (e.g., a K×K window extractor typically needs `(K-1)/2` rows buffered = `(K-1)/2 * WIDTH` cycles before first output). When in doubt, run the golden model trace to measure cycles from first valid input to first valid output.
+
+## Mandatory Pre-Write Self-Check (10 points)
+
+Before writing the file, mentally verify ALL 10:
 
 1. **Reset coverage**: Every `reg` has an explicit `if (rst)` branch with a
    defined reset value.
@@ -320,8 +342,24 @@ Before writing the file, mentally verify ALL 7:
    session has already done the diagnosis. Confirm each FIX step targets the
    correct file/line, execute it, then run the remaining self-checks (1–6)
    on the modified code.
+8. **Pipeline depth**: Count the combinational logic stages between registered
+   boundaries. If spec.json `pipeline_stages` = N or `pipeline_delay_cycles` = M,
+   the RTL MUST have at least N-1 (or M-1) intermediate pipeline registers.
+   A fully combinational datapath (e.g., multipliers → adder tree → single
+   output register) violates this when pipeline_stages >= 2. Insert pipeline
+   registers at natural boundaries (after multipliers, between adder tree levels).
+   **Valid/data alignment**: every pipeline register stage that carries data
+   MUST also carry the corresponding `valid` (or `enable`) signal.
+9. **No division/modulo**: Scan for `/` and `%` operators. Replace with
+   conditional expansion for small known-range divisors, or bit-slicing for
+   power-of-2 constants. See coding_style.md Section 17.
+10. **Streaming fill latency**: If the module has a fill/buffering phase before
+    first output (line buffers, FIFOs, shift-register windows), verify that any
+    downstream delay-matching path (shortcut, residual connection) uses
+    `total_latency_cycles` from spec.json timing_contract, not just
+    `pipeline_delay_cycles`. See Pitfall P8.
 
-If ANY of the 7 fails, fix before writing.
+If ANY of the 10 fails, fix before writing.
 
 ## Test Vector Verification
 
@@ -490,3 +528,42 @@ assign rotated = stage4;
 ```
 Never write `{data_in[amt-1:0], data_in[31:amt]}` — variable part-selects with
 non-constant indices are illegal in Verilog-2005 and unsynthesisable.
+
+### Mini-pattern F: Parallel multiplier + adder tree with pipeline register
+
+For designs with multiple parallel multipliers feeding an adder tree (e.g.,
+convolution, FIR filter, dot product). When `pipeline_stages >= 2` or
+`pipeline_delay_cycles >= 2`, the multiplier outputs MUST be registered
+before the adder tree.
+
+```verilog
+// Combinational: N parallel multipliers
+wire signed [16:0] prod_0 = $signed({1'b0, a_0}) * $signed(k_0);
+// ... prod_1 through prod_N-1 ...
+
+// Pipeline register: capture multiplier outputs (Stage 2)
+reg signed [16:0] prod_pipe [0:N-1];
+reg             prod_valid_reg;
+integer j;
+always @(posedge clk) begin
+    if (rst) begin
+        prod_valid_reg <= 1'b0;
+        for (j = 0; j < N; j = j + 1)
+            prod_pipe[j] <= 17'sd0;
+    end else if (mac_en) begin
+        prod_valid_reg <= 1'b1;
+        prod_pipe[0] <= prod_0;
+        // ... prod_pipe[N-1] <= prod_N-1;
+    end else begin
+        prod_valid_reg <= 1'b0;
+    end
+end
+
+// Combinational: adder tree from pipeline register (Stage 3)
+wire signed [19:0] mac_result = prod_pipe[0] + prod_pipe[1] + ...;
+```
+
+Key points:
+- `prod_valid_reg` travels alongside `prod_pipe` so valid/data stay aligned
+- The adder tree reads `prod_pipe` (registered), NOT `prod_*` (combinational)
+- If `pipeline_stages >= 3`, add another register between adder tree levels

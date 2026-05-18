@@ -49,8 +49,18 @@ Populate `cycle_timing` and `timing_contract` from this table.
 Key rules:
 - registered + sequential on same posedge → `same_cycle_visible: false` (NBA delay)
 - combinational → `same_cycle_visible: true`
+- **Streaming fill latency**: Some modules have a **fill phase** before the first
+  valid output — line buffers accumulating rows, FIFOs reaching threshold,
+  shift-register windows filling up. The `timing_contract` MUST separate this
+  fill latency from register pipeline latency:
+  - `pipeline_delay_cycles`: register stages only (input→register→...→output)
+  - `streaming_fill_latency_cycles`: cycles consumed before the first output
+    candidate is even produced (e.g., buffering K-1 rows of a K×K window)
+  - `total_latency_cycles` = `pipeline_delay_cycles + streaming_fill_latency_cycles`
+  The orchestrator uses `total_latency_cycles` for delay-matching in downstream
+  modules (shortcut paths, residual connections). Omitting `streaming_fill_latency_cycles`
+  causes shortcut misalignment — the most common codegen bug in streaming designs.
 
-### Step 2: Write spec.json
 
 Use SPEC_TEMPLATE (read from file in Step 0) for the JSON structure, then use
 Write tool to write `$PROJECT_DIR/workspace/docs/spec.json`.
@@ -80,7 +90,25 @@ Constraints:
 - `cycle_timing` REQUIRED for any module with FSM or multi-cycle behavior
 - `timing_contract` REQUIRED for every `module_connectivity` entry
 - `timing_contract` REQUIRED for each module that has registered outputs —
-  must include `registered_outputs`, `same_cycle_visible`, and `pipeline_delay_cycles`
+  must include `registered_outputs`, `same_cycle_visible`, `pipeline_delay_cycles`,
+  and `pipeline_register_locations`
+- `streaming_fill_latency_cycles` RECOMMENDED in `timing_contract` — the number of
+  cycles between first valid input and the first valid output candidate, excluding
+  register pipeline stages. 0 if the module produces output immediately (no fill
+  phase). Together with `pipeline_delay_cycles`, determines `total_latency_cycles`
+  used for delay-matching in downstream connections.
+- `pipeline_register_locations` REQUIRED when `pipeline_delay_cycles > 1` —
+  an array of objects, one per pipeline stage, telling vf-coder WHERE to
+  insert registers. Each entry has:
+  - `after`: name of the logical stage (e.g., "input_sampling", "multiplier",
+    "adder_tree", "computation")
+  - `registers`: list of register names that will be created at this stage
+    (e.g., `["data_reg", "valid_reg"]`, `["prod_pipe_reg"]`)
+  - `description`: one-line explanation of what this pipeline stage captures
+  The number of entries MUST equal `pipeline_delay_cycles`. This prevents
+  vf-coder from collapsing a multi-stage pipeline into a single combinational
+  path (a common error: 9 parallel multipliers + adder tree all combinational
+  with only the output register, when the spec says pipeline_stages=3).
 - `fanout_groups` is OPTIONAL but recommended for multi-module designs with shared control signals.
   Each group must have: `name`, `common_source`, `signals` (array of `{name, path}`),
   `constraint` (`"same_arrival"` or `"max_skew"`), and `max_delay_skew_cycles`.

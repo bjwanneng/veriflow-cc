@@ -231,6 +231,49 @@ This rule applies to EVERY test in the file, including `test_reset`,
 `test_protocol`, `test_summary`, and any codegen-added test (e.g.,
 `test_timing_contract`, `test_multi_block_chaining`). No exceptions.
 
+### RULE 7: VERILOG_PARAMS for parameterized DUTs
+
+When the DUT module has Verilog parameters (e.g., `DATA_WIDTH`, `IMG_WIDTH`,
+`DEPTH`, `NUM_TAPS`) that may differ from their default values at test time,
+the cocotb test file MUST define a `VERILOG_PARAMS` dict at module level:
+
+```python
+# Auto-detected by cocotb_runner.py and passed as -P flags to iverilog.
+# Keys MUST match the DUT's parameter names exactly.
+VERILOG_PARAMS = {"IMG_WIDTH": 5, "IMG_HEIGHT": 5}
+```
+
+**When to set VERILOG_PARAMS**:
+- If ANY test vector's input dimensions differ from the DUT's default
+  parameter values, VERILOG_PARAMS MUST override them to match the test
+  vectors. Without this, the DUT compiles with wrong dimensions and
+  produces zero outputs (because it expects a different number of input
+  cycles than the testbench provides).
+- Derive the values from the FIRST test vector's inputs. If test vectors
+  have inconsistent dimensions, set VERILOG_PARAMS to match the majority
+  and SKIP tests whose dimensions don't match (see below).
+
+**Skipping dimension-mismatched tests**:
+For test vectors whose image/buffer/array dimensions don't match
+`VERILOG_PARAMS`, the test MUST be skipped with an informative log message
+rather than running and failing silently:
+
+```python
+@cocotb.test()
+async def test_small_image(dut):
+    tv = TEST_VECTORS[5]
+    img_w = len(tv["inputs"]["image"][0])
+    if img_w != VERILOG_PARAMS.get("IMG_WIDTH", img_w):
+        dut._log.info(f"[SKIP] {tv['name']}: image width {img_w} != "
+                      f"VERILOG_PARAMS IMG_WIDTH={VERILOG_PARAMS['IMG_WIDTH']}")
+        return
+    # ... normal test execution ...
+```
+
+**When NOT to set VERILOG_PARAMS**: If all DUT parameters have correct
+defaults for the test vectors (i.e., the test vectors were designed for the
+default parameter values), omit `VERILOG_PARAMS` entirely.
+
 ## Input (provided in prompt by caller)
 
 - PROJECT_DIR: path to project root

@@ -146,7 +146,113 @@ Terminal condition: `< DEPTH`. Prefer index masking.
 | Asynchronous/active-low reset | Synchronous `rst` |
 | Latches | Flip-flops with defaults |
 
-## 16. Cross-Module Timing (from spec.json timing_contract)
+## 16. Datapath Pipeline Registers
+
+When spec.json specifies `pipeline_stages > 1` or `pipeline_delay_cycles > 1`,
+the combinational datapath MUST be broken into registered stages. A fully
+combinational chain from input to a single output register violates the timing
+contract if `pipeline_stages` indicates intermediate registers are expected.
+
+**Rule**: Between any two `always @(posedge clk)` registers, the combinational
+logic depth MUST NOT exceed 12 LUT levels. If it does, insert an intermediate
+pipeline register.
+
+**Common pattern — parallel multiplier + adder tree**:
+  Stage 1: input registers (data sampling, line buffer, window)
+  Stage 2: multiplier output registers (**CRITICAL** — do NOT skip)
+  Stage 3: adder tree → output register
+
+```verilog
+// Stage 2: multiplier pipeline registers
+reg signed [16:0] prod_reg [0:8];
+reg             prod_valid_reg;
+always @(posedge clk) begin
+    if (rst) begin
+        prod_valid_reg <= 1'b0;
+        for (i = 0; i < 9; i = i + 1)
+            prod_reg[i] <= 17'sd0;
+    end else if (mac_en) begin
+        prod_valid_reg <= 1'b1;
+        prod_reg[0] <= prod_0;  // ... prod_reg[8] <= prod_8;
+    end else begin
+        prod_valid_reg <= 1'b0;
+    end
+end
+
+// Stage 3: adder tree (combinational from prod_reg)
+wire signed [19:0] mac_result = prod_reg[0] + ... + prod_reg[8];
+```
+
+**Key**: `valid` and `data` MUST travel through the same number of pipeline
+stages, otherwise they drift apart (see Mini-pattern C in vf-coder.md).
+
+## 17. Division and Modulo in Synthesizable Code
+
+AVOID `/` and `%` operators in synthesizable code unless the divisor is a
+compile-time constant. Synthesis tools infer full divider circuits for
+variable divisors, which are expensive and slow.
+
+| Divisor type | Safe pattern |
+|---|---|
+| Power of 2 constant | `value >> N` or `value[N-1:0]` |
+| Small constant with known range | Expand to conditional: `if (stride == 2) bit_check else 1` |
+| Variable (signal-dependent) | Redesign to avoid division; use lookup or counter |
+
+```verilog
+// BAD: variable modulo — infers full divider
+if ((out_y % stride_val) == 0) ...
+
+// GOOD: known stride range (1 or 2) — expand conditionally
+if (stride_reg == 1'b0 || out_y[0] == 1'b0) ...
+
+// BAD: variable division for bounds check
+if ((out_y / stride_val) < out_h) ...
+
+// GOOD: equivalent check without division
+if (out_y < out_h * stride_val) ...  // multiply by small constant is cheap
+```
+
+## 18. Code Hygiene Before Writing
+
+Before writing the final .v file, verify:
+
+1. **No dead signals**: Every declared `_next` or `_reg` signal must be read
+   by at least one other statement. `grep` each signal name in the file.
+2. **No stale comments**: Comments must match the code. If code was refactored
+   (e.g., a condition flipped, a signal renamed), update the comment or remove it.
+3. **No placeholder values**: Remove `{N{1'b0}}` placeholders and half-written
+   expressions. Every line must be production-ready.
+4. **No redundant counters**: If two counters track the same thing (e.g.,
+   `pipe_cnt_next` and `pipe_cycle_reg`), keep only one.
+
+## 19. Rotating Line Buffer Depth
+
+When partitioning a streaming window extractor into rotating line buffers, the
+number of physical buffers must be large enough that a row is **never overwritten
+while still being read** for window assembly.
+
+**Principle**: For a K×K window with P rows of padding on the top edge, a given
+image row R is read for the last time when the output reaches row `R + (K-1)/2`.
+The next row that maps to the same physical buffer is row `R + NUM_BUFS`.
+Conflict occurs when `(R + NUM_BUFS) * WIDTH  ≤  (R + (K-1)/2 + ... ) * WIDTH — ...` .
+
+Rather than memorizing numbers, **derive the minimum buffer count from the read
+lifespan vs. write schedule**:
+
+1. Determine when row R is last read (depends on window size, padding, output stride)
+2. Determine when row `R + NUM_BUFS` is first written (depends on input rate)
+3. Require: `first_write_cycle(R + NUM_BUFS)  >  last_read_cycle(R)`
+
+If the design uses a **streaming fill-then-flush** FSM (all rows buffered before
+output begins), the same analysis applies to the flush phase.
+
+**Common cases** (derived from the analysis above, for reference):
+- K=3, valid-only output (no padding): 3 buffers suffice for any HEIGHT
+- K=3, full-padding (output size = input size): 4 buffers required for HEIGHT ≥ 4
+
+Use `buf_idx = row % NUM_BUFS`. When NUM_BUFS is a power of 2, `row[$clog2(NUM_BUFS)-1:0]` works.
+
+## 20. Cross-Module Timing (from spec.json timing_contract)
 
 When translating from golden_model.py + spec.json:
 - Input port with `pipeline_delay_cycles > 0` → caller provides registered output → `input wire`
