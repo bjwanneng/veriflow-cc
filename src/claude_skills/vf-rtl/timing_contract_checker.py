@@ -519,6 +519,71 @@ def fix_spec(spec: dict) -> dict:
     return {"spec": spec, "fixes": fixes_log}
 
 
+def check_cdc_paths(spec: dict) -> tuple[list[str], list[str]]:
+    """Validate clock domain crossing (CDC) paths.
+
+    Checks that:
+    - If clock_domains is declared, all cdc_paths have valid synchronizers
+    - Synchronizer type is one of: two_ff, fifo, handshake
+    - Source and destination clock domains exist
+    """
+    errors = []
+    warnings = []
+
+    clock_domains = spec.get("clock_domains", [])
+    cdc_paths = spec.get("cdc_paths", [])
+
+    if not clock_domains:
+        return errors, warnings
+
+    domain_names = {d.get("name", "") for d in clock_domains}
+
+    if not cdc_paths:
+        warnings.append(
+            "clock_domains declared but no cdc_paths specified. "
+            "If design is single-clock, remove clock_domains."
+        )
+        return errors, warnings
+
+    valid_sync_types = {"two_ff", "fifo", "handshake", "async_fifo"}
+
+    for i, path in enumerate(cdc_paths):
+        src_domain = path.get("source_clock", "")
+        dst_domain = path.get("destination_clock", "")
+        signal = path.get("signal", f"cdc_paths[{i}]")
+        sync_type = path.get("synchronizer", "")
+
+        if src_domain not in domain_names:
+            errors.append(
+                f"CDC path '{signal}': source_clock '{src_domain}' not declared "
+                f"in clock_domains"
+            )
+        if dst_domain not in domain_names:
+            errors.append(
+                f"CDC path '{signal}': destination_clock '{dst_domain}' not declared "
+                f"in clock_domains"
+            )
+
+        if not sync_type:
+            errors.append(
+                f"CDC path '{signal}': missing synchronizer type. "
+                f"Must be one of: {valid_sync_types}"
+            )
+        elif sync_type not in valid_sync_types:
+            errors.append(
+                f"CDC path '{signal}': unknown synchronizer '{sync_type}'. "
+                f"Must be one of: {valid_sync_types}"
+            )
+
+        if src_domain == dst_domain:
+            warnings.append(
+                f"CDC path '{signal}': source and destination are the same domain "
+                f"('{src_domain}'). This is not a CDC path."
+            )
+
+    return errors, warnings
+
+
 def _run_all_checks(spec: dict, golden_path: str | None) -> tuple[list[str], list[str]]:
     """Run all check functions and return accumulated (errors, warnings)."""
     all_errors = []
@@ -541,6 +606,10 @@ def _run_all_checks(spec: dict, golden_path: str | None) -> tuple[list[str], lis
     all_warnings.extend(warnings)
 
     errors, warnings = check_fanout_skew(spec)
+    all_errors.extend(errors)
+    all_warnings.extend(warnings)
+
+    errors, warnings = check_cdc_paths(spec)
     all_errors.extend(errors)
     all_warnings.extend(warnings)
 
