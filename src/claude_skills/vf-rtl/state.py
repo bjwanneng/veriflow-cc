@@ -287,6 +287,30 @@ class PipelineState:
                     for i, fg in enumerate(spec["fanout_groups"]):
                         if not fg.get("name") or not fg.get("signals"):
                             missing.append(f"spec.json: fanout_groups[{i}] missing name or signals")
+                # Design graph validation — cycle detection and unreachable modules
+                try:
+                    import importlib.util
+                    skill_dir = Path(__file__).parent
+                    graph_path = skill_dir / "design_graph.py"
+                    if graph_path.exists():
+                        spec_mod = importlib.util.spec_from_file_location("design_graph", str(graph_path))
+                        dg_mod = importlib.util.module_from_spec(spec_mod)
+                        spec_mod.loader.exec_module(dg_mod)
+                        graph = dg_mod.DesignGraph(spec)
+                        cycles = graph.detect_cycles()
+                        if cycles:
+                            for c in cycles:
+                                missing.append(
+                                    f"spec.json: combinational cycle detected: "
+                                    f"{' -> '.join(c)}"
+                                )
+                        unreachable = graph.find_unreachable_modules()
+                        if unreachable:
+                            missing.append(
+                                f"spec.json: unreachable modules: {', '.join(unreachable)}"
+                            )
+                except Exception:
+                    pass  # design_graph check is best-effort
             except (json.JSONDecodeError, KeyError) as e:
                 missing.append(f"spec.json: parse error - {e}")
 

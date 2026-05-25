@@ -695,6 +695,21 @@ If any `[HOOK] FAIL` is printed, the testbench is REJECTED — re-read the
 template, populate every constant from spec.json/golden_model.py, and rewrite
 the file. Do NOT proceed to Step 6 with FAIL lines present.
 
+### Step 5b: Generate corner-case test vectors (MANDATORY)
+
+After the testbench is generated, run the corner-case generator to create
+boundary-condition test vectors that supplement the golden model's TEST_VECTORS:
+
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/corner_case_generator.py" \
+    --spec "$PROJECT_DIR/workspace/docs/spec.json" \
+    --output "$PROJECT_DIR/workspace/tb/corner_cases.json"
+```
+
+If the corner-case file is generated successfully, the cocotb testbench MUST
+include these vectors as additional test cases. Append them to the existing
+TEST_VECTORS or add a separate `test_corner_cases` function.
+
 ### Step 6: Write completion marker and return result
 
 ```bash

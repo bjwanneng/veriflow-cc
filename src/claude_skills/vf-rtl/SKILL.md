@@ -471,7 +471,9 @@ for m in json.load(open('workspace/docs/spec.json')).get('modules', []):
 VERILOG_TB=$(ls workspace/tb/tb_*.v 2>/dev/null | head -1)
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
     --module $TOP_MODULE --rtl-dir workspace/rtl --tb-file "$VERILOG_TB" \
-    --build-dir workspace/sim --verbose 2>&1 | tee logs/sim.log
+    --build-dir workspace/sim --verbose \
+    --golden-model workspace/docs/golden_model.py \
+    2>&1 | tee logs/sim.log
 ```
 
 ### If PASS
@@ -726,11 +728,13 @@ If synth failed → check report, fix if needed.
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
 ```
 
-### Optional: Formal Equivalence Check (post-synthesis)
+### Formal Equivalence Check (post-synthesis)
 
 If synthesis produced a netlist and yosys is available, run a lightweight
 formal equivalence check between the original RTL and the synthesized netlist.
-This is a **soft gate** in Phase 1 — it warns but does not fail the pipeline.
+
+**This is now a HARD gate.** If equivalence is NOT proved, the pipeline
+marks lint_synth as FAILED and enters error recovery.
 
 ```bash
 TOP_MODULE=$("$PYTHON_EXE" -c "
@@ -739,6 +743,7 @@ for m in json.load(open('workspace/docs/spec.json')).get('modules', []):
     if m.get('module_type') == 'top': print(m['module_name']); break
 ")
 SYNTH_V="workspace/synth/${TOP_MODULE}_synth.v"
+EQUIV="SKIP"
 if [ -f "$SYNTH_V" ] && command -v yosys &>/dev/null; then
     "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/yosys_equiv.py" \
         --ref "workspace/rtl/${TOP_MODULE}.v" \
@@ -750,15 +755,43 @@ import json, pathlib
 p = pathlib.Path('logs/yosys_equiv_synth.json')
 if p.exists():
     d = json.loads(p.read_text())
-    print('PASS' if d.get('equivalent') else 'WARN')
+    print('PASS' if d.get('equivalent') else 'FAIL')
 else:
     print('SKIP')
 ")
     echo "[EQUIV] Synthesis equivalence check: $EQUIV"
-    if [ "$EQUIV" = "WARN" ]; then
-        echo "[WARN] Synthesized netlist may not be equivalent to original RTL."
-        echo "[WARN] Review logs/yosys_equiv_synth.json for unproven signals."
+    if [ "$EQUIV" = "FAIL" ]; then
+        echo "[FAIL] Synthesized netlist is NOT equivalent to original RTL."
+        echo "[FAIL] Unproven signals:"
+        "$PYTHON_EXE" -c "
+import json
+with open('logs/yosys_equiv_synth.json') as f:
+    d = json.load(f)
+    for sig in d.get('unproven', []):
+        print(f'  {sig}')
+"
+        # Mark stage as failed and abort pipeline
+        "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" \
+            --fail --error-sig="equiv_check_failed"
+        exit 1
     fi
+else
+    echo "[EQUIV] Skipped (yosys or netlist not available)"
+fi
+```
+
+### Knowledge Base Auto-Record (post-success)
+
+After a successful pipeline run, record outcomes to the cross-project
+knowledge base for future pattern learning:
+
+```bash
+# Record project outcome if pipeline completed successfully
+if "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" lint_synth --check-loop=dummy 2>/dev/null; then
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/knowledge_base.py" \
+        --record-fix logs/timing_diagnostic.json \
+        --project "$(basename $PROJECT_DIR)" \
+        --fix-attempts "$(cat .veriflow/pipeline_state.json | python -c 'import sys,json;print(sum(json.load(sys.stdin).get(\"retry_count\",{}).values()))')" 2>/dev/null || true
 fi
 ```
 
