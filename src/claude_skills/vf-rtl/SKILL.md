@@ -1,17 +1,33 @@
 ---
 name: vf-rtl
-description: Use this skill to start or resume the VeriFlow RTL hardware design pipeline (architect to synth). Trigger this when the user asks to "run the RTL flow", "design hardware", or "start the pipeline". Pass the project directory path as the argument.
+description: Use this skill to start or resume the VeriFlow RTL hardware design pipeline (architect to synth). Trigger this when the user asks to "run the RTL flow", "design hardware", or "start the pipeline". Pass the project directory path as the argument. Optional: append `--benchmark` to auto-generate a benchmark report after the pipeline completes.
 ---
 
 # RTL Pipeline Orchestrator
 
 This skill IS the plan — execute each stage immediately using Read/Write/Bash/Agent tools. Do NOT plan before executing.
 
-Project directory path: `$ARGUMENTS`
+Project directory path: `$PROJECT_DIR`
 
-If `$ARGUMENTS` is empty, ask the user for it.
+If `$PROJECT_DIR` is empty, ask the user for it.
+
+**Optional flags**:
+- `--benchmark` — After the pipeline completes, automatically run `benchmark_runner.py`
+  and generate a JSON report at `logs/benchmark_report.json`.
 
 **Variable**: `${CLAUDE_SKILL_DIR}` is set by Claude Code to the skill's installed directory.
+
+**Argument parsing** (run once at the top):
+```bash
+# Parse $ARGUMENTS: project_dir [flags]
+# e.g. "/path/to/project" or "/path/to/project --benchmark"
+PROJECT_DIR="${ARGUMENTS%%--*}"
+PROJECT_DIR="$(echo "$PROJECT_DIR" | xargs)"  # trim trailing space
+RUN_BENCHMARK=""
+if echo "$ARGUMENTS" | grep -q "\-\-benchmark"; then
+    RUN_BENCHMARK="1"
+fi
+```
 
 ---
 
@@ -21,8 +37,8 @@ Run the initialization script:
 
 ```bash
 PY_INIT="${PYTHON_EXE:-python}"
-cd "$ARGUMENTS" && "$PY_INIT" "${CLAUDE_SKILL_DIR}/init.py" "$ARGUMENTS"
-[ -f "$ARGUMENTS/.veriflow/eda_env.sh" ] && source "$ARGUMENTS/.veriflow/eda_env.sh"
+cd "$PROJECT_DIR" && "$PY_INIT" "${CLAUDE_SKILL_DIR}/init.py" "$PROJECT_DIR"
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
 ```
 
 Read the output to determine: new project or resuming. If resuming, skip stages in `stages_completed`.
@@ -34,18 +50,18 @@ interrupted or crashed. Before re-dispatching that stage, check if the output fi
 already exist by looking for completion markers (`.veriflow/done_<stage>*`):
 
 ```bash
-cd "$ARGUMENTS"
+cd "$PROJECT_DIR"
 # For spec_golden: check if both outputs exist and marker is present
 if [ -f ".veriflow/done_spec_golden" ] && [ -f "workspace/docs/spec.json" ] && [ -f "workspace/docs/golden_model.py" ]; then
     echo "[RECOVERY] spec_golden outputs exist — running hook to mark complete"
-    python3 "${CLAUDE_SKILL_DIR}/state.py" "$ARGUMENTS" "spec_golden" \
+    python3 "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" \
         --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py"
 fi
 
 # For codegen: check if ALL module .v files and TB files exist
 if ls .veriflow/done_codegen_* >/dev/null 2>&1; then
     echo "[RECOVERY] codegen completion markers found — verifying outputs"
-    python3 "${CLAUDE_SKILL_DIR}/state.py" "$ARGUMENTS" "codegen" \
+    python3 "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" \
         --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" \
         --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" \
         --journal-notes="Recovered from interrupted codegen via completion markers"
@@ -112,10 +128,10 @@ else:
 ## Step 0b: Requirements Clarification
 
 Read ALL input files in parallel (single message with multiple Read calls):
-- `$ARGUMENTS/requirement.md` (required)
-- `$ARGUMENTS/constraints.md` (optional)
-- `$ARGUMENTS/design_intent.md` (optional)
-- `$ARGUMENTS/context/*.md` files
+- `$PROJECT_DIR/requirement.md` (required)
+- `$PROJECT_DIR/constraints.md` (optional)
+- `$PROJECT_DIR/design_intent.md` (optional)
+- `$PROJECT_DIR/context/*.md` files
 
 Check each category below. If input files already answer it → note "confirmed" and skip. Only ask about what's missing or ambiguous. Use AskUserQuestion with up to 4 questions per call.
 
@@ -127,7 +143,7 @@ Check each category below. If input files already answer it → note "confirmed"
 **F.** Domain knowledge: design domain, standard reference, prerequisite concepts, test vectors
 **G.** Information completeness: implicit assumptions, missing scenarios
 
-After resolved, write `$ARGUMENTS/.veriflow/clarifications.md` with all answers.
+After resolved, write `$PROJECT_DIR/.veriflow/clarifications.md` with all answers.
 
 ## Step 0c: Create task list
 
@@ -747,6 +763,20 @@ fi
 ```
 
 TaskUpdate complete. Pipeline done.
+
+### Optional: Benchmark report (if --benchmark flag was passed)
+
+If the user invoked `/vf-rtl` with `--benchmark`, generate an evaluation report:
+
+```bash
+if [ -n "$RUN_BENCHMARK" ]; then
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/benchmark_runner.py" \
+        --project "$PROJECT_DIR" \
+        --output "logs/benchmark_report.json" \
+        --markdown
+    echo "[BENCHMARK] Report saved to logs/benchmark_report.json"
+fi
+```
 
 ---
 
