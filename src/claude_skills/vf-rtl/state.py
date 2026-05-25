@@ -62,6 +62,9 @@ class PipelineState:
     verify_fix_output: Optional[dict] = None
     lint_synth_output: Optional[dict] = None
 
+    # Formal verification (populated by yosys_equiv in Stage 4)
+    equivalence_check: Optional[dict] = None  # {"equivalent": bool, "unproven": [...], "report": str}
+
     # Error recovery
     retry_count: dict = field(default_factory=dict)
     error_history: dict = field(default_factory=dict)
@@ -289,25 +292,50 @@ class PipelineState:
 
         return (len(missing) == 0, missing)
 
-    def detect_fix_loop(self, stage: str, error_signature: str) -> bool:
+    def detect_fix_loop(self, stage: str, error_signature: str | tuple) -> bool:
         """Detect if error recovery is cycling on the same error.
 
         Args:
             stage: Current stage name
-            error_signature: A short string identifying the error (e.g., "lint:line42:syntax")
+            error_signature: Either a legacy string (backwards compatible) or
+                a structured tuple (classification, signal_root, cycle_offset).
+                Structured signatures ignore line numbers — the same bug class
+                on the same signal with the same timing offset is detected even
+                if the RTL line numbers shifted after a fix attempt.
+                Examples:
+                  - "lint:line42:syntax"  (legacy string)
+                  - ("B_late", "w_reg", -1)  (structured)
 
         Returns:
-            True if this exact error has been seen 2+ times in recent history
+            True if this error has been seen 2+ times in recent history
         """
         if stage not in self.error_history:
             return False
 
         recent_errors = self.error_history[stage][-3:]  # Last 3 attempts
-        signature_count = sum(
-            1 for e in recent_errors
-            if any(error_signature == err for err in e.get("errors", []))
-        )
-        return signature_count >= 2
+
+        if isinstance(error_signature, tuple):
+            # Structured matching: compare (classification, signal_root, cycle_offset)
+            # This is robust to code changes that shift line numbers.
+            sig_class, sig_signal, sig_offset = error_signature
+            signature_count = 0
+            for e in recent_errors:
+                for err in e.get("errors", []):
+                    if isinstance(err, tuple) and len(err) == 3:
+                        err_class, err_signal, err_offset = err
+                        if (sig_class == err_class and
+                                sig_signal == err_signal and
+                                sig_offset == err_offset):
+                            signature_count += 1
+                            break
+            return signature_count >= 2
+        else:
+            # Legacy exact string match (for non-Stage-3 errors like lint)
+            signature_count = sum(
+                1 for e in recent_errors
+                if any(error_signature == err for err in e.get("errors", []))
+            )
+            return signature_count >= 2
 
     def validate_golden_model(self, project_dir: str) -> tuple[bool, list[str]]:
         """Validate golden_model.py after Stage 1 generation.

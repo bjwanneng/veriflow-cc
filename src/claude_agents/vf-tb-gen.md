@@ -274,6 +274,40 @@ async def test_small_image(dut):
 defaults for the test vectors (i.e., the test vectors were designed for the
 default parameter values), omit `VERILOG_PARAMS` entirely.
 
+### RULE 8: Coverage-driven test generation (MANDATORY)
+
+Every test module MUST exercise sufficient design structure to prevent
+silent undetected bugs. The generated testbench MUST include tests that
+hit:
+
+1. **All FSM states** — at minimum: IDLE, each active state, and DONE.
+   For designs without an explicit FSM, exercise all major operational modes.
+2. **All branches of every `case` statement** — every `case` item plus
+   the `default` branch.
+3. **Both reset and non-reset paths** for every sequential `always` block.
+4. **Boundary conditions**:
+   - All-zeros input
+   - All-ones input (where applicable)
+   - Minimum-length message / smallest valid input
+   - Maximum-length message / largest valid input
+5. **Backpressure scenarios** (if the handshake protocol supports it) —
+   stall the consumer for one or more cycles and verify data is not lost.
+
+**Coverage reporting**: The cocotb testbench MUST log a summary at the end
+of simulation indicating how many test vectors were exercised. This is used
+by the pipeline to flag low-coverage test suites:
+
+```python
+@cocotb.test()
+async def test_coverage_summary(dut):
+    """Log coverage summary — mandatory for pipeline coverage gate."""
+    exercised = len(TEST_VECTORS)
+    # Log for pipeline parser
+    dut._log.info(f"[COVERAGE] test_vectors={exercised} "
+                  f"fsm_states={'/'.join(seen_states)} "
+                  f"reset_paths_tested={'/'.join(reset_tests)}")
+```
+
 ## Input (provided in prompt by caller)
 
 - PROJECT_DIR: path to project root

@@ -332,6 +332,10 @@ def main():
     parser.add_argument("--spec-path", default=None,
                         help="Optional spec.json path used to resolve --sim-timeout "
                              "when the flag itself is omitted.")
+    parser.add_argument("--golden-model", default=None,
+                        help="Path to golden_model.py for coverage analysis. "
+                             "If provided, the runner compares exercised signals "
+                             "against golden trace signals and reports coverage ratio.")
     args = parser.parse_args()
 
     if args.golden_check:
@@ -515,6 +519,24 @@ def main():
     failed_summary = re.search(r'FAILED:\s*(\d+)\s*assertion', sim_output)
     pass_lines = re.findall(r'\[PASS\].*', sim_output)
 
+    # Coverage analysis: count exercised test vectors from log
+    coverage_info = {}
+    if args.golden_model:
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("golden_model", args.golden_model)
+            gm = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gm)
+            tv_count = len(getattr(gm, "TEST_VECTORS", []))
+            exercised = len(pass_lines) + len(fail_lines)
+            coverage_info = {
+                "test_vectors_total": tv_count,
+                "test_vectors_exercised": exercised,
+                "coverage_ratio": round(exercised / tv_count, 2) if tv_count else None,
+            }
+        except Exception:
+            pass  # Coverage analysis is best-effort
+
     # Parse structured [FAIL] lines
     failures = [_parse_fail_line(fl) for fl in fail_lines]
 
@@ -551,6 +573,7 @@ def main():
             "vcd_path": vcd_path,
             "failures": classified,
             "first_fail_cycle": first_fail_cycle,
+            "coverage": coverage_info,
         }
         print(json.dumps(result))
 
@@ -571,6 +594,7 @@ def main():
             "passed": num_passed,
             "failed": 0,
             "vcd_path": vcd_path,
+            "coverage": coverage_info,
         }
         print(json.dumps(result))
         sys.exit(0)

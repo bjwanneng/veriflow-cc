@@ -31,7 +31,7 @@ the actual module name.
 source <EDA_ENV path from prompt>
 cd <PROJECT_DIR path from prompt> && mkdir -p workspace/synth
 RTL_FILES=$(ls workspace/rtl/*.v | xargs printf 'read_verilog %s; ')
-yosys -p "${RTL_FILES} synth -top <design_name>; stat" 2>&1 | tee workspace/synth/synth_report.txt
+yosys -p "${RTL_FILES} synth -top <design_name>; stat; write_verilog workspace/synth/<design_name>_synth.v" 2>&1 | tee workspace/synth/synth_report.txt
 ```
 
 Replace `<EDA_ENV>`, `<PROJECT_DIR>`, `<design_name>` with actual values from your prompt and spec.json.

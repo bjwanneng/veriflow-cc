@@ -463,6 +463,42 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
 ```bash
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q 'ALL TESTS PASSED' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
 ```
+
+### Coverage check (soft gate — warn but don't fail in Phase 1)
+
+Parse the simulation result for coverage metrics. If the testbench exercised
+fewer test vectors than golden_model.py provides, flag a warning:
+
+```bash
+COV=$($PYTHON_EXE -c "
+import json, pathlib, sys
+for log_name in ('logs/iverilog_result.json', 'logs/cocotb_result.json'):
+    p = pathlib.Path(log_name)
+    if p.exists():
+        try:
+            d = json.loads(p.read_text())
+            cov = d.get('coverage', {})
+            total = cov.get('test_vectors_total', 0)
+            exercised = cov.get('test_vectors_exercised', 0)
+            ratio = cov.get('coverage_ratio')
+            if total > 0 and ratio is not None:
+                print(f'{exercised}/{total}={ratio:.0%}')
+            else:
+                print('N/A')
+            sys.exit(0)
+        except Exception:
+            pass
+print('N/A')
+")
+echo "[COVERAGE] Test vector coverage: $COV"
+if [ "$COV" != "N/A" ]; then
+    RATIO=$(echo "$COV" | grep -oP '\d+%' | tr -d '%' || echo "100")
+    if [ "$RATIO" -lt 80 ] 2>/dev/null; then
+        echo "[WARN] Coverage below 80% — testbench may miss corner cases"
+    fi
+fi
+```
+
 TaskUpdate complete. Go to Stage 4.
 
 ### If FAIL
@@ -540,7 +576,13 @@ p = pathlib.Path('logs/timing_diagnostic.json')
 if p.exists():
     d = json.loads(p.read_text())
     div = d.get('divergence', {})
-    print(f\"cycle:{div.get('cycle','?')}:signal:{div.get('signal','?')}\")
+    cls = d.get('bug_class', 'A')
+    sig = div.get('signal', '?')
+    # Structured signature: (classification, signal_root, cycle_offset)
+    # Robust to line-number changes after fix attempts.
+    sig_root = sig.rsplit('.', 1)[-1].split('[')[0]
+    offset = d.get('timing_offset_cycles', 0)
+    print(f\"({cls!r}, {sig_root!r}, {offset})\")
 else:
     print('no-diagnostic')
 ")
@@ -667,6 +709,43 @@ If synth failed → check report, fix if needed.
 ```bash
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
 ```
+
+### Optional: Formal Equivalence Check (post-synthesis)
+
+If synthesis produced a netlist and yosys is available, run a lightweight
+formal equivalence check between the original RTL and the synthesized netlist.
+This is a **soft gate** in Phase 1 — it warns but does not fail the pipeline.
+
+```bash
+TOP_MODULE=$("$PYTHON_EXE" -c "
+import json
+for m in json.load(open('workspace/docs/spec.json')).get('modules', []):
+    if m.get('module_type') == 'top': print(m['module_name']); break
+")
+SYNTH_V="workspace/synth/${TOP_MODULE}_synth.v"
+if [ -f "$SYNTH_V" ] && command -v yosys &>/dev/null; then
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/yosys_equiv.py" \
+        --ref "workspace/rtl/${TOP_MODULE}.v" \
+        --impl "$SYNTH_V" \
+        --top "$TOP_MODULE" \
+        --json > logs/yosys_equiv_synth.json 2>&1
+    EQUIV=$("$PYTHON_EXE" -c "
+import json, pathlib
+p = pathlib.Path('logs/yosys_equiv_synth.json')
+if p.exists():
+    d = json.loads(p.read_text())
+    print('PASS' if d.get('equivalent') else 'WARN')
+else:
+    print('SKIP')
+")
+    echo "[EQUIV] Synthesis equivalence check: $EQUIV"
+    if [ "$EQUIV" = "WARN" ]; then
+        echo "[WARN] Synthesized netlist may not be equivalent to original RTL."
+        echo "[WARN] Review logs/yosys_equiv_synth.json for unproven signals."
+    fi
+fi
+```
+
 TaskUpdate complete. Pipeline done.
 
 ---
