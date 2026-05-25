@@ -302,6 +302,312 @@ def _match_pattern_15_cocotb_vcd_timing(divs: list[dict]) -> PatternMatch | None
     return None
 
 
+def _match_pattern_2_shift_register_drain(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 2: Shift Register Window Drain.
+
+    Signature: D-class divergence on shift/window-related signals where
+    actual=0 and cycle exceeds the expected fill depth, suggesting the
+    shift register stopped being replenished after initial fill.
+    """
+    _SHIFT_SIGNAL_RE = re.compile(r"shift|window|fifo|buf|buffer|queue", re.IGNORECASE)
+    for d in divs:
+        sig = _short(d["signal"])
+        if not _SHIFT_SIGNAL_RE.search(sig):
+            continue
+        if d.get("classification") != "D":
+            continue
+        expected = d.get("expected", 0)
+        actual = d.get("actual", 0)
+        if expected == 0 or actual != 0:
+            continue
+        cycle = d.get("cycle", 0)
+        if cycle < 4:
+            continue
+        return PatternMatch(
+            pattern_id=2,
+            title="Shift Register Window Drain",
+            confidence=0.65,
+            reason=(
+                f"signal={sig!r} classified D at cycle {cycle} "
+                f"(expected={expected:#x} actual=0). Shift register likely "
+                "stopped being replenished after initial fill."
+            ),
+            prevention_rule=(
+                "Shift registers must be replenished every active cycle. "
+                "Do NOT gate next-element computation by step counter."
+            ),
+        )
+    return None
+
+
+def _match_pattern_3_incomplete_init(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 3: Algorithm Initial State Incomplete.
+
+    Signature: 2+ internal registers all classified D (actual=0) at the
+    same early cycle, suggesting initialization path missed some registers.
+    """
+    d_regs = []
+    for d in divs:
+        if d.get("classification") != "D":
+            continue
+        if d.get("actual", 1) != 0:
+            continue
+        if d.get("expected", 0) == 0:
+            continue
+        sig = _short(d["signal"])
+        # Exclude output ports — focus on internal registers
+        if re.search(r"_(out|output|result|valid|ready)$", sig, re.IGNORECASE):
+            continue
+        d_regs.append(sig)
+    if len(d_regs) >= 2:
+        return PatternMatch(
+            pattern_id=3,
+            title="Algorithm Initial State Incomplete",
+            confidence=0.7,
+            reason=(
+                f"{len(d_regs)} internal registers are zero when expected non-zero: "
+                f"{d_regs[:4]}{'...' if len(d_regs) > 4 else ''}. "
+                "Initialization path likely missed accumulator/feedback registers."
+            ),
+            prevention_rule=(
+                "For every output, trace ALL contributing registers and verify "
+                "each has a defined initial value for the first operation cycle."
+            ),
+        )
+    return None
+
+
+def _match_pattern_5_reset_not_clearing(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 5: Reset Not Clearing Output Register.
+
+    Signature: D-class divergence at cycle 0 or 1, where actual=0 but
+    expected is non-zero — output register was not re-initialized between
+    operations.
+    """
+    for d in divs:
+        if d.get("classification") != "D":
+            continue
+        cycle = d.get("cycle", 999)
+        if cycle > 1:
+            continue
+        expected = d.get("expected", 0)
+        actual = d.get("actual", 0)
+        if expected == 0 or actual != 0:
+            continue
+        sig = _short(d["signal"])
+        if not re.search(r"_(out|output|result|valid|ready)$", sig, re.IGNORECASE):
+            continue
+        return PatternMatch(
+            pattern_id=5,
+            title="Reset Not Clearing Output Register",
+            confidence=0.6,
+            reason=(
+                f"signal={sig!r} is zero at cycle {cycle} but expected "
+                f"{expected:#x}. Output register may not be cleared between "
+                "consecutive operations."
+            ),
+            prevention_rule=(
+                "Every output port must be driven by a register included in the "
+                "reset block or explicitly cleared between operations."
+            ),
+        )
+    return None
+
+
+def _match_pattern_6_fsm_stuck(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 6: FSM Stuck / Missing Transition.
+
+    Signature: A-class divergence on a state-related signal where the
+    actual value is constant (same across multiple cycles) but expected
+    changes, suggesting the FSM missed a transition.
+    """
+    _STATE_SIGNAL_RE = re.compile(r"state|state_reg|fsm_state|next_state", re.IGNORECASE)
+    for d in divs:
+        sig = _short(d["signal"])
+        if not _STATE_SIGNAL_RE.search(sig):
+            continue
+        if d.get("classification") != "A":
+            continue
+        expected = d.get("expected", 0)
+        actual = d.get("actual", 0)
+        if expected == actual:
+            continue
+        return PatternMatch(
+            pattern_id=6,
+            title="FSM Stuck / Missing Transition",
+            confidence=0.6,
+            reason=(
+                f"signal={sig!r} classified A (expected={expected:#x} "
+                f"actual={actual:#x}). FSM may be missing a transition condition "
+                "or has an unreachable branch."
+            ),
+            prevention_rule=(
+                "Every FSM state must have a defined next-state for ALL input "
+                "combinations with an explicit default branch."
+            ),
+        )
+    return None
+
+
+def _match_pattern_7_handshake_violation(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 7: Handshake Violation.
+
+    Signature: B-class divergence on a valid/data pair where the two
+    signals have inconsistent timing offsets, suggesting a handshake
+    protocol violation.
+    """
+    valid_divs = [d for d in divs if _VALID_SIGNAL_RE.search(_short(d.get("signal", "")))]
+    data_divs = [d for d in divs if not _VALID_SIGNAL_RE.search(_short(d.get("signal", "")))]
+
+    if not valid_divs or not data_divs:
+        return None
+
+    for vd in valid_divs:
+        v_cls = vd.get("classification", "")
+        if v_cls not in ("B_late", "B_early"):
+            continue
+        v_sig = _short(vd["signal"])
+        # Look for a data signal with the SAME classification
+        for dd in data_divs:
+            d_cls = dd.get("classification", "")
+            if d_cls != v_cls:
+                continue
+            return PatternMatch(
+                pattern_id=7,
+                title="Handshake Violation (valid/data misaligned)",
+                confidence=0.6,
+                reason=(
+                    f"valid signal {v_sig!r} and data signal "
+                    f"{_short(dd['signal'])!r} both classified {v_cls}. "
+                    "Handshake protocol may violate hold-until-ack semantics."
+                ),
+                prevention_rule=(
+                    "For hold_until_ack protocols, valid and data must be updated "
+                    "in the SAME cycle and valid must persist until ack is received."
+                ),
+            )
+    return None
+
+
+def _match_pattern_8_counter_overflow(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 8: Counter Range Off-By-One / Overflow.
+
+    Signature: A-class divergence on a counter-related signal where the
+    actual value wraps around (e.g., 7→0 instead of 7→8), suggesting
+    insufficient counter width.
+    """
+    _COUNTER_SIGNAL_RE = re.compile(r"count|cnt|counter|round|step|idx|index", re.IGNORECASE)
+    for d in divs:
+        sig = _short(d["signal"])
+        if not _COUNTER_SIGNAL_RE.search(sig):
+            continue
+        if d.get("classification") != "A":
+            continue
+        expected = d.get("expected", 0)
+        actual = d.get("actual", 0)
+        if expected == 0:
+            continue
+        # Detect wrap-around: expected is a power-of-two boundary
+        # and actual is 0 or 1 (wrap-around symptom)
+        if expected > 0 and (expected & (expected - 1)) == 0 and actual in (0, 1):
+            return PatternMatch(
+                pattern_id=8,
+                title="Counter Range Off-By-One / Overflow",
+                confidence=0.65,
+                reason=(
+                    f"signal={sig!r} counter wrapped: expected={expected:#x} "
+                    f"actual={actual:#x}. Counter width may be insufficient "
+                    "or terminal condition uses wrong comparison."
+                ),
+                prevention_rule=(
+                    "Use `<` not `<=` for terminal conditions. Verify counter "
+                    "width covers max value + 1 without overflow."
+                ),
+            )
+    return None
+
+
+def _match_pattern_9_premature_timing_hypothesis(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 9: Premature Timing Hypothesis.
+
+    Signature: FIRST divergence at cycle 0 or 1 with classification B,
+    suggesting the debugger is assuming a timing issue when the real
+    cause is likely a logic error (missing init, wrong formula).
+
+    Key discriminator from Pattern 9 doc: "Zero is never a timing symptom."
+    """
+    if not divs:
+        return None
+    first = min(divs, key=lambda d: d.get("cycle", 999))
+    cycle = first.get("cycle", 999)
+    if cycle > 1:
+        return None
+    cls = first.get("classification", "")
+    if cls not in ("B_late", "B_early"):
+        return None
+    # If actual is zero or constant, it's almost certainly a logic error
+    actual = first.get("actual", None)
+    expected = first.get("expected", None)
+    if actual == 0 and expected is not None and expected != 0:
+        return PatternMatch(
+            pattern_id=9,
+            title="Premature Timing Hypothesis (likely logic error, not timing)",
+            confidence=0.8,
+            reason=(
+                f"FIRST divergence at cycle {cycle} with actual=0 but expected "
+                f"{expected:#x}. Per Pattern 9: 'Zero is never a timing symptom.' "
+                "This is almost certainly a logic error (missing init, wrong formula, "
+                "or conditional gating to zero), NOT a timing offset."
+            ),
+            prevention_rule=(
+                "Never assume timing issues without data. If divergence shows "
+                "zero/constant at the first cycle, trace the computation logic first."
+            ),
+        )
+    return None
+
+
+def _match_pattern_12_fsm_latch_race(divs: list[dict]) -> PatternMatch | None:
+    """Pattern 12: FSM Latch-on-Transition Race.
+
+    Signature: A-class divergence on a signal that should be latched during
+    a specific FSM transition, where the value is never captured or captured
+    at the wrong cycle — suggesting the latch condition only checks state_reg
+    without also checking next_state.
+    """
+    _LATCH_SIGNAL_RE = re.compile(r"latched|latch|capture|hold", re.IGNORECASE)
+    for d in divs:
+        sig = _short(d["signal"])
+        if not _LATCH_SIGNAL_RE.search(sig):
+            continue
+        if d.get("classification") != "A":
+            continue
+        expected = d.get("expected", 0)
+        actual = d.get("actual", 0)
+        if expected == 0 or actual != 0:
+            continue
+        cycle = d.get("cycle", 0)
+        if cycle < 2:
+            continue
+        return PatternMatch(
+            pattern_id=12,
+            title="FSM Latch-on-Transition Race",
+            confidence=0.6,
+            reason=(
+                f"signal={sig!r} is zero at cycle {cycle} but expected "
+                f"{expected:#x}. Latch condition may only check state_reg "
+                "without also checking next_state, causing it to miss the "
+                "transition capture window."
+            ),
+            prevention_rule=(
+                "For transition-time latches, use explicit detection: "
+                "(state_reg == STATE_A && next_state == STATE_B). "
+                "Do NOT rely on case(state_reg) alone."
+            ),
+        )
+    return None
+
+
 # --------------------------------------------------------------------------
 # Public API
 # --------------------------------------------------------------------------
@@ -313,6 +619,15 @@ _PATTERN_MATCHERS = [
     _match_pattern_10_finalize_leak,
     _match_pattern_13_bitslice_truncation,
     _match_pattern_14_multiblock_valid,
+    # Phase 2 additions:
+    _match_pattern_2_shift_register_drain,
+    _match_pattern_3_incomplete_init,
+    _match_pattern_5_reset_not_clearing,
+    _match_pattern_6_fsm_stuck,
+    _match_pattern_7_handshake_violation,
+    _match_pattern_8_counter_overflow,
+    _match_pattern_9_premature_timing_hypothesis,
+    _match_pattern_12_fsm_latch_race,
 ]
 
 
