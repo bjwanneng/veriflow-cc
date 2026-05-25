@@ -50,6 +50,13 @@ Installs to `~/.claude/`:
 - `skills/vf-rtl/cocotb_runner.py` — Cocotb simulation runner
 - `skills/vf-rtl/iverilog_runner.py` — Pure-Verilog simulation runner
 - `skills/vf-rtl/timing_contract_checker.py` — Timing contract validator
+- `skills/vf-rtl/benchmark_runner.py` — Batch evaluation & reporting
+- `skills/vf-rtl/bug_pattern_match.py` — Automated divergence pattern matching
+- `skills/vf-rtl/corner_case_generator.py` — Boundary test vector generation
+- `skills/vf-rtl/formal_property_gen.py` — Assertion generation from timing contracts
+- `skills/vf-rtl/design_graph.py` — Module connectivity graph analysis
+- `skills/vf-rtl/cross_verify.py` — Dual-RTL equivalence comparison
+- `skills/vf-rtl/knowledge_base.py` — Cross-project bug pattern learning
 - `agents/vf-coder.md` — RTL code generation sub-agent
 - `agents/vf-spec-golden.md` — Spec + golden model generation sub-agent
 - `agents/vf-tb-gen.md` — Testbench generation sub-agent
@@ -84,6 +91,15 @@ If optional files are missing, the pipeline asks targeted clarification question
 
 ```
 /vf-rtl /path/to/my_alu
+```
+
+**Optional flags**:
+- `--benchmark` — After the pipeline completes, automatically run `benchmark_runner.py`
+  and generate a JSON report at `logs/benchmark_report.json`.
+
+Example:
+```
+/vf-rtl /path/to/my_alu --benchmark
 ```
 
 ## Pipeline Stages
@@ -205,6 +221,53 @@ spec.json includes machine-verifiable timing contracts for every inter-module co
 - **File control**: No new `.v` files during error recovery; debug artifacts cleaned up after each attempt
 - **Testbench rule**: TB infrastructure bugs may be fixed; assertions must not be weakened
 
+### Yosys Equivalence Check (Stage 4 hard gate)
+
+After synthesis, `yosys_equiv.py` proves functional equivalence between the original RTL and the synthesized netlist using SAT-based induction (`equiv_make → equiv_simple → equiv_induct`). If equivalence is **not proved**, the pipeline marks `lint_synth` as FAILED and aborts.
+
+### Automated Bug Pattern Matching
+
+`bug_pattern_match.py` catalogs 15 known bug patterns (6 from SM3 retrospective, 8 from later projects, 1 tooling). On simulation failure, it automatically matches the divergence signature against the catalog and reports confidence-ranked suggestions. Each pattern includes: symptom, root cause, fix, and prevention rule.
+
+### Coverage Measurement
+
+`iverilog_runner.py` automatically computes test vector coverage ratio (`exercised / total`) by comparing the golden model's `TEST_VECTORS` against the simulation log. Reported in JSON output under `coverage.*`.
+
+### Corner-case Test Generation
+
+`corner_case_generator.py` auto-generates 8 boundary-condition test vectors from spec.json ports: all-zeros, all-ones, min, max, alternating, LSB-hot, MSB-hot, half-range. Integrated into `vf-tb-gen` Step 5b as a mandatory supplement to golden model vectors.
+
+### Formal Property Generation
+
+`formal_property_gen.py` generates Verilog-2005 compatible assertion comments from spec.json timing contracts, handshake protocols, and FSM state tables. Outputs a synthesizable assertion module for Yosys formal flows.
+
+### Design Graph Validation
+
+`design_graph.py` builds a directed graph from `module_connectivity` and checks for:
+- Combinational cycles (blocks Stage 1)
+- Unreachable modules from top (blocks Stage 1)
+- Fanout skew violations
+
+### Benchmark Runner
+
+`benchmark_runner.py` supports batch evaluation, LLM variant comparison, and RealBench JSONL conversion. Outputs JSON/CSV/Markdown reports with per-stage pass/fail breakdown.
+
+### Cross-project Knowledge Base
+
+`knowledge_base.py` persists bug pattern frequencies, design templates, and project outcomes to `~/.claude/skills/vf-rtl/knowledge/`. Enables institutional learning: frequently-hit patterns are prioritized in agent prompts.
+
+## Standalone Tools
+
+| Tool | Purpose | Example |
+|------|---------|---------|
+| `benchmark_runner.py` | Batch eval / variant compare | `--compare sm3 --variants deepseek,glm5.1` |
+| `bug_pattern_match.py` | Match divergences to catalog | `--divergences logs/divergences.json` |
+| `corner_case_generator.py` | Boundary test vectors | `--spec spec.json -o corners.json` |
+| `cross_verify.py` | Dual-RTL equivalence | `--rtl-a v1 --rtl-b v2 --module top` |
+| `design_graph.py` | Connectivity analysis | `--spec spec.json -o graph.json` |
+| `formal_property_gen.py` | Assertion generation | `--spec spec.json -o props.v` |
+| `knowledge_base.py` | Query learned patterns | `--top-patterns --count 10` |
+
 ## Project Output Structure
 
 ```
@@ -251,6 +314,13 @@ veriflow-cc/
 │   │       ├── cocotb_runner.py   # Cocotb simulation runner
 │   │       ├── timing_diagnostic.py  # Bug classification + fix suggestions
 │   │       ├── timing_contract_checker.py
+│   │       ├── benchmark_runner.py   # Batch evaluation & reporting
+│   │       ├── bug_pattern_match.py  # Automated divergence pattern matching
+│   │       ├── corner_case_generator.py  # Boundary test vector generation
+│   │       ├── formal_property_gen.py    # Assertion generation
+│   │       ├── design_graph.py       # Module connectivity graph analysis
+│   │       ├── cross_verify.py       # Dual-RTL equivalence comparison
+│   │       ├── knowledge_base.py     # Cross-project bug pattern learning
 │   │       ├── error_recovery.md  # Stage 3 error recovery procedure
 │   │       ├── design_rules.md    # Design rules for all stages
 │   │       ├── coding_style.md    # Verilog-2005 coding rules
