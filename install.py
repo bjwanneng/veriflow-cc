@@ -69,7 +69,7 @@ def main():
             stages_dst.rmdir()
 
         # Remove skill (symlinks or copies)
-        for name in SKILL_FILES + [CODING_STYLE_DST_NAME]:
+        for name in [*SKILL_FILES, CODING_STYLE_DST_NAME]:
             dst = SKILL_DST_DIR / name
             if dst.exists() or dst.is_symlink():
                 dst.unlink()
@@ -93,7 +93,7 @@ def main():
             else:
                 import shutil as _sh
                 _sh.rmtree(legacy_dsl_dst)
-            print(f"  Removed legacy package: veriflow_dsl/")
+            print("  Removed legacy package: veriflow_dsl/")
             removed += 1
 
         # Remove legacy anchors/ directory (if present from older installs)
@@ -104,7 +104,7 @@ def main():
             else:
                 import shutil as _sh
                 _sh.rmtree(legacy_anchors_dst)
-            print(f"  Removed legacy anchors: anchors/")
+            print("  Removed legacy anchors: anchors/")
             removed += 1
 
         if SKILL_DST_DIR.exists():
@@ -247,7 +247,7 @@ def main():
     print(f"{'='*50}")
 
     # 3. Post-install verification
-    print(f"\n[verify] Running post-install checks...")
+    print("\n[verify] Running post-install checks...")
     verify_errors = []
 
     # 3a. Check agent tools field format (must be comma-separated, not YAML list)
@@ -289,40 +289,40 @@ def main():
     # 3c. Check state.py is present
     state_dst = SKILL_DST_DIR / "state.py"
     if state_dst.exists():
-        print(f"  [OK]   state.py present")
+        print("  [OK]   state.py present")
     else:
         verify_errors.append(f"  [FAIL] state.py missing at {state_dst}")
 
     # 3d. Check vcd2table.py is present
     vcd2table_dst = SKILL_DST_DIR / "vcd2table.py"
     if vcd2table_dst.exists():
-        print(f"  [OK]   vcd2table.py present")
+        print("  [OK]   vcd2table.py present")
     else:
         verify_errors.append(f"  [FAIL] vcd2table.py missing at {vcd2table_dst}")
 
     # 3e. Check cocotb_runner.py is present
     cocotb_runner_dst = SKILL_DST_DIR / "cocotb_runner.py"
     if cocotb_runner_dst.exists():
-        print(f"  [OK]   cocotb_runner.py present")
+        print("  [OK]   cocotb_runner.py present")
     else:
         verify_errors.append(f"  [FAIL] cocotb_runner.py missing at {cocotb_runner_dst}")
 
     # 3f. Check iverilog_runner.py is present
     iverilog_runner_dst = SKILL_DST_DIR / "iverilog_runner.py"
     if iverilog_runner_dst.exists():
-        print(f"  [OK]   iverilog_runner.py present")
+        print("  [OK]   iverilog_runner.py present")
     else:
         verify_errors.append(f"  [FAIL] iverilog_runner.py missing at {iverilog_runner_dst}")
 
     if verify_errors:
-        print(f"\n[verify] Issues found:")
+        print("\n[verify] Issues found:")
         for err in verify_errors:
             print(err)
-        print(f"\n[verify] Fix the above issues before running /vf-rtl")
+        print("\n[verify] Fix the above issues before running /vf-rtl")
     else:
-        print(f"\n[verify] All checks passed.")
+        print("\n[verify] All checks passed.")
 
-    print(f"\nUsage: /vf-rtl <project_dir>")
+    print("\nUsage: /vf-rtl <project_dir>")
     return 0
 
 

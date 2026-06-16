@@ -11,6 +11,7 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any
+import contextlib
 
 
 # Single source of truth for the ±N-cycle search window used by the failure
@@ -121,8 +122,9 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
                     return cycles
             elif isinstance(trace, dict):
                 return {0: trace}
-        except (TypeError, Exception):
-            pass
+        except Exception as e:
+            print(f"[rtl_utils] golden compute() raised, trying next interface: {e}",
+                  file=sys.stderr)
 
     # Interface 3: simulate(inputs, trace=True) with TEST_VECTORS
     if hasattr(mod, "simulate") and hasattr(mod, "TEST_VECTORS"):
@@ -137,8 +139,9 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
                         cycles[i] = entry
                 if cycles:
                     return cycles
-        except (TypeError, Exception):
-            pass
+        except Exception as e:
+            print(f"[rtl_utils] golden simulate() raised, trying next interface: {e}",
+                  file=sys.stderr)
 
     raise RuntimeError(
         "Golden model produced no parseable cycle data. "
@@ -164,9 +167,7 @@ def load_golden_trace_as_list(golden_path: str, test_vector_index: int = 0) -> l
             if isinstance(v, int):
                 clean[k] = v
             elif isinstance(v, str):
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     clean[k] = int(v, 0)
-                except (TypeError, ValueError):
-                    pass
         result.append(clean)
     return result

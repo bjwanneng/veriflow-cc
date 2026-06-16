@@ -273,6 +273,47 @@ def test_cli_fix_valid_handshake():
         assert fixed["modules"][0]["ports"][0]["handshake"] == "valid_ready"
 
 
+def test_cli_fix_backup_and_no_stale_contradiction():
+    """--fix must (1) back up spec.json before overwriting, and (2) not leave a
+    same_cycle/delay contradiction when Fix 1 already changed the delay.
+
+    Regression: the contradiction branch read a stale `delay` captured before
+    Fix 1 bumped pipeline_delay_cycles 0->1, so it flipped same_cycle_visible
+    to True and re-introduced an inconsistency the checker then flags.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = _minimal_spec(module_connectivity=[{
+            "source": "m1.dout", "destination": "m2.din",
+            "timing_contract": {
+                "producer_type": "registered", "consumer_type": "sequential",
+                "same_cycle_visible": False, "pipeline_delay_cycles": 0,
+            },
+        }])
+        spec_path = _write_spec(tmp, spec)
+        original = Path(spec_path).read_text()
+
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--fix", "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, f"--fix failed: {result.stderr}"
+
+        # 1. Backup of the original was saved before overwrite.
+        bak = Path(spec_path + ".bak")
+        assert bak.exists(), "spec.json.bak not created"
+        assert bak.read_text() == original, "backup does not match original"
+
+        # 2. No contradiction remains: re-check passes.
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+             "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        data = json.loads(result.stdout)
+        assert data["passed"] is True, f"fix left a contradiction: {data['errors']}"
+
+
 def test_cli_fix_latency_mismatch():
     """--fix should bump latency to match connectivity max delay."""
     with tempfile.TemporaryDirectory() as tmp:

@@ -444,12 +444,12 @@ def main():
         if result.returncode != 0:
             print(json.dumps({
                 "tests": 0, "passed": 0, "failed": 0,
-                "error": f"iverilog compilation failed",
+                "error": "iverilog compilation failed",
                 "compile_stderr": result.stderr[:2000],
                 "compile_stdout": result.stdout[:2000],
             }))
             if args.verbose:
-                print(f"[iverilog_runner] COMPILE FAILED:", file=sys.stderr)
+                print("[iverilog_runner] COMPILE FAILED:", file=sys.stderr)
                 print(result.stderr, file=sys.stderr)
             sys.exit(2)
         if result.stderr.strip() and args.verbose:
@@ -462,7 +462,7 @@ def main():
         sys.exit(2)
 
     if args.verbose:
-        print(f"[iverilog_runner] Compilation successful, running simulation...", file=sys.stderr)
+        print("[iverilog_runner] Compilation successful, running simulation...", file=sys.stderr)
 
     sim_timeout = _resolve_sim_timeout(args.sim_timeout, args.spec_path, rtl_dir)
     if args.verbose:
@@ -494,7 +494,7 @@ def main():
                 print(f"[iverilog_runner] Warning: could not save raw log: {e}", file=sys.stderr)
 
         if args.verbose:
-            print(f"[iverilog_runner] Simulation output:", file=sys.stderr)
+            print("[iverilog_runner] Simulation output:", file=sys.stderr)
             print(sim_output[:5000], file=sys.stderr)
 
     except subprocess.TimeoutExpired:
@@ -534,8 +534,8 @@ def main():
                 "test_vectors_exercised": exercised,
                 "coverage_ratio": round(exercised / tv_count, 2) if tv_count else None,
             }
-        except Exception:
-            pass  # Coverage analysis is best-effort
+        except Exception as e:
+            print(f"[iverilog_runner] coverage analysis failed: {e}", file=sys.stderr)
 
     # Parse structured [FAIL] lines
     failures = [_parse_fail_line(fl) for fl in fail_lines]

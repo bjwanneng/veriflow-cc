@@ -19,7 +19,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import re
 import sys
@@ -30,7 +29,7 @@ from pathlib import Path
 # is invoked directly (e.g. `python timing_diagnostic.py ...`).
 sys.path.insert(0, str(Path(__file__).parent))
 
-from rtl_utils import DIVERGENCE_SEARCH_WINDOW  # noqa: E402
+from rtl_utils import DIVERGENCE_SEARCH_WINDOW
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +173,15 @@ def load_golden_trace(golden_path: Path) -> list[dict[str, int]]:
 
 WINDOW = DIVERGENCE_SEARCH_WINDOW  # ±N cycles, sourced from rtl_utils
 
+# When actual==0 (the universal reset value), a golden-trace match for 0 is an
+# unreliable timing anchor: nearly every signal is 0 during reset, so a stuck-
+# at-0 / uninitialized data bus would match a distant reset 0 and get
+# misdiagnosed as B_late/B_early ("add/remove a register"). Only accept a
+# zero-anchored timing match at small offsets (a genuine just-before-assertion
+# control signal, e.g. valid delayed by 1-2 cycles). Larger zero anchors fall
+# through to D (init), the safer diagnosis for a stuck-at-0.
+_ZERO_ANCHOR_MAX_OFFSET = 2
+
 
 def _classify_signal(
     signal: str,
@@ -195,19 +203,31 @@ def _classify_signal(
         return SignalDiagnosis(signal, "unclassifiable", 0, expected, actual)
 
     for offset in range(1, WINDOW + 1):
+        # A zero actual value is only a trustworthy timing anchor at small
+        # offsets (see _ZERO_ANCHOR_MAX_OFFSET). At larger offsets a matching
+        # 0 is almost certainly a reset value, not a pipeline shift.
+        zero_anchor_unreliable = (
+            actual == 0 and offset > _ZERO_ANCHOR_MAX_OFFSET
+        )
         # B_late: actual value matches what golden had offset cycles ago
         # (RTL is behind — still showing the old value)
         earlier = cycle - offset
-        if earlier >= 0 and earlier < len(golden_trace):
-            if golden_trace[earlier].get(signal) == actual:
-                return SignalDiagnosis(signal, "B_late", offset, expected, actual)
+        if (
+            0 <= earlier < len(golden_trace)
+            and golden_trace[earlier].get(signal) == actual
+            and not zero_anchor_unreliable
+        ):
+            return SignalDiagnosis(signal, "B_late", offset, expected, actual)
 
         # B_early: actual value matches what golden will have offset cycles later
         # (RTL is ahead — already showing the future value)
         later = cycle + offset
-        if later < len(golden_trace):
-            if golden_trace[later].get(signal) == actual:
-                return SignalDiagnosis(signal, "B_early", offset, expected, actual)
+        if (
+            later < len(golden_trace)
+            and golden_trace[later].get(signal) == actual
+            and not zero_anchor_unreliable
+        ):
+            return SignalDiagnosis(signal, "B_early", offset, expected, actual)
 
     # D: actual is 0 when expected is non-zero
     if actual == 0 and expected != 0:

@@ -53,7 +53,15 @@ class DesignGraph:
             }))
 
     def detect_cycles(self) -> list[list[str]]:
-        """Find all cycles in the connectivity graph."""
+        """Find combinational cycles in the connectivity graph.
+
+        Uses DFS with a global ``visited`` set (never reset between roots), so
+        it reliably reports *whether* a cycle exists and finds at least one cycle
+        per strongly-connected region, but is NOT an exhaustive cycle enumerator
+        — distinct cycles that share an already-explored prefix may be collapsed.
+        For combinational-loop detection (the purpose here) reporting one cycle
+        per region is sufficient; do not rely on this for full cycle enumeration.
+        """
         # DFS-based cycle detection
         adj: dict[str, list[str]] = {n: [] for n in self.nodes}
         for src, dst, _ in self.edges:
@@ -76,7 +84,7 @@ class DesignGraph:
                 elif neighbor in rec_stack:
                     # Found cycle — extract it
                     cycle_start = path.index(neighbor)
-                    cycle = path[cycle_start:] + [neighbor]
+                    cycle = [*path[cycle_start:], neighbor]
                     cycles.append(cycle)
 
             path.pop()
@@ -86,18 +94,28 @@ class DesignGraph:
             if node not in visited:
                 dfs(node)
 
-        # Deduplicate cycles
+        # Deduplicate cycles by their node membership. The recorded cycle list
+        # is path[start:] + [neighbor] (neighbor repeated at the end), so key on
+        # the frozenset of nodes — robust to different entry points / rotations
+        # of the same loop. (See method docstring: this is not exhaustive.)
         unique: list[list[str]] = []
-        seen: set[tuple[str, ...]] = set()
+        seen: set[frozenset[str]] = set()
         for c in cycles:
-            key = tuple(sorted(c))
+            key = frozenset(c)
             if key not in seen:
                 seen.add(key)
                 unique.append(c)
         return unique
 
-    def find_unreachable_modules(self, top_module: str | None = None) -> list[str]:
-        """Find modules not reachable from the top module."""
+    def find_unreachable_modules(self, top_module: str | None = None) -> list[str] | None:
+        """Find modules not reachable from the top module.
+
+        Returns None when no top module can be determined (no module tagged
+        ``module_type='top'``, or the named top isn't a known node). None is
+        distinct from []: [] means "checked, nothing unreachable"; None means
+        "could not assess reachability" — callers must not mistake it for a
+        clean bill of health.
+        """
         if not top_module:
             # Find top module from spec
             modules = self.spec.get("modules", [])
@@ -109,7 +127,13 @@ class DesignGraph:
                     break
 
         if not top_module or top_module not in self.nodes:
-            return []
+            print(
+                "[design_graph] WARNING: no module with module_type 'top' "
+                f"(or top '{top_module}' not in nodes) — reachability check "
+                "skipped",
+                file=sys.stderr,
+            )
+            return None
 
         # BFS from top module
         adj: dict[str, list[str]] = {n: [] for n in self.nodes}
@@ -200,9 +224,13 @@ def main(argv: list[str] | None = None) -> int:
     if result['cycles']:
         for c in result['cycles']:
             print(f"  [CYCLE] {' -> '.join(c)}")
-    print(f"[graph] Unreachable modules: {len(result['unreachable'])}")
-    if result['unreachable']:
-        print(f"  {result['unreachable']}")
+    unreachable = result['unreachable']
+    if unreachable is None:
+        print("[graph] Unreachable modules: unknown (no module_type='top' found)")
+    else:
+        print(f"[graph] Unreachable modules: {len(unreachable)}")
+        if unreachable:
+            print(f"  {unreachable}")
     print(f"[graph] Fanout violations: {len(result['fanout_violations'])}")
     print(f"[graph] Report -> {out_path}")
     return 0

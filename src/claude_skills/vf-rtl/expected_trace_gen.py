@@ -41,6 +41,19 @@ def _fmt_val(v) -> str:
     return str(v).replace("|", "\\|")  # markdown-escape
 
 
+def _strip_reg_suffix(name: str) -> str:
+    """Strip a Verilog ``_reg`` register suffix, matching vcd2table._strip_reg.
+
+    Strips ``foo_reg`` -> ``foo`` but preserves double-underscore names like
+    ``state__reg`` (some tools emit these; stripping would mangle to ``state_``).
+    Keeps this tool consistent with vcd2table so the same signal resolves the
+    same way in both the expected-trace and the VCD-derived table.
+    """
+    if name.endswith("_reg") and not name.endswith("__reg"):
+        return name[:-4]
+    return name
+
+
 def _load_vcd_snapshots(vcd_path: Path):
     """Parse a VCD file and return ordered per-posedge state snapshots.
 
@@ -57,7 +70,8 @@ def _load_vcd_snapshots(vcd_path: Path):
     parser = VCDParser()
     try:
         parser.parse(str(vcd_path))
-    except Exception:
+    except Exception as e:
+        print(f"[expected_trace_gen] VCD parse failed: {e}", file=sys.stderr)
         return []
 
     all_signals = set(parser.id_to_name.values())
@@ -203,13 +217,19 @@ def generate_trace(
                 snap = actual_snapshots[i] if i < len(actual_snapshots) else {}
                 for sig, expected_val in entry.items():
                     short_sig = sig.split(".")[-1]
-                    base_sig = short_sig[:-4] if short_sig.endswith("_reg") else short_sig
-                    actual_str = (
-                        snap.get(short_sig)
-                        or snap.get(base_sig)
-                        or snap.get(f"{base_sig}_reg")
-                        or ""
-                    )
+                    base_sig = _strip_reg_suffix(short_sig)
+                    # Explicit membership lookup (not an `or` chain): an `or`
+                    # chain treats empty-string/falsy sentinels as "missing",
+                    # which can drop a legitimate value. Try the short name,
+                    # then the _reg-stripped base, then the base + "_reg".
+                    if short_sig in snap:
+                        actual_str = snap[short_sig]
+                    elif base_sig in snap:
+                        actual_str = snap[base_sig]
+                    elif f"{base_sig}_reg" in snap:
+                        actual_str = snap[f"{base_sig}_reg"]
+                    else:
+                        actual_str = ""
                     actual_int = _normalize_actual_for_compare(actual_str)
                     expected_int = expected_val if isinstance(expected_val, int) else None
                     if expected_int is not None and actual_int is not None:

@@ -20,6 +20,7 @@ Exit codes:
 """
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import sys
@@ -245,7 +246,7 @@ def check_golden_trace_alignment(
 
     # Check output signals in trace match spec port names
     all_port_names = set()
-    for mod_name, mod in _iter_modules(spec):
+    for _name, mod in _iter_modules(spec):
         for port in mod.get("ports", []):
             all_port_names.add(port.get("name", ""))
 
@@ -459,8 +460,15 @@ def fix_spec(spec: dict) -> dict:
                     tc["visible_cycle"] = "T+1"
                     tc["consumer_cycle"] = "T+1"
 
-        # Fix contradiction: delay=0 + same_cycle=false
-        if delay == 0 and same_cycle is False:
+        # Fix contradiction: delay=0 + same_cycle=false. Re-read the CURRENT
+        # values — Fix 1 above may have just bumped pipeline_delay_cycles (e.g.
+        # 0->1 for a registered producer), so the `delay`/`same_cycle` locals
+        # captured at the top of the loop are stale. Reading them fresh avoids
+        # flipping same_cycle_visible on a contract whose delay is now non-zero
+        # (which would re-introduce a delay>=1 & same_cycle=True inconsistency).
+        cur_delay = tc.get("pipeline_delay_cycles")
+        cur_same_cycle = tc.get("same_cycle_visible")
+        if cur_delay == 0 and cur_same_cycle is False:
             tc["same_cycle_visible"] = True
             fixes_log.append(
                 f"{src}->{dst}: fixed contradiction (delay=0 -> same_cycle=true)"
@@ -667,7 +675,13 @@ def main():
 
         if fixes:
             # Only write if fixes were applied (even if re-check still finds issues,
-            # the partial fix is better than no fix — user can iterate)
+            # the partial fix is better than no fix — user can iterate). Back up the
+            # original first so a wrong auto-fix is recoverable.
+            bak_path = spec_path.parent / (spec_path.name + ".bak")
+            with contextlib.suppress(OSError):  # best-effort backup; don't block the fix
+                bak_path.write_text(
+                    spec_path.read_text(encoding="utf-8"), encoding="utf-8"
+                )
             spec_path.write_text(json.dumps(fixed_spec, indent=2), encoding="utf-8")
             print(json.dumps({"fixed": True, "fixes_applied": fixes}, indent=2))
         else:

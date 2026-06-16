@@ -16,14 +16,40 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
+import re
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
+try:  # POSIX only; Windows has no fcntl — locking degrades to a no-op there.
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
 
 DEFAULT_KB_DIR = Path.home() / ".claude" / "skills" / "vf-rtl" / "knowledge"
+
+# Reserved range for timing-diagnostic bug-class records (A/B_late/B_early/D).
+# These are a different taxonomy than the RTL bug patterns (P1-P15) in
+# bug_pattern_match.py, so they must NOT reuse a real pattern_id (the old code
+# fabricated id 4, which does not exist). 100+ never collides with P1-P15.
+_CLASS_CATEGORY_BASE = 100
+_CLASS_TO_CATEGORY_ID = {
+    "A": _CLASS_CATEGORY_BASE,
+    "B_late": _CLASS_CATEGORY_BASE + 1,
+    "B_early": _CLASS_CATEGORY_BASE + 2,
+    "D": _CLASS_CATEGORY_BASE + 3,
+    "unclassifiable": _CLASS_CATEGORY_BASE + 4,
+}
+
+# Template names must be safe basenames (no traversal, no path separators).
+_SAFE_NAME_RE = re.compile(r"[A-Za-z0-9_\-]+")
 
 
 @dataclass
@@ -74,7 +100,43 @@ class KnowledgeBase:
         return default
 
     def _save_json(self, path: Path, data: Any) -> None:
-        path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        """Atomic write: stage to a temp file in the same dir, then os.replace.
+
+        os.replace is atomic on POSIX and Windows, so a crash mid-write never
+        leaves a truncated JSON at `path` (which _load_json would then silently
+        swallow as the default, permanently erasing history).
+        """
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, indent=2, default=str))
+            os.replace(tmp, path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    @contextlib.contextmanager
+    def _locked(self, path: Path):
+        """Serialize read-modify-write across processes/threads sharing the KB.
+
+        Holds an exclusive flock on a sibling `<path>.lock` for the duration of
+        the block. On Windows (no fcntl) this is a no-op — concurrent Windows
+        runs rely on the atomic _save_json but may still race the RMW window.
+        """
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        # Intentionally held open (not a `with` block): the flock is released
+        # on close() in finally, and the fd must stay alive across `yield`.
+        lock_file = open(lock_path, "w", encoding="utf-8")  # noqa: SIM115
+        try:
+            if _HAS_FCNTL:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if _HAS_FCNTL:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
 
     # ------------------------------------------------------------------
     # Bug patterns
@@ -88,28 +150,29 @@ class KnowledgeBase:
         fix_attempts: int,
     ) -> None:
         """Record a bug pattern occurrence from a project."""
-        patterns = self._load_json(self.patterns_file, {})
-        key = str(pattern_id)
+        with self._locked(self.patterns_file):
+            patterns = self._load_json(self.patterns_file, {})
+            key = str(pattern_id)
 
-        if key not in patterns:
-            patterns[key] = {
-                "pattern_id": pattern_id,
-                "title": title,
-                "count": 0,
-                "projects": [],
-                "total_fix_attempts": 0,
-            }
+            if key not in patterns:
+                patterns[key] = {
+                    "pattern_id": pattern_id,
+                    "title": title,
+                    "count": 0,
+                    "projects": [],
+                    "total_fix_attempts": 0,
+                }
 
-        p = patterns[key]
-        p["count"] += 1
-        if project_name not in p["projects"]:
-            p["projects"].append(project_name)
-        p["total_fix_attempts"] += fix_attempts
-        p["avg_fix_attempts"] = round(
-            p["total_fix_attempts"] / p["count"], 2
-        )
+            p = patterns[key]
+            p["count"] += 1
+            if project_name not in p["projects"]:
+                p["projects"].append(project_name)
+            p["total_fix_attempts"] += fix_attempts
+            p["avg_fix_attempts"] = round(
+                p["total_fix_attempts"] / p["count"], 2
+            )
 
-        self._save_json(self.patterns_file, patterns)
+            self._save_json(self.patterns_file, patterns)
 
     def get_top_patterns(self, n: int = 10) -> list[dict]:
         """Return the most frequently occurring bug patterns."""
@@ -127,9 +190,10 @@ class KnowledgeBase:
 
     def record_project(self, record: ProjectRecord) -> None:
         """Record a completed project outcome."""
-        projects = self._load_json(self.projects_file, [])
-        projects.append(asdict(record))
-        self._save_json(self.projects_file, projects)
+        with self._locked(self.projects_file):
+            projects = self._load_json(self.projects_file, [])
+            projects.append(asdict(record))
+            self._save_json(self.projects_file, projects)
 
     def get_project_stats(self) -> dict:
         """Aggregate statistics across all recorded projects."""
@@ -155,13 +219,23 @@ class KnowledgeBase:
     # ------------------------------------------------------------------
 
     def save_template(self, name: str, content: str, tags: list[str]) -> None:
-        """Save a reusable design template."""
+        """Save a reusable design template.
+
+        `name` must be a safe basename (alnum/underscore/dash only) — anything
+        that could escape templates_dir via traversal is rejected.
+        """
+        if not name or not _SAFE_NAME_RE.fullmatch(name):
+            raise ValueError(
+                f"unsafe template name: {name!r} "
+                f"(only [A-Za-z0-9_-] allowed, no path separators or '..')"
+            )
         template_file = self.templates_dir / f"{name}.json"
-        self._save_json(template_file, {
-            "name": name,
-            "content": content,
-            "tags": tags,
-        })
+        with self._locked(template_file):
+            self._save_json(template_file, {
+                "name": name,
+                "content": content,
+                "tags": tags,
+            })
 
     def find_templates(self, tag: str) -> list[dict]:
         """Find templates by tag."""
@@ -207,18 +281,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         bug_class = diag.get("bug_class", "A")
-        # Map bug class to pattern ID (simplified mapping)
-        class_to_pattern = {
-            "A": 3, "B_late": 4, "B_early": 4, "D": 5,
-        }
-        pattern_id = class_to_pattern.get(bug_class, 0)
+        # Timing-diagnostic bug classes (A/B_late/B_early/D) are a different
+        # taxonomy than the RTL bug patterns (P1-P15) in bug_pattern_match.py,
+        # so we record them under a reserved category id rather than fabricating
+        # a mapping to a real pattern_id (the old code used id 4, which does not
+        # exist). See _CLASS_TO_CATEGORY_ID.
+        pattern_id = _CLASS_TO_CATEGORY_ID.get(bug_class, _CLASS_CATEGORY_BASE)
         kb.record_bug_pattern(
             pattern_id=pattern_id,
             title=f"Bug class {bug_class}",
             project_name=args.project or "unknown",
             fix_attempts=args.fix_attempts,
         )
-        print(f"[kb] Recorded pattern {pattern_id} for project {args.project}")
+        print(f"[kb] Recorded category {pattern_id} ({bug_class}) for project {args.project}")
 
     elif args.top_patterns:
         patterns = kb.get_top_patterns(args.count)

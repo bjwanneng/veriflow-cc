@@ -19,7 +19,7 @@ import json
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
+import contextlib
 
 
 @dataclass
@@ -123,10 +123,8 @@ class BenchmarkRunner:
             # Extract cell count
             for line in content.splitlines():
                 if "Number of cells:" in line:
-                    try:
+                    with contextlib.suppress(Exception):
                         result.notes.append(line.strip())
-                    except Exception:
-                        pass
                     break
         else:
             result.synth_passed = None
@@ -192,7 +190,7 @@ class BenchmarkRunner:
                 ))
 
         # Build comparison table
-        comparison = {
+        return {
             "base_design": base.name,
             "variants": [r.project_name for r in results],
             "overall_pass": {r.project_name: r.overall_pass() for r in results},
@@ -201,7 +199,6 @@ class BenchmarkRunner:
             "retry_count": {r.project_name: r.retry_count for r in results},
             "per_variant": [asdict(r) for r in results],
         }
-        return comparison
 
     def run_all_in_dir(self, root_dir: str | Path) -> list[ProjectResult]:
         """Find all project directories under root and analyze them."""

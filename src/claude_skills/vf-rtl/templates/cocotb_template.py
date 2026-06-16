@@ -34,7 +34,8 @@ import os, sys
 from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles, Timer
+from cocotb.triggers import RisingEdge, ClockCycles
+import contextlib
 
 CLK_PERIOD_NS = None  # codegen: MUST set FULL period from spec.timing.target_frequency_mhz
                       # (period_ns = 1000 / target_frequency_mhz). cocotb's Clock()
@@ -54,7 +55,7 @@ if GM_PATH.exists():
         GOLDEN_AVAILABLE = True
     except ImportError as _e:
         import warnings
-        warnings.warn(f"[GOLDEN] Import failed: {_e}. Per-cycle tests will be skipped.")
+        warnings.warn(f"[GOLDEN] Import failed: {_e}. Per-cycle tests will be skipped.", stacklevel=2)
 
 # ─── Port configuration ─────────────────────────────────────────────────
 # Populated from spec.json by the codegen stage.
@@ -256,10 +257,8 @@ async def reset_dut(dut):
             pass
     # Also zero any valid input ports from HANDSHAKE_PORTS
     for valid_name in HANDSHAKE_PORTS:
-        try:
+        with contextlib.suppress(Exception):
             getattr(dut, valid_name).value = 0
-        except Exception:
-            pass
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)  # rst deassert sampled, outputs stable
@@ -625,13 +624,12 @@ async def test_layered(dut):
                 sig = getattr(dut, dut_name)
                 actual_val = int(sig.value)
                 signals_compared += 1
-                if actual_val != expected_val:
-                    if _record_divergence(
-                        divergences, sig_name, expected_val, actual_val,
-                        cycle_idx, len(sig),
-                    ):
-                        stop_outer = True
-                        break
+                if actual_val != expected_val and _record_divergence(
+                    divergences, sig_name, expected_val, actual_val,
+                    cycle_idx, len(sig),
+                ):
+                    stop_outer = True
+                    break
             except AttributeError:
                 if dut_name not in signals_not_found:
                     signals_not_found.append(dut_name)
@@ -723,7 +721,7 @@ async def test_internal_signals(dut):
 
     # Check if trace includes internal signals (any key containing '.' or ending with _reg)
     has_internal = any('.' in k or k.endswith('_reg')
-                       for entry in expected_cycles for k in entry.keys())
+                       for entry in expected_cycles for k in entry)
     if not has_internal:
         dut._log.info("[SKIP] test_internal_signals: golden trace has no internal signals")
         return
@@ -756,7 +754,7 @@ async def test_internal_signals(dut):
                 try:
                     actual_val = int(getattr(dut, sig_name).value)
                     signals_compared += 1
-                    if actual_val != expected_val:
+                    if actual_val != expected_val:  # noqa: SIM102 — nested for readability in rendered TB
                         if _record_divergence(
                             divergences, sig_name, expected_val, actual_val,
                             cycle_idx, _lookup_signal_width(sig_name),

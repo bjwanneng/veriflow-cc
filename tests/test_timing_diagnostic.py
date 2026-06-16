@@ -303,6 +303,38 @@ def test_classify_degraded_divergence_unclassifiable():
     assert result[0].classification == "unclassifiable"
 
 
+# --- A1 regression: actual=0 must not be B_late when the only golden match
+# for 0 is a distant reset-cycle value. A stuck-at-0 data bus used to match
+# golden's reset 0 at a large offset and get misdiagnosed as B_late
+# ("add a register"), steering the fixer at a timing bug that doesn't exist.
+
+
+def test_classify_d_when_zero_anchor_is_distant_reset():
+    """actual=0 with a far reset-0 match (offset>2) → D, not B_late.
+
+    Keeps test_classify_b_late (offset 1, a real delayed control signal)
+    valid: short-offset zero anchors are still accepted as timing shifts.
+    """
+    trace = [
+        {"data": 0},            # cycle 0: reset
+        {"data": 0},            # cycle 1: reset (offset 4 from cycle 5)
+        {"data": 0xABCD},
+        {"data": 0x1234},
+        {"data": 0x5678},
+        {"data": 0xDEADBEEF},   # cycle 5: expected
+        {"data": 0x1111},
+        {"data": 0x2222},
+        {"data": 0x3333},
+        {"data": 0x4444},
+    ]
+    result = _classify_signal("data", 5, expected=0xDEADBEEF, actual=0,
+                              golden_trace=trace)
+    assert result.classification == "D", (
+        f"expected D (init), got {result.classification} "
+        f"offset={result.offset_cycles}"
+    )
+
+
 # --- Coverage gap: B_early classification ---
 
 
@@ -352,6 +384,7 @@ if __name__ == "__main__":
     test_no_divergence()
     test_classify_b_late()
     test_classify_d_initialization()
+    test_classify_d_when_zero_anchor_is_distant_reset()
     test_find_timing_context()
     test_find_fanout_context()
     test_full_diagnosis()

@@ -29,8 +29,10 @@ import os
 import sys
 import traceback
 from pathlib import Path
+from typing import Optional
 
 from rtl_utils import collect_rtl_sources
+import contextlib
 
 
 def _find_docs_dir(tb_dir: Path) -> Path | None:
@@ -71,8 +73,8 @@ def _find_docs_dir(tb_dir: Path) -> Path | None:
 def check_environment():
     """Verify cocotb is importable. Exit 2 if not."""
     try:
-        import cocotb                           # noqa: F401
-        import cocotb_tools.runner              # noqa: F401
+        import cocotb  # noqa: F401 — importability is the test itself
+        import cocotb_tools.runner  # noqa: F401
     except ImportError as e:
         print(json.dumps({
             "tests": 0, "passed": 0, "failed": 0,
@@ -83,7 +85,7 @@ def check_environment():
 
 
 def find_test_module(tb_dir: Path, module_name: str,
-                     test_file_override: str = None) -> str:
+                     test_file_override: Optional[str] = None) -> str:
     """Find the cocotb test module.
 
     Args:
@@ -300,49 +302,6 @@ def _try_timing_diagnostic(
         "log_path": str(log_path),
     }
 
-    # Run bug-pattern matcher over the classified signals (best effort)
-    pattern_matches: list[dict] = []
-    try:
-        from bug_pattern_match import match_patterns
-        divs_for_match = [
-            {
-                "signal": s.signal,
-                "classification": s.classification,
-                "offset_cycles": s.offset_cycles,
-                "expected": s.expected_value,
-                "actual": s.actual_value,
-                "cycle": diagnosis.divergence.cycle,
-            }
-            for s in diagnosis.all_signals
-        ]
-        pattern_matches = [m.to_dict() for m in match_patterns(divs_for_match)]
-    except Exception:
-        pattern_matches = []
-
-    return {
-        "divergence": {
-            "cycle": diagnosis.divergence.cycle,
-            "signal": diagnosis.divergence.signal,
-            "expected": f"0x{diagnosis.divergence.expected:x}",
-            "actual": f"0x{diagnosis.divergence.actual:x}",
-        },
-        "signal_classifications": [
-            {
-                "signal": s.signal,
-                "classification": s.classification,
-                "offset_cycles": s.offset_cycles,
-                "expected": f"0x{s.expected_value:x}",
-                "actual": f"0x{s.actual_value:x}",
-            }
-            for s in diagnosis.all_signals
-        ],
-        "timing_contract_context": diagnosis.timing_contract_context,
-        "fix_suggestion": diagnosis.fix_suggestion,
-        "severity": diagnosis.severity,
-        "pattern_matches": pattern_matches,
-        "log_path": str(log_path),
-    }
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -385,10 +344,8 @@ def main():
 
     # Clean stale VCD files from previous runs
     for stale_vcd in build_dir.glob("*.vcd"):
-        try:
+        with contextlib.suppress(OSError):
             stale_vcd.unlink()
-        except OSError:
-            pass
 
     rtl_sources = collect_rtl_sources(rtl_dir)
 
@@ -541,9 +498,6 @@ def main():
         drive_phase = None
         try:
             # Read DRIVE_PHASE_CYCLES from the test file if possible
-            import importlib.util as _ilu
-            for candidate in tb_dir.glob(f"test_{module_name}.py"):
-                pass  # just take the last one found
             test_file = tb_dir / f"test_{module_name}.py"
             if test_file.exists():
                 src = test_file.read_text(encoding="utf-8", errors="replace")

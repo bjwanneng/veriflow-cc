@@ -53,9 +53,7 @@ Installs to `~/.claude/`:
 - `skills/vf-rtl/benchmark_runner.py` — Batch evaluation & reporting
 - `skills/vf-rtl/bug_pattern_match.py` — Automated divergence pattern matching
 - `skills/vf-rtl/corner_case_generator.py` — Boundary test vector generation
-- `skills/vf-rtl/formal_property_gen.py` — Assertion generation from timing contracts
 - `skills/vf-rtl/design_graph.py` — Module connectivity graph analysis
-- `skills/vf-rtl/cross_verify.py` — Dual-RTL equivalence comparison
 - `skills/vf-rtl/knowledge_base.py` — Cross-project bug pattern learning
 - `agents/vf-coder.md` — RTL code generation sub-agent
 - `agents/vf-spec-golden.md` — Spec + golden model generation sub-agent
@@ -237,10 +235,6 @@ After synthesis, `yosys_equiv.py` proves functional equivalence between the orig
 
 `corner_case_generator.py` auto-generates 8 boundary-condition test vectors from spec.json ports: all-zeros, all-ones, min, max, alternating, LSB-hot, MSB-hot, half-range. Integrated into `vf-tb-gen` Step 5b as a mandatory supplement to golden model vectors.
 
-### Formal Property Generation
-
-`formal_property_gen.py` generates Verilog-2005 compatible assertion comments from spec.json timing contracts, handshake protocols, and FSM state tables. Outputs a synthesizable assertion module for Yosys formal flows.
-
 ### Design Graph Validation
 
 `design_graph.py` builds a directed graph from `module_connectivity` and checks for:
@@ -263,9 +257,7 @@ After synthesis, `yosys_equiv.py` proves functional equivalence between the orig
 | `benchmark_runner.py` | Batch eval / variant compare | `--compare sm3 --variants deepseek,glm5.1` |
 | `bug_pattern_match.py` | Match divergences to catalog | `--divergences logs/divergences.json` |
 | `corner_case_generator.py` | Boundary test vectors | `--spec spec.json -o corners.json` |
-| `cross_verify.py` | Dual-RTL equivalence | `--rtl-a v1 --rtl-b v2 --module top` |
 | `design_graph.py` | Connectivity analysis | `--spec spec.json -o graph.json` |
-| `formal_property_gen.py` | Assertion generation | `--spec spec.json -o props.v` |
 | `knowledge_base.py` | Query learned patterns | `--top-patterns --count 10` |
 
 ## Project Output Structure
@@ -317,9 +309,7 @@ veriflow-cc/
 │   │       ├── benchmark_runner.py   # Batch evaluation & reporting
 │   │       ├── bug_pattern_match.py  # Automated divergence pattern matching
 │   │       ├── corner_case_generator.py  # Boundary test vector generation
-│   │       ├── formal_property_gen.py    # Assertion generation
 │   │       ├── design_graph.py       # Module connectivity graph analysis
-│   │       ├── cross_verify.py       # Dual-RTL equivalence comparison
 │   │       ├── knowledge_base.py     # Cross-project bug pattern learning
 │   │       ├── error_recovery.md  # Stage 3 error recovery procedure
 │   │       ├── design_rules.md    # Design rules for all stages

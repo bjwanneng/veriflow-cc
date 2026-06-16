@@ -58,7 +58,7 @@ def _build_yosys_script(
     #
     # Why not `-defer`? Deferred modules are stored as `$abstract\name`,
     # which the plain `rename name new_name` command cannot find.
-    script = f"""# VeriFlow Yosys equivalence check
+    return f"""# VeriFlow Yosys equivalence check
 read_verilog "{ref_path}"
 prep -top {ref_top}
 rename {ref_top} ref_top
@@ -79,7 +79,6 @@ equiv_simple equiv
 equiv_induct equiv
 equiv_status -assert equiv
 """
-    return script
 
 
 def _parse_equiv_output(output: str) -> dict:
@@ -94,25 +93,35 @@ def _parse_equiv_output(output: str) -> dict:
         "raw": output,
     }
 
-    # Yosys variants emit either "Equivalence successfully proved" or
-    # "...proven!" — accept both. Also accept the all-proven counter line.
-    if ("Equivalence successfully prove" in output
-            or "Equivalence successfully proven" in output):
+    # 1. Scan for concrete unproven-cell lines FIRST. These are authoritative:
+    #    if yosys lists "gold.x != gate.x", the design is NOT equivalent even if
+    #    a success banner also appears (some yosys builds print both on partial
+    #    runs). This also stops "Found 0 unproven ..." from being misread below.
+    for line in output.splitlines():
+        s = line.strip()
+        if ("unproven" in s.lower() and "!=" in s) or (
+            s.startswith("gold.") and "!=" in s
+        ):
+            result["unproven"].append(s)
+    if result["unproven"]:
+        result["equivalent"] = False
+        return result
+
+    # 2. Affirmative PASS — accept the legacy yosys phrasings AND common
+    #    rewordings so a future yosys version doesn't silently fall to UNKNOWN.
+    #    (Safe to check now: step 1 already returned if any unproven cell existed.)
+    pass_phrases = (
+        "Equivalence successfully proved",
+        "Equivalence successfully proven",
+        "Equivalence checking succeeded",
+        "Equivalence checking was successful",
+        "proved equivalence",
+    )
+    if any(p in output for p in pass_phrases):
         result["equivalent"] = True
         return result
 
-    # Look for unproven lines: "gold.<sig> != gate.<sig>"
-    for line in output.splitlines():
-        line = line.strip()
-        if "unproven" in line.lower() and "!=" in line:
-            result["unproven"].append(line)
-        elif line.startswith("gold.") and "!=" in line:
-            result["unproven"].append(line)
-
-    if result["unproven"]:
-        result["equivalent"] = False
-
-    # If we see "Found N unproven" but no specific lines, still mark as fail
+    # 3. Fallback: a "Found N unproven" summary line without per-cell detail.
     if result["equivalent"] is None:
         for line in output.splitlines():
             if "unproven" in line.lower():
@@ -212,8 +221,16 @@ def check_equivalence(
     parsed = _parse_equiv_output(combined_output)
     parsed["yosys_available"] = True
     parsed["yosys_returncode"] = result.returncode
-    if parsed["equivalent"] is None and result.returncode != 0:
-        parsed["error"] = f"Yosys exited with code {result.returncode}"
+    if parsed["equivalent"] is None:
+        # The yosys script ends with `equiv_status -assert`, which exits non-zero
+        # when any $equiv cell is unproven. So exit 0 with no unproven lines means
+        # equivalence held even if the success banner was worded unlike our known
+        # phrases. Conservative: this can never turn a real FAIL (non-zero exit or
+        # unproven cells) into a PASS.
+        if result.returncode == 0 and not parsed["unproven"]:
+            parsed["equivalent"] = True
+        elif result.returncode != 0:
+            parsed["error"] = f"Yosys exited with code {result.returncode}"
 
     return parsed
 

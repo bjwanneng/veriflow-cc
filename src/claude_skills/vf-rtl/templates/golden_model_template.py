@@ -107,8 +107,7 @@ def compute(inputs: dict, trace: bool = False) -> dict | list[dict]:
 
     if trace:
         return cycles
-    else:
-        return {}  # {"output_port": final_value, ...}
+    return {}  # {"output_port": final_value, ...}
 
 
 # --- Test vectors ---
@@ -174,7 +173,6 @@ if __name__ == "__main__":
     # works for 32-bit, 64-bit, and 256-bit datapaths without truncation or
     # excess zero-padding. The vcd2table parser at vcd2table.py accepts any
     # length of hex digits.
-    import json
 
     # Run default test vector with cycle trace
     cycles = run()

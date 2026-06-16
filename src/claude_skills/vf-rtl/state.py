@@ -103,6 +103,9 @@ class PipelineState:
             self.stage_summaries[stage] = summary
         # Record end time
         self._record_end(stage)
+        # Persist immediately — mark_started auto-saves; mark_complete must too
+        # so a caller that forgets save() can't silently lose the transition.
+        self.save()
         return True
 
     def mark_failed(self, stage: str, result: dict):
@@ -121,6 +124,8 @@ class PipelineState:
         self.last_updated = time.time()
         # Record end time
         self._record_end(stage)
+        # Persist immediately (see mark_complete).
+        self.save()
 
     def mark_started(self, stage: str):
         """Record the start time of a stage."""
@@ -265,9 +270,7 @@ class PipelineState:
                 # Check constraints — support both nested and flat formats
                 constraints = spec.get("constraints", {})
                 has_freq = False
-                if constraints.get("timing", {}).get("target_frequency_mhz"):
-                    has_freq = True
-                elif spec.get("target_frequency_mhz"):
+                if constraints.get("timing", {}).get("target_frequency_mhz") or spec.get("target_frequency_mhz"):
                     has_freq = True
                 if not has_freq:
                     missing.append("spec.json: target_frequency_mhz missing")
@@ -353,13 +356,12 @@ class PipelineState:
                             signature_count += 1
                             break
             return signature_count >= 2
-        else:
-            # Legacy exact string match (for non-Stage-3 errors like lint)
-            signature_count = sum(
-                1 for e in recent_errors
-                if any(error_signature == err for err in e.get("errors", []))
-            )
-            return signature_count >= 2
+        # Legacy exact string match (for non-Stage-3 errors like lint)
+        signature_count = sum(
+            1 for e in recent_errors
+            if any(error_signature == err for err in e.get("errors", []))
+        )
+        return signature_count >= 2
 
     def validate_golden_model(self, project_dir: str) -> tuple[bool, list[str]]:
         """Validate golden_model.py after Stage 1 generation.
@@ -474,7 +476,7 @@ class PipelineState:
                             + ", ".join(mismatches[:5])
                         )
                         return (False, issues)
-        except Exception as e:
+        except Exception:
             # Consistency check is best-effort; if import fails, don't block
             pass
 

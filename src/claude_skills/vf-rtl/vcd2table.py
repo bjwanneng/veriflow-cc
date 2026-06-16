@@ -26,7 +26,6 @@ import os
 import re
 import sys
 import argparse
-import importlib.util
 import subprocess
 from pathlib import Path
 from collections import defaultdict
@@ -131,7 +130,7 @@ class VCDParser:
                     self.timescale = " ".join(ts_parts)
 
                 elif tok == "$scope":
-                    scope_type = next(tokens)
+                    next(tokens)  # scope type (e.g. "module") — advance, unused
                     scope_name = next(tokens)
                     self._scope_stack.append(scope_name)
                     next(tokens)  # $end
@@ -142,7 +141,7 @@ class VCDParser:
                     next(tokens)  # $end
 
                 elif tok == "$var":
-                    var_type = next(tokens)
+                    next(tokens)  # var type (e.g. "reg"/"wire") — advance, unused
                     width = int(next(tokens))
                     var_id = next(tokens)
                     var_name = next(tokens)
@@ -439,8 +438,9 @@ def run_golden_model_comparison(
                         r'(\w+)\s*=\s*(0x[0-9a-fA-F_]+|\d+)', assignments
                     ):
                         golden_cycles[cycle][assignment.group(1)] = assignment.group(2)
-    except (subprocess.TimeoutExpired, Exception):
-        pass
+    except Exception as e:
+        print(f"[vcd2table] golden standalone run failed (strategy 1 skipped): {e}",
+              file=sys.stderr)
 
     # Strategy 2: Import via canonical rtl_utils loader
     if not golden_cycles:
@@ -507,7 +507,7 @@ def run_golden_model_comparison(
 
     # Map golden signal names to VCD signal names
     golden_to_vcd = {}
-    for golden_key in set(k for gc in golden_cycles.values() for k in gc.keys()):
+    for golden_key in set(k for gc in golden_cycles.values() for k in gc):
         match = _fuzzy_match(golden_key, list(include_signals))
         if match:
             golden_to_vcd[golden_key] = match
@@ -684,7 +684,7 @@ def main():
         include_signals = sorted(
             [n for n in all_signal_names if n.split(".")[-1] not in ("clk", "clock")],
         )[:12]
-        print(f"[vcd2table] No specific signals identified — showing first 12", file=sys.stderr)
+        print("[vcd2table] No specific signals identified — showing first 12", file=sys.stderr)
 
     print(f"[vcd2table] Displaying {len(include_signals)} signals: "
           f"{[s.split('.')[-1] for s in include_signals]}", file=sys.stderr)

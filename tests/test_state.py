@@ -124,6 +124,33 @@ def test_mark_failed_no_summary():
     assert "codegen" not in s.stage_summaries
 
 
+# ── D3: auto-save consistency ──────────────────────────────────────────
+
+
+def test_mark_complete_persists_without_explicit_save():
+    """mark_complete must persist to disk even if the caller forgets save().
+
+    mark_started already auto-saves; mark_complete/mark_failed must too, so a
+    caller can't silently lose a stage transition.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.mark_complete("spec_golden", {"success": True, "summary": "done"})
+        # NOTE: no s.save() call.
+        reloaded = PipelineState.load(tmp)
+        assert "spec_golden" in reloaded.stages_completed
+        assert reloaded.get_output("spec_golden")["success"] is True
+
+
+def test_mark_failed_persists_without_explicit_save():
+    """mark_failed must persist to disk even if the caller forgets save()."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.mark_failed("spec_golden", {"success": False, "errors": ["boom"]})
+        reloaded = PipelineState.load(tmp)
+        assert "spec_golden" in reloaded.stages_failed
+
+
 # ── rollback ────────────────────────────────────────────────────────────
 
 

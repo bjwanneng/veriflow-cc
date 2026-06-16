@@ -72,8 +72,7 @@ _REGISTERED_OUTPUT_RE = re.compile(r"(ready|valid|done)(_reg)?$", re.IGNORECASE)
 def _short(sig: str) -> str:
     """Strip module-qualified prefix and trailing array suffix."""
     s = sig.rsplit(".", 1)[-1]
-    s = s.split("[", 1)[0]
-    return s
+    return s.split("[", 1)[0]
 
 
 def _popcount(x: int) -> int:

@@ -66,6 +66,31 @@ class TestOutputParsing(unittest.TestCase):
         result = _parse_equiv_output("")
         self.assertIsNone(result["equivalent"])
 
+    def test_parse_pass_reworded(self):
+        """A yosys rewording (not the legacy 'successfully prove...') still PASSes.
+
+        Regression: PASS detection hinged on the truncated literal
+        'Equivalence successfully prove', so any rewording fell to UNKNOWN.
+        """
+        from yosys_equiv import _parse_equiv_output
+        for output in (
+            "Equivalence checking succeeded.\nFound 0 unproven $equiv cells.\n",
+            "Equivalence checking was successful.\n",
+            "Ready: proved equivalence.\n",
+        ):
+            result = _parse_equiv_output(output)
+            self.assertTrue(
+                result["equivalent"],
+                f"should be PASS for: {output!r} (got {result['equivalent']})",
+            )
+
+    def test_parse_reworded_with_unproven_still_fails(self):
+        """Conservative: a reworded message with unproven cells is still FAIL."""
+        from yosys_equiv import _parse_equiv_output
+        output = "Equivalence checking succeeded.\ngold.y != gate.y\n"
+        result = _parse_equiv_output(output)
+        self.assertFalse(result["equivalent"])
+
 
 class TestCLIArgs(unittest.TestCase):
     """Command-line interface validation."""

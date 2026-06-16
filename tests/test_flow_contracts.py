@@ -89,11 +89,16 @@ def test_stage1_single_spec_golden_dispatch():
     assert "golden_model.py" in skill
 
 
-def test_stage1_templates_preread():
+def test_stage1_templates_handed_to_subagent():
+    """Stage 1 passes TEMPLATES_DIR to the spec-golden subagent and does NOT
+    pre-read or embed template content in the prompt — the subagent reads the
+    templates itself. (Earlier "preread SPEC_TEMPLATE/GOLDEN_TEMPLATE inline"
+    behavior was intentionally removed; this guards the current contract.)
+    """
     skill = _read(_SKILL_DIR / "SKILL.md")
 
-    assert "SPEC_TEMPLATE" in skill
-    assert "GOLDEN_TEMPLATE" in skill
+    assert "TEMPLATES_DIR" in skill
+    assert "DO NOT embed template content" in skill
 
 
 def test_step0_auto_approves_subagent_tools():

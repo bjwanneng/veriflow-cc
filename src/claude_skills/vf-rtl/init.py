@@ -9,6 +9,7 @@ initializes stage journal, and outputs structured JSON result.
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -121,8 +122,7 @@ def verify_iverilog(iverilog_path: str) -> tuple[bool, str]:
         if result.returncode == 0:
             version = (result.stdout + result.stderr).split("\n")[0]
             return True, version
-        else:
-            return False, f"iverilog -V returned code {result.returncode}: {(result.stderr or '')[:200]}"
+        return False, f"iverilog -V returned code {result.returncode}: {(result.stderr or '')[:200]}"
     except FileNotFoundError:
         return False, f"iverilog not found at {iverilog_path}"
     except OSError as e:
@@ -166,6 +166,33 @@ def init_journal(project_dir: Path, is_resume: bool) -> None:
                 "This file records the progress, outputs, and key decisions for each pipeline stage.\n"
             )
             f.write(f"\n## Pipeline Start\n**Timestamp**: {ts}\n")
+
+
+def write_eda_env(path: Path, python_exe: str, eda_bin: str, eda_lib: str,
+                  ivl_home: str, cocotb_available: bool, skill_dir: str) -> None:
+    """Write a `source`-able eda_env.sh with every value shell-quoted.
+
+    Paths are shlex.quote'd (single-quoted) so spaces, `$`, backticks, and `"`
+    in a path round-trip verbatim instead of breaking the export or injecting
+    shell. `$PATH` and `${PYTHONPATH:-}` are deliberately left unquoted so they
+    expand when the file is sourced.
+    """
+    q = shlex.quote
+    # Each PATH/PYTHONPATH entry is quoted individually; adjacent quoted tokens
+    # concatenate in shell, so `'/a b':'/c d':$PATH` is valid.
+    path_entries = [q(p) for p in [eda_bin, eda_lib] if p] + ["$PATH"]
+    path_str = os.pathsep.join(path_entries)
+    pythonpath_str = os.pathsep.join([q(skill_dir), "${PYTHONPATH:-}"])
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"export PYTHON_EXE={q(python_exe)}\n")
+        f.write(f"export EDA_BIN={q(eda_bin)}\n")
+        f.write(f"export EDA_LIB={q(eda_lib)}\n")
+        f.write(f"export IVL_HOME={q(ivl_home)}\n")
+        f.write(
+            f'export COCOTB_AVAILABLE="{"true" if cocotb_available else "false"}"\n'
+        )
+        f.write(f"export PATH={path_str}\n")
+        f.write(f"export PYTHONPATH={pythonpath_str}\n")
 
 
 def main():
@@ -236,23 +263,20 @@ def main():
     # Write eda_env.sh
     veriflow_dir = project_dir / ".veriflow"
     eda_env_path = veriflow_dir / "eda_env.sh"
-    # Build PATH line, skipping empty entries
-    path_entries = [p for p in [eda_bin, eda_lib] if p]
-    path_entries.append("$PATH")
-    path_str = os.pathsep.join(path_entries)
     # Skill directory holds state.py + helper scripts. Exporting it on
     # PYTHONPATH lets every shell that sources eda_env.sh run things like
     # `python -c "from state import PipelineState"` without per-call
     # PYTHONPATH wrangling.
     skill_dir = str(Path(__file__).resolve().parent)
-    with open(eda_env_path, "w", encoding="utf-8") as f:
-        f.write(f'export PYTHON_EXE="{python_exe}"\n')
-        f.write(f'export EDA_BIN="{eda_bin}"\n')
-        f.write(f'export EDA_LIB="{eda_lib}"\n')
-        f.write(f'export IVL_HOME="{ivl_home}"\n')
-        f.write(f'export COCOTB_AVAILABLE="{"true" if cocotb_available else "false"}"\n')
-        f.write(f'export PATH="{path_str}"\n')
-        f.write(f'export PYTHONPATH="{skill_dir}{os.pathsep}${{PYTHONPATH:-}}"\n')
+    write_eda_env(
+        eda_env_path,
+        python_exe=python_exe,
+        eda_bin=eda_bin,
+        eda_lib=eda_lib,
+        ivl_home=ivl_home,
+        cocotb_available=cocotb_available,
+        skill_dir=skill_dir,
+    )
     print(f"[ENV] Wrote {eda_env_path}")
     if ivl_home:
         print(f"[ENV] IVL_HOME={ivl_home}")

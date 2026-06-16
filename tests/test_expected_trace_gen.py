@@ -123,6 +123,23 @@ def test_markdown_escapes_pipes():
         assert "a\\|b" in out.read_text()
 
 
+def test_strip_reg_suffix_matches_vcd2table_convention():
+    """_reg stripping must match vcd2table._strip_reg: strip single-_ register
+    suffixes but preserve double-underscore names like 'state__reg'.
+
+    Regression: expected_trace_gen stripped unconditionally, so 'state__reg'
+    became 'state_' while vcd2table kept it — the same signal resolved
+    differently between the two tools.
+    """
+    sys.path.insert(0, str(_SKILLS_DIR))
+    from expected_trace_gen import _strip_reg_suffix  # noqa: E402
+
+    assert _strip_reg_suffix("foo_reg") == "foo"
+    assert _strip_reg_suffix("foo__reg") == "foo__reg"  # preserved, not mangled
+    assert _strip_reg_suffix("data_out") == "data_out"
+    assert _strip_reg_suffix("config") == "config"
+
+
 if __name__ == "__main__":
     import traceback
     passed = 0

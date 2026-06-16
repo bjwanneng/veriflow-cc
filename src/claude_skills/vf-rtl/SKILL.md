@@ -233,10 +233,13 @@ vectors. This catches algorithmic and syntax bugs before RTL is generated.
 ```bash
 cd "$PROJECT_DIR"
 if [ -f workspace/docs/golden_model.py ]; then
+    # Redirect to the log (portable sh — no tee/PIPESTATUS); the file stays on
+    # disk for the orchestrator to read, and $? is the runner's own exit code.
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
-        --golden-check workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
-    # ${PIPESTATUS[0]} reads the runner's exit, not tee's. Bash-only.
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+        --golden-check workspace/docs/golden_model.py > logs/golden_selfcheck.log 2>&1
+    GOLDEN_RC=$?
+    cat logs/golden_selfcheck.log  # echo to console for visibility
+    if [ "$GOLDEN_RC" -ne 0 ]; then
         echo "[GOLDEN] Self-check FAILED — fix golden_model.py before proceeding."
         $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --fail
         echo "[GOLDEN] Stage 1 marked failed; Stage 2 will not run. Main session: fix golden_model.py and re-run Stage 1."
@@ -378,10 +381,13 @@ This catches golden model bugs BEFORE wasting time on RTL debugging.
 [ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
 cd "$PROJECT_DIR"
 if [ -f workspace/docs/golden_model.py ]; then
+    # Redirect to the log (portable sh — no tee/PIPESTATUS); $? is the runner's
+    # own exit code, and the file stays on disk for the orchestrator to read.
     $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
-        --golden-check workspace/docs/golden_model.py 2>&1 | tee logs/golden_selfcheck.log
-    # ${PIPESTATUS[0]} reads the runner's exit, not tee's. Bash-only.
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+        --golden-check workspace/docs/golden_model.py > logs/golden_selfcheck.log 2>&1
+    GOLDEN_RC=$?
+    cat logs/golden_selfcheck.log  # echo to console for visibility
+    if [ "$GOLDEN_RC" -ne 0 ]; then
         echo "[GOLDEN] Self-check FAILED — the reference model has bugs."
         echo "[GOLDEN] Fix golden_model.py FIRST. The problem is NOT in the RTL."
         # Do NOT consume retry budget — this is a golden model issue.
