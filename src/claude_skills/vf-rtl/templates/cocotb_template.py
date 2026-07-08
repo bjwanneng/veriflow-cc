@@ -35,7 +35,34 @@ from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
+import atexit
 import contextlib
+import json
+
+# ─── Functional coverage (coverage-driven verification) ─────────────────
+# Codegen inserts _cover(...) calls at observed FSM states / handshake combos.
+# Analyzed post-sim by coverage_analyzer.py; a no-op if COVER stays empty.
+COVER: dict = {}
+
+
+def _cover(key) -> None:
+    COVER[key] = COVER.get(key, 0) + 1
+
+
+_COVERAGE_FILE = os.environ.get(
+    "COVERAGE_FILE", os.path.join(os.getcwd(), "coverage.json")
+)
+
+
+def _dump_coverage() -> None:
+    try:
+        with open(_COVERAGE_FILE, "w") as _f:
+            json.dump(COVER, _f, indent=2)
+    except OSError:
+        pass
+
+
+atexit.register(_dump_coverage)
 
 CLK_PERIOD_NS = None  # codegen: MUST set FULL period from spec.timing.target_frequency_mhz
                       # (period_ns = 1000 / target_frequency_mhz). cocotb's Clock()

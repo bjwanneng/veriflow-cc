@@ -27,6 +27,13 @@ The prompt contains ALL context inline:
   spec.json (showing FSM states, registered signals, combinational signals per
   cycle)
 - `WEB_RESEARCH`: web search results for reference Verilog patterns (if any, provided inline)
+- `REFERENCES` (optional): type-matched reference Verilog modules from the
+  project reference KB (e.g. a FIFO / round-robin arbiter / valid-ready
+  handshake example matching this module's detected type). Use them as
+  **structural idioms to inform register / clock-domain / handshake structure
+  — NOT to copy verbatim**. The interface (ports, timing_contract) and the
+  golden model are authoritative; the reference is just a correct example of
+  the same structural class.
 - `PREV_FAILURE` (only on retry): a **prescriptive** fix directive containing:
   - `ROOT CAUSE`: one-sentence diagnosis with file and line reference
   - `BUG CLASS`: timing_diagnostic classification
@@ -42,8 +49,9 @@ The prompt contains ALL context inline:
 
 ## Module Assembly Strategy
 
-You are NOT given a reference Verilog snippet for "the same pattern" — instead,
-you have:
+You may receive type-matched `REFERENCES` (a correct example of the same
+structural class) plus a library of inline mini-patterns — but neither is "the
+answer." The authoritative inputs are:
 1. **GOLDEN_MODEL** — Python functions describing the module's behavior that you translate into Verilog
 2. **MODULE_SPEC** — interface definition (ports, timing contract)
 3. **A small library of inline Verilog mini-patterns** (at the end of this prompt) covering FSM, hash round, pipeline register, handshake, and barrel shifter

@@ -41,6 +41,17 @@ The cocotb testbench **MUST** follow the `cocotb_template.py` structure exactly:
 - **MUST** fill in the `<CODEGEN: drive_inputs() call here>` placeholders in
   both `test_layered` and `test_internal_signals` with the same drive_inputs()
   call
+- **SHOULD** instrument functional coverage using the template's `_cover(key)`
+  helper (already defined + auto-dumped to coverage.json). Insert calls inside
+  the per-cycle loop for each FSM state observed and each valid/ready handshake
+  combo exercised:
+  - `_cover(f"fsm:<module>:<STATE>")` whenever the FSM state register equals a
+    named state from spec.json `cycle_timing`
+  - `_cover(f"hs:<valid_port>:<ready_port>")` whenever a valid/ack handshake
+    completes
+  Keys MUST match what `coverage_analyzer.extract_cover_goals` derives
+  (`fsm:<module>:<state>`, `hs:<valid>:<ready>`). Omit if the design has no
+  FSM states and no valid/ready handshake (coverage_analyzer then reports N/A).
 
 **PROHIBITED** (black-box-only pattern — causes silent bugs):
 ```python

@@ -309,7 +309,10 @@ TaskUpdate complete.
 
 Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to include inline in prompts.
 
-**Single-path dispatch**: All modules go through AI Assembly (vf-coder).
+**Multi-candidate dispatch**: All modules go through AI Assembly (vf-coder).
+By default **K=3 candidates per module** are generated and the best is selected by
+`candidate_selector.py` (passing + fewest cells) — set
+`spec.constraints.verification.candidate_count: 1` to disable (legacy single-path).
 
 ### AI Assembly
 
@@ -328,6 +331,14 @@ Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to in
   - `WEB_RESEARCH`: content from `.veriflow/web_research.md` — **only if the file
     has substantive content** (more than just "skipped" or "unavailable"). If
     minimal, omit this field entirely to save prompt tokens.
+  - `REFERENCES` (optional): type-matched reference Verilog from the reference
+    KB. Build it before dispatching vf-coder:
+    ```bash
+    REFS_JSON=$($PYTHON_EXE "${CLAUDE_SKILL_DIR}/reference_kb.py" \
+        --spec workspace/docs/spec.json --module "$MODULE_NAME" 2>/dev/null || echo "")
+    ```
+    Parse `references[].code` and include as structural idioms (not to copy).
+    Omit the field if retrieval returns nothing.
   - `PREV_FAILURE` (only on Stage 3 retry — see Stage 3 step 5b): a
     **prescriptive** fix directive containing ROOT CAUSE + concrete FIX steps
     (file, line, exact change). When present, vf-coder MUST execute the fix
@@ -339,7 +350,13 @@ Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to in
 
 Dispatch ALL agents in parallel (single message):
 
-- One vf-coder agent per module
+- **K vf-coder agents per module** — K from `spec.constraints.verification.candidate_count`
+  (default **3**; set to `1` for the legacy single-path behavior). Each candidate
+  writes to `workspace/rtl/.candidates/<module>_cand{i}.v` (i = 0..K-1) with
+  `OUTPUT_FILE` set accordingly; vary the microarchitecture emphasis per candidate
+  (e.g. cand0: area-minimal, cand1: balanced, cand2: timing-relaxed) so the
+  selector has real diversity to choose from. Falls back to K=1 if cocotb is
+  unavailable (selection needs sim).
 - **One vf-tb-gen** (subagent_type: general-purpose)
   - Prompt includes: PROJECT_DIR, DESIGN_NAME, spec.json content, golden_model.py content, COCOTB_AVAILABLE flag, `${CLAUDE_SKILL_DIR}/templates` path
   - **DRIVE_PHASE_CYCLES**: Read from `spec.json timing_convention.golden_to_rtl_offset_cycles`. If not set, fall back to `max(pipeline_delay_cycles)` from timing_contract.
@@ -349,6 +366,32 @@ After ALL return, verify outputs exist:
 ```bash
 ls "$PROJECT_DIR/workspace/rtl/"*.v "$PROJECT_DIR/workspace/tb/"*.v "$PROJECT_DIR/workspace/tb/"*.py 2>/dev/null
 ```
+
+### Candidate selection (only if K > 1)
+
+For each module that has candidates under `workspace/rtl/.candidates/`, run the
+selector — it sims each candidate against the golden cocotb TB and scores
+synthesis quality (fewest cells wins among those that pass):
+```bash
+cd "$PROJECT_DIR"
+CAND_K=$($PYTHON_EXE -c "
+import json
+s = json.load(open('workspace/docs/spec.json'))
+print(s.get('constraints',{}).get('verification',{}).get('candidate_count', 3))
+")
+if [ "${CAND_K:-3}" -gt 1 ] && ls workspace/rtl/.candidates/*_cand*.v >/dev/null 2>&1; then
+    for M in $(ls workspace/rtl/.candidates/ 2>/dev/null | sed -E 's/_cand[0-9]+\.v//' | sort -u); do
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/candidate_selector.py" \
+            --module "$M" \
+            --candidates-dir workspace/rtl/.candidates \
+            --tb-dir workspace/tb \
+            --rtl-out workspace/rtl \
+            --build-dir workspace/sim_cand 2>&1 | tee -a logs/candidate_select.log
+    done
+fi
+```
+If no candidate passes, the fewest-fails one is kept so Stage 3 can still try to fix it.
+
 ```bash
 $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
 ```
@@ -522,6 +565,36 @@ if [ "$COV" != "N/A" ]; then
     fi
 fi
 ```
+
+### Functional coverage loop (coverage-driven verification)
+
+After a PASSING simulation, score functional coverage (FSM states + handshake
+combos exercised) and, if below threshold, generate directed tests and re-sim
+once. Bounded to one extra round. Skipped automatically when the spec declares
+no cover goals (returns ratio N/A).
+```bash
+cd "$PROJECT_DIR"
+COV_FILE=$(ls workspace/sim_cocotb/coverage.json workspace/sim/coverage.json 2>/dev/null | head -1)
+MIN_FUNC=$($PYTHON_EXE -c "
+import json
+s = json.load(open('workspace/docs/spec.json'))
+print(s.get('constraints',{}).get('verification',{}).get('min_functional_coverage', 0.85))
+")
+if [ -n "$COV_FILE" ]; then
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/coverage_analyzer.py" \
+        --coverage "$COV_FILE" --spec workspace/docs/spec.json --module "$TOP_MODULE" \
+        > logs/functional_coverage.json
+    FRATIO=$($PYTHON_EXE -c "import json;print(json.load(open('logs/functional_coverage.json'))['ratio'])")
+    echo "[FCOV] Functional coverage: $FRATIO (min $MIN_FUNC)"
+    if [ "$FRATIO" != "None" ] && [ "$(echo "$FRATIO < $MIN_FUNC" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+        echo "[FCOV] Below threshold — re-dispatch vf-tb-gen with the coverage directive below, then re-run Stage 3 sim ONCE."
+        $PYTHON_EXE -c "import json;print(json.load(open('logs/functional_coverage.json'))['directives'])"
+    fi
+fi
+```
+If the directive fired: read the uncovered goals, add directed `TEST_VECTORS`
+that hit them (or re-dispatch vf-tb-gen with the directive), re-run the sim,
+then proceed. Do not loop more than once.
 
 TaskUpdate complete. Go to Stage 4.
 
@@ -783,6 +856,40 @@ with open('logs/yosys_equiv_synth.json') as f:
     fi
 else
     echo "[EQUIV] Skipped (yosys or netlist not available)"
+fi
+```
+
+### Formal Property Proving (post-synthesis)
+
+Prove spec-derived invariants (handshake valid-stability, etc.) with
+SymbiYosys. This is **report-only** in v1: a FAIL with a counterexample is
+surfaced for review, not a hard gate. Generates the property file even if sby
+is unavailable (useful artifact). Skips cleanly when sby is absent.
+```bash
+if command -v sby &>/dev/null; then
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/formal_prove.py" \
+        --spec workspace/docs/spec.json \
+        --module "$TOP_MODULE" \
+        --rtl-dir workspace/rtl \
+        --output "workspace/docs/${TOP_MODULE}_formal.v" \
+        --prove --timeout 120 > logs/formal.json 2> logs/formal.log
+    FORMAL=$("$PYTHON_EXE" -c "
+import json, pathlib
+p = pathlib.Path('logs/formal.json')
+d = json.loads(p.read_text()) if p.exists() else {}
+print(d.get('status') or 'SKIP')
+")
+    echo "[FORMAL] Property proving: $FORMAL"
+    if [ "$FORMAL" = "FAIL" ]; then
+        echo "[FORMAL] CEX found — review logs/formal.log (report-only, not a hard gate in v1)."
+    fi
+else
+    # Still generate the property file as an artifact (no prove).
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/formal_prove.py" \
+        --spec workspace/docs/spec.json --module "$TOP_MODULE" \
+        --rtl-dir workspace/rtl \
+        --output "workspace/docs/${TOP_MODULE}_formal.v" 2>/dev/null || true
+    echo "[FORMAL] Skipped (sby not available) — property file generated."
 fi
 ```
 

@@ -387,6 +387,8 @@ def main():
     # Set cocotb test timeout (default 120s) to prevent infinite hangs
     if "COCOTB_TIMEOUT" not in runner.env:
         runner.env["COCOTB_TIMEOUT"] = "120"
+    # Tell the TB where to dump functional coverage (read back into the result).
+    runner.env.setdefault("COVERAGE_FILE", str(Path(build_dir) / "coverage.json"))
 
     # ── Build ──────────────────────────────────────────────────────────
     if args.verbose:
@@ -490,6 +492,15 @@ def main():
         "vcd_path": vcd_path,
         "failures": failures,
     }
+
+    # ── Functional coverage (coverage-driven verification) ──────────────
+    # The TB dumps coverage.json (COVERAGE_FILE) at exit; surface it so
+    # coverage_analyzer can score it in Stage 3.
+    coverage_path = Path(build_dir) / "coverage.json"
+    if coverage_path.exists():
+        result["coverage_path"] = str(coverage_path)
+        with contextlib.suppress(json.JSONDecodeError, OSError):
+            result["coverage"] = json.loads(coverage_path.read_text(encoding="utf-8"))
 
     # ── Alignment info (SLOW-3: single source of truth for cycle mapping) ──
     # Emitted on failure so the orchestrator knows exactly how cocotb cycles

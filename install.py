@@ -37,6 +37,7 @@ SKILL_FILES = sorted(
     and f.name != "coding_style.md"
 )
 TEMPLATES_DIR = "templates"
+REFERENCES_DIR = "references"  # curated reference RTL snippets (reference_kb.py)
 
 # Source for coding_style.md is now in the skill directory itself
 CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl" / "coding_style.md"
@@ -84,6 +85,16 @@ def main():
                     print(f"  Removed template: {f.name}")
                     removed += 1
             templates_dst.rmdir()
+
+        # Remove references (curated RTL snippets)
+        references_dst = SKILL_DST_DIR / REFERENCES_DIR
+        if references_dst.exists():
+            for f in references_dst.iterdir():
+                if f.is_file() or f.is_symlink():
+                    f.unlink()
+                    print(f"  Removed reference: {f.name}")
+                    removed += 1
+            references_dst.rmdir()
 
         # Remove legacy veriflow_dsl/ symlink (if present from older installs)
         legacy_dsl_dst = SKILL_DST_DIR / "veriflow_dsl"
@@ -212,6 +223,19 @@ def main():
                 skill_installed += 1
     else:
         print(f"  [skip]   vf-rtl/{TEMPLATES_DIR}/ not found at {templates_src}")
+
+    # 1c-bis. Install references (curated RTL snippets for reference_kb.py)
+    references_src = SKILL_SRC_DIR / REFERENCES_DIR
+    references_dst = SKILL_DST_DIR / REFERENCES_DIR
+    if references_src.exists():
+        references_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(references_src.iterdir()):
+            if f.is_file():
+                dst = references_dst / f.name
+                _symlink(f, dst, "ref")
+                skill_installed += 1
+    else:
+        print(f"  [skip]   vf-rtl/{REFERENCES_DIR}/ not found at {references_src}")
 
     # 1d. Clean up legacy veriflow_dsl/ and anchors/ from older installs.
     # These directories were part of the v2 DSL architecture that has been

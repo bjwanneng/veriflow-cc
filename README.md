@@ -55,6 +55,11 @@ Installs to `~/.claude/`:
 - `skills/vf-rtl/corner_case_generator.py` — Boundary test vector generation
 - `skills/vf-rtl/design_graph.py` — Module connectivity graph analysis
 - `skills/vf-rtl/knowledge_base.py` — Cross-project bug pattern learning
+- `skills/vf-rtl/reference_kb.py` — Type-matched reference RTL retrieval (for vf-coder)
+- `skills/vf-rtl/synth_score.py` — Synthesis-quality scoring from yosys reports
+- `skills/vf-rtl/candidate_selector.py` — Multi-candidate RTL selection (test-time scaling)
+- `skills/vf-rtl/coverage_analyzer.py` — Functional coverage scoring (coverage-driven verification)
+- `skills/vf-rtl/formal_prove.py` — Generate + prove Verilog formal properties via SymbiYosys
 - `agents/vf-coder.md` — RTL code generation sub-agent
 - `agents/vf-spec-golden.md` — Spec + golden model generation sub-agent
 - `agents/vf-tb-gen.md` — Testbench generation sub-agent
@@ -259,6 +264,34 @@ After synthesis, `yosys_equiv.py` proves functional equivalence between the orig
 | `corner_case_generator.py` | Boundary test vectors | `--spec spec.json -o corners.json` |
 | `design_graph.py` | Connectivity analysis | `--spec spec.json -o graph.json` |
 | `knowledge_base.py` | Query learned patterns | `--top-patterns --count 10` |
+| `reference_kb.py` | Retrieve reference RTL by module type | `--spec spec.json --module fifo_top` |
+| `synth_score.py` | Score synth quality (cells/FFs/MUX) | `--rtl top.v --module top` |
+| `candidate_selector.py` | Pick best of K RTL candidates | `--module top --candidates-dir .candidates` |
+| `coverage_analyzer.py` | Functional coverage + directives | `--coverage coverage.json --spec spec.json` |
+| `formal_prove.py` | Generate + prove Verilog properties | `--spec spec.json --module top --prove` |
+
+## Advanced Verification (2026 techniques)
+
+Five capabilities inspired by recent LLM-RTL research, all enabled by default and
+degrading gracefully when their backing tool is absent:
+
+- **Multi-candidate codegen + selection** (`candidate_selector.py`): Stage 2
+  generates K candidates per module (default 3; `spec.constraints.verification.
+  candidate_count`) and picks the one that passes sim with the fewest cells —
+  the S*/MAGE test-time-scaling pattern. Set `candidate_count: 1` to disable.
+- **Synthesis-aware scoring** (`synth_score.py`): ranks candidates / tie-breaks
+  fixes by yosys cell count (FF + MUX exposed). yosys generic synth reports no
+  area/frequency, so the score is cell-based.
+- **Reference-implementation retrieval** (`reference_kb.py` + `references/*.v`):
+  vf-coder gets a type-matched correct example (FIFO / FSM / arbiter /
+  valid-ready / pipeline-aligner / counter) as structural idiom.
+- **Coverage-driven verification** (`coverage_analyzer.py`): the cocotb TB
+  instruments FSM-state + handshake cover points; below
+  `spec.constraints.verification.min_functional_coverage` (default 0.85), a
+  directive re-triggers vf-tb-gen for directed tests (one bounded round).
+- **Formal property proving** (`formal_prove.py` + SymbiYosys): generates
+  Verilog-2005 `assert`/`assume` from spec timing/handshake contracts and proves
+  them via sby. Report-only in v1 (CEX surfaced, not a hard gate).
 
 ## Project Output Structure
 
@@ -311,14 +344,23 @@ veriflow-cc/
 │   │       ├── corner_case_generator.py  # Boundary test vector generation
 │   │       ├── design_graph.py       # Module connectivity graph analysis
 │   │       ├── knowledge_base.py     # Cross-project bug pattern learning
+│   │       ├── reference_kb.py       # Type-matched reference RTL retrieval
+│   │       ├── synth_score.py        # Synthesis-quality scoring
+│   │       ├── candidate_selector.py # Multi-candidate RTL selection
+│   │       ├── coverage_analyzer.py  # Functional coverage scoring
+│   │       ├── formal_prove.py       # SVA-free formal properties + sby
 │   │       ├── error_recovery.md  # Stage 3 error recovery procedure
 │   │       ├── design_rules.md    # Design rules for all stages
 │   │       ├── coding_style.md    # Verilog-2005 coding rules
-│   │       └── templates/         # Template files for sub-agents
-│   │           ├── spec_template.json
-│   │           ├── golden_model_template.py
-│   │           ├── cocotb_template.py
-│   │           └── tb_integration_template.v
+│   │       ├── templates/         # Template files for sub-agents
+│   │       │   ├── spec_template.json
+│   │       │   ├── golden_model_template.py
+│   │       │   ├── cocotb_template.py
+│   │       │   └── tb_integration_template.v
+│   │       └── references/        # Curated reference RTL (FIFO/FSM/arbiter/...)
+│   │           ├── counter.v
+│   │           ├── fifo.v
+│   │           └── ...
 │   └── claude_agents/
 │       ├── vf-spec-golden.md      # Spec + golden model generation (Stage 1)
 │       ├── vf-coder.md            # RTL code generation (Stage 2)
