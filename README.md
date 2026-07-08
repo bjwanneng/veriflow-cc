@@ -60,6 +60,7 @@ Installs to `~/.claude/`:
 - `skills/vf-rtl/candidate_selector.py` — Multi-candidate RTL selection (test-time scaling)
 - `skills/vf-rtl/coverage_analyzer.py` — Functional coverage scoring (coverage-driven verification)
 - `skills/vf-rtl/formal_prove.py` — Generate + prove Verilog formal properties via SymbiYosys
+- `skills/vf-rtl/self_improve.py` — Cross-run self-improvement loop (benchmark-gated, reversible)
 - `agents/vf-coder.md` — RTL code generation sub-agent
 - `agents/vf-spec-golden.md` — Spec + golden model generation sub-agent
 - `agents/vf-tb-gen.md` — Testbench generation sub-agent
@@ -269,6 +270,7 @@ After synthesis, `yosys_equiv.py` proves functional equivalence between the orig
 | `candidate_selector.py` | Pick best of K RTL candidates | `--module top --candidates-dir .candidates` |
 | `coverage_analyzer.py` | Functional coverage + directives | `--coverage coverage.json --spec spec.json` |
 | `formal_prove.py` | Generate + prove Verilog properties | `--spec spec.json --module top --prove` |
+| `self_improve.py` | Learn from runs (gated, reversible) | `record / mine / validate / promote / rollback` |
 
 ## Advanced Verification (2026 techniques)
 
@@ -292,6 +294,27 @@ degrading gracefully when their backing tool is absent:
 - **Formal property proving** (`formal_prove.py` + SymbiYosys): generates
   Verilog-2005 `assert`/`assume` from spec timing/handshake contracts and proves
   them via sby. Report-only in v1 (CEX surfaced, not a hard gate).
+
+## Self-Improvement (cross-run learning)
+
+`self_improve.py` closes the loop across pipeline runs: it records per-module
+observations, mines recurring bug patterns, validates candidate fixes against
+references, and—only when a benchmark referee agrees—promotes a learned
+reference/pattern into the hot path. Nothing reaches the hot path silently:
+every promotion is benchmark-gated and reversible.
+
+- `record` — append structured per-module observations to `runs.jsonl`
+  (best-effort; called automatically after a successful run).
+- `mine` — surface recurring patterns (min coverage / occurrences / projects).
+- `validate` — dry-run a candidate reference/pattern against fixtures; writes
+  staging artifacts only, never the hot path.
+- `promote [--apply|--auto]` — move a validated candidate into the references
+  directory or knowledge base. `--auto` requires `VF_BENCHMARK_CMD` and rolls
+  back automatically on regression.
+- `rollback <promotion_id>` — revert a promotion, restoring prior content.
+- `status` — show runs, staged candidates, and promotion log.
+
+See `SELF_IMPROVE.md` for the runbook and the five safety guardrails.
 
 ## Project Output Structure
 
@@ -349,6 +372,8 @@ veriflow-cc/
 │   │       ├── candidate_selector.py # Multi-candidate RTL selection
 │   │       ├── coverage_analyzer.py  # Functional coverage scoring
 │   │       ├── formal_prove.py       # SVA-free formal properties + sby
+│   │       ├── self_improve.py       # Cross-run self-improvement (gated)
+│   │       ├── SELF_IMPROVE.md       # Runbook + guardrails
 │   │       ├── error_recovery.md  # Stage 3 error recovery procedure
 │   │       ├── design_rules.md    # Design rules for all stages
 │   │       ├── coding_style.md    # Verilog-2005 coding rules

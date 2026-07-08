@@ -905,6 +905,11 @@ if "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" lint_synth --chec
         --record-fix logs/timing_diagnostic.json \
         --project "$(basename $PROJECT_DIR)" \
         --fix-attempts "$(cat .veriflow/pipeline_state.json | python -c 'import sys,json;print(sum(json.load(sys.stdin).get(\"retry_count\",{}).values()))')" 2>/dev/null || true
+
+    # Self-improvement: append structured per-module observations (runs.jsonl)
+    # for offline mining. Best-effort, append-only, never blocks the pipeline.
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/self_improve.py" record --project-dir "$PROJECT_DIR" \
+        >> logs/self_improve.log 2>&1 || true
 fi
 ```
 
