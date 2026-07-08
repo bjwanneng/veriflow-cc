@@ -44,8 +44,10 @@ CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl" / "coding_st
 CODING_STYLE_DST_NAME = "coding_style.md"
 
 # --- Sub-agents ---
+# Agents are namespaced per skill: src/claude_agents/<skill>/<agent>.md.
+# This keeps a future 2nd skill's agents from colliding in source.
 AGENTS_DST_DIR = CLAUDE_DIR / "agents"
-AGENTS_SRC_DIR = PROJECT_DIR / "src" / "claude_agents"
+AGENTS_SRC_DIR = PROJECT_DIR / "src" / "claude_agents" / "vf-rtl"
 
 AGENT_FILES = [
     "vf-spec-golden.md",
