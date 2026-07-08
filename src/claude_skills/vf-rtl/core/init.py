@@ -169,20 +169,24 @@ def init_journal(project_dir: Path, is_resume: bool) -> None:
 
 
 def write_eda_env(path: Path, python_exe: str, eda_bin: str, eda_lib: str,
-                  ivl_home: str, cocotb_available: bool, skill_dir: str) -> None:
+                  ivl_home: str, cocotb_available: bool, skill_paths: list) -> None:
     """Write a `source`-able eda_env.sh with every value shell-quoted.
 
     Paths are shlex.quote'd (single-quoted) so spaces, `$`, backticks, and `"`
     in a path round-trip verbatim instead of breaking the export or injecting
     shell. `$PATH` and `${PYTHONPATH:-}` are deliberately left unquoted so they
     expand when the file is sourced.
+
+    `skill_paths` is the list of directories put on PYTHONPATH: the skill root
+    first, then every subdir holding .py modules (core/, runners/, ...). Bare
+    imports (`from rtl_utils import ...`) resolve across the grouped source tree.
     """
     q = shlex.quote
     # Each PATH/PYTHONPATH entry is quoted individually; adjacent quoted tokens
     # concatenate in shell, so `'/a b':'/c d':$PATH` is valid.
     path_entries = [q(p) for p in [eda_bin, eda_lib] if p] + ["$PATH"]
     path_str = os.pathsep.join(path_entries)
-    pythonpath_str = os.pathsep.join([q(skill_dir), "${PYTHONPATH:-}"])
+    pythonpath_str = os.pathsep.join([q(p) for p in skill_paths] + ["${PYTHONPATH:-}"])
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"export PYTHON_EXE={q(python_exe)}\n")
         f.write(f"export EDA_BIN={q(eda_bin)}\n")
@@ -263,11 +267,21 @@ def main():
     # Write eda_env.sh
     veriflow_dir = project_dir / ".veriflow"
     eda_env_path = veriflow_dir / "eda_env.sh"
-    # Skill directory holds state.py + helper scripts. Exporting it on
-    # PYTHONPATH lets every shell that sources eda_env.sh run things like
-    # `python -c "from state import PipelineState"` without per-call
-    # PYTHONPATH wrangling.
-    skill_dir = str(Path(__file__).resolve().parent)
+    # Skill directory holds state.py + helper scripts. Exporting it (and every
+    # subdir holding .py) on PYTHONPATH lets every shell that sources eda_env.sh
+    # run things like `python -c "from state import PipelineState"` without
+    # per-call PYTHONPATH wrangling. Forward-compatible: when flat (no subdirs),
+    # skill_paths is just [skill_root].
+    skill_root = Path(__file__).resolve().parent
+    # init.py lives in core/; walk up to the dir holding SKILL.md (the skill
+    # root) before enumerating subdirs. Same in source and deployed layout.
+    while not (skill_root / "SKILL.md").exists() and skill_root.parent != skill_root:
+        skill_root = skill_root.parent
+    _DATA_DIRS = {"templates", "references", "docs", "__pycache__"}
+    skill_paths = [str(skill_root)]
+    for _sub in sorted(skill_root.iterdir()):
+        if _sub.is_dir() and _sub.name not in _DATA_DIRS:
+            skill_paths.append(str(_sub))
     write_eda_env(
         eda_env_path,
         python_exe=python_exe,
@@ -275,7 +289,7 @@ def main():
         eda_lib=eda_lib,
         ivl_home=ivl_home,
         cocotb_available=cocotb_available,
-        skill_dir=skill_dir,
+        skill_paths=skill_paths,
     )
     print(f"[ENV] Wrote {eda_env_path}")
     if ivl_home:

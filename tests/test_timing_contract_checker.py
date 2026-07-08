@@ -168,7 +168,7 @@ def test_golden_trace_signals_unmatched():
 
 def test_cli_no_spec_returns_2():
     result = subprocess.run(
-        [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+        [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
          "--spec", "/nonexistent/spec.json"],
         capture_output=True, text=True
     )
@@ -180,7 +180,7 @@ def test_cli_valid_spec_returns_0():
         spec = _minimal_spec()
         spec_path = _write_spec(tmp, spec)
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -209,7 +209,7 @@ def test_cli_fix_registered_combinational():
 
         # Without --fix: should fail
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -219,7 +219,7 @@ def test_cli_fix_registered_combinational():
 
         # With --fix: should succeed and modify file
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--fix", "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -227,7 +227,7 @@ def test_cli_fix_registered_combinational():
 
         # Re-check: should now pass
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -254,7 +254,7 @@ def test_cli_fix_valid_handshake():
 
         # Without --fix: port semantic error
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -263,7 +263,7 @@ def test_cli_fix_valid_handshake():
 
         # With --fix
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--fix", "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -293,7 +293,7 @@ def test_cli_fix_backup_and_no_stale_contradiction():
         original = Path(spec_path).read_text()
 
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--fix", "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -306,7 +306,7 @@ def test_cli_fix_backup_and_no_stale_contradiction():
 
         # 2. No contradiction remains: re-check passes.
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--spec", spec_path],
             capture_output=True, text=True
         )
@@ -324,7 +324,7 @@ def test_cli_fix_latency_mismatch():
         spec_path = _write_spec(tmp, spec)
 
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "timing_contract_checker.py"),
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
              "--fix", "--spec", spec_path],
             capture_output=True, text=True
         )

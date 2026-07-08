@@ -44,23 +44,23 @@ python install.py
 
 Installs to `~/.claude/`:
 - `skills/vf-rtl/SKILL.md` — Pipeline orchestration skill
-- `skills/vf-rtl/state.py` — State management
-- `skills/vf-rtl/vcd2table.py` — VCD waveform analysis
+- `skills/vf-rtl/core/state.py` — State management
+- `skills/vf-rtl/analysis/vcd2table.py` — VCD waveform analysis
 - `skills/vf-rtl/coding_style.md` — Verilog coding style rules
-- `skills/vf-rtl/cocotb_runner.py` — Cocotb simulation runner
-- `skills/vf-rtl/iverilog_runner.py` — Pure-Verilog simulation runner
-- `skills/vf-rtl/timing_contract_checker.py` — Timing contract validator
-- `skills/vf-rtl/benchmark_runner.py` — Batch evaluation & reporting
-- `skills/vf-rtl/bug_pattern_match.py` — Automated divergence pattern matching
-- `skills/vf-rtl/corner_case_generator.py` — Boundary test vector generation
-- `skills/vf-rtl/design_graph.py` — Module connectivity graph analysis
-- `skills/vf-rtl/knowledge_base.py` — Cross-project bug pattern learning
-- `skills/vf-rtl/reference_kb.py` — Type-matched reference RTL retrieval (for vf-coder)
-- `skills/vf-rtl/synth_score.py` — Synthesis-quality scoring from yosys reports
-- `skills/vf-rtl/candidate_selector.py` — Multi-candidate RTL selection (test-time scaling)
-- `skills/vf-rtl/coverage_analyzer.py` — Functional coverage scoring (coverage-driven verification)
-- `skills/vf-rtl/formal_prove.py` — Generate + prove Verilog formal properties via SymbiYosys
-- `skills/vf-rtl/self_improve.py` — Cross-run self-improvement loop (benchmark-gated, reversible)
+- `skills/vf-rtl/runners/cocotb_runner.py` — Cocotb simulation runner
+- `skills/vf-rtl/runners/iverilog_runner.py` — Pure-Verilog simulation runner
+- `skills/vf-rtl/analysis/timing_contract_checker.py` — Timing contract validator
+- `skills/vf-rtl/runners/benchmark_runner.py` — Batch evaluation & reporting
+- `skills/vf-rtl/analysis/bug_pattern_match.py` — Automated divergence pattern matching
+- `skills/vf-rtl/analysis/corner_case_generator.py` — Boundary test vector generation
+- `skills/vf-rtl/analysis/design_graph.py` — Module connectivity graph analysis
+- `skills/vf-rtl/kb/knowledge_base.py` — Cross-project bug pattern learning
+- `skills/vf-rtl/kb/reference_kb.py` — Type-matched reference RTL retrieval (for vf-coder)
+- `skills/vf-rtl/verify/synth_score.py` — Synthesis-quality scoring from yosys reports
+- `skills/vf-rtl/verify/candidate_selector.py` — Multi-candidate RTL selection (test-time scaling)
+- `skills/vf-rtl/analysis/coverage_analyzer.py` — Functional coverage scoring (coverage-driven verification)
+- `skills/vf-rtl/verify/formal_prove.py` — Generate + prove Verilog formal properties via SymbiYosys
+- `skills/vf-rtl/kb/self_improve.py` — Cross-run self-improvement loop (benchmark-gated, reversible)
 - `agents/vf-coder.md` — RTL code generation sub-agent
 - `agents/vf-spec-golden.md` — Spec + golden model generation sub-agent
 - `agents/vf-tb-gen.md` — Testbench generation sub-agent

@@ -168,5 +168,5 @@ printf "\n### Recovery: <stage_name>\n**Timestamp**: $(date -Iseconds)\n**Attemp
 
 Rollback command:
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" --reset codegen
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" --reset codegen
 ```

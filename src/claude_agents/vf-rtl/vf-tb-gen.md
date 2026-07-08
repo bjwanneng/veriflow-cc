@@ -712,7 +712,7 @@ After the testbench is generated, run the corner-case generator to create
 boundary-condition test vectors that supplement the golden model's TEST_VECTORS:
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/corner_case_generator.py" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/corner_case_generator.py" \
     --spec "$PROJECT_DIR/workspace/docs/spec.json" \
     --output "$PROJECT_DIR/workspace/tb/corner_cases.json"
 ```

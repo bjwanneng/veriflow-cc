@@ -85,7 +85,7 @@ def test_record_fix_uses_valid_category_not_phantom_id():
         diag = Path(tmp) / "diag.json"
         diag.write_text(json.dumps({"bug_class": "B_late"}))
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "knowledge_base.py"),
+            [sys.executable, str(_SKILLS_DIR / "kb" / "knowledge_base.py"),
              "--record-fix", str(diag), "--project", "proj",
              "--kb-dir", tmp],
             capture_output=True, text=True,

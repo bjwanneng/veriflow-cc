@@ -293,8 +293,10 @@ class PipelineState:
                 # Design graph validation — cycle detection and unreachable modules
                 try:
                     import importlib.util
-                    skill_dir = Path(__file__).parent
-                    graph_path = skill_dir / "design_graph.py"
+                    _skill_root = Path(__file__).resolve().parent
+                    while not (_skill_root / "SKILL.md").exists() and _skill_root.parent != _skill_root:
+                        _skill_root = _skill_root.parent
+                    graph_path = _skill_root / "analysis" / "design_graph.py"
                     if graph_path.exists():
                         spec_mod = importlib.util.spec_from_file_location("design_graph", str(graph_path))
                         dg_mod = importlib.util.module_from_spec(spec_mod)

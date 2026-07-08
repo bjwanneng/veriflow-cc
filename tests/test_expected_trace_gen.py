@@ -7,7 +7,7 @@ import textwrap
 from pathlib import Path
 
 _SKILLS_DIR = Path(__file__).parent.parent / "src" / "claude_skills" / "vf-rtl"
-_SCRIPT = _SKILLS_DIR / "expected_trace_gen.py"
+_SCRIPT = _SKILLS_DIR / "analysis" / "expected_trace_gen.py"
 
 
 def _write_golden(tmp: Path, body: str) -> Path:

@@ -43,8 +43,17 @@ try:
 except ImportError:
     _HAS_FCNTL = False
 
-_SKILL_DIR = Path(__file__).parent
-sys.path.insert(0, str(_SKILL_DIR))
+_SKILL_DIR = Path(__file__).resolve().parent
+_SKILL_ROOT = _SKILL_DIR
+while not (_SKILL_ROOT / "SKILL.md").exists() and _SKILL_ROOT.parent != _SKILL_ROOT:
+    _SKILL_ROOT = _SKILL_ROOT.parent
+# reference_kb is a sibling (kb/); synth_score lives in verify/. Put the skill
+# root + every subdir on sys.path so cross-subdir imports resolve on direct
+# invocation (self_improve is subprocessed from SKILL.md Stage 4).
+for _d in [*_SKILL_ROOT.iterdir(), _SKILL_ROOT]:
+    if _d.is_dir() and _d.name not in {"templates", "references", "docs", "__pycache__"} \
+            and str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
 
 from reference_kb import classify_module  # noqa: E402
 
@@ -73,9 +82,9 @@ class SelfImprover:
         self.requests_dir = self.kb_dir / "promotion_requests"
         self.requests_dir.mkdir(exist_ok=True)
         # Hot path targets (where promotions land).
-        self.references_dir = Path(references_dir) if references_dir else (_SKILL_DIR / "references")
+        self.references_dir = Path(references_dir) if references_dir else (_SKILL_ROOT / "references")
         self.bug_patterns_path = (Path(bug_patterns_path)
-                                  if bug_patterns_path else (_SKILL_DIR / "bug_patterns.md"))
+                                  if bug_patterns_path else (_SKILL_ROOT / "bug_patterns.md"))
         # Benchmark gate (opt-in). Override on the instance for testing.
         self.benchmark_cmd = os.environ.get("VF_BENCHMARK_CMD")
 

@@ -25,10 +25,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-_SKILL_DIR = Path(__file__).parent
-sys.path.insert(0, str(_SKILL_DIR))
+_SKILL_DIR = Path(__file__).resolve().parent
+_SKILL_ROOT = _SKILL_DIR
+while not (_SKILL_ROOT / "SKILL.md").exists() and _SKILL_ROOT.parent != _SKILL_ROOT:
+    _SKILL_ROOT = _SKILL_ROOT.parent
+sys.path.insert(0, str(_SKILL_DIR))  # synth_score is a sibling here
 
-from synth_score import quick_synth
+from synth_score import quick_synth  # noqa: E402
 
 
 def _parse_runner_json(stdout: str) -> dict:
@@ -53,7 +56,7 @@ def score_candidate(
     sim is reported as passed=False so select_best can rank it.
     """
     rtl_file = str(rtl_file)
-    runner = str(_SKILL_DIR / "cocotb_runner.py")
+    runner = str(_SKILL_ROOT / "runners" / "cocotb_runner.py")
     work = Path(build_dir) / "iso"
     if work.exists():
         shutil.rmtree(work, ignore_errors=True)

@@ -16,7 +16,7 @@ sys.path.insert(0, str(_SKILLS_DIR))
 
 def _load_init():
     spec = importlib.util.spec_from_file_location(
-        "vf_init", str(_SKILLS_DIR / "init.py")
+        "vf_init", str(_SKILLS_DIR / "core" / "init.py")
     )
     init = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(init)
@@ -44,7 +44,7 @@ def test_eda_env_quoting_handles_spaces_and_dollars():
             eda_lib=tricky_lib,
             ivl_home="",
             cocotb_available=False,
-            skill_dir=tricky_skill,
+            skill_paths=[tricky_skill],
         )
 
         # Source under plain POSIX sh and echo vars back — round-trip check.

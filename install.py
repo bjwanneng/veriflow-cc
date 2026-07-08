@@ -39,6 +39,30 @@ SKILL_FILES = sorted(
 TEMPLATES_DIR = "templates"
 REFERENCES_DIR = "references"  # curated reference RTL snippets (reference_kb.py)
 
+# Code subdirs hold the .py modules referenced by SKILL.md as
+# ${CLAUDE_SKILL_DIR}/<subdir>/<script>.py. Each is deployed recursively so the
+# source and deployed layouts match (no path divergence). templates/ and
+# references/ are deployed by their own sections below; the rest are skipped.
+_DATA_DIRS = {"templates", "references", "docs", "__pycache__", ".DS_Store"}
+CODE_SUBDIRS = sorted(
+    d.name for d in SKILL_SRC_DIR.iterdir()
+    if d.is_dir() and d.name not in _DATA_DIRS
+)
+
+# Scripts that moved from the skill root into subdirs (directory restructure).
+# Old flat installs leave orphaned copies at the skill root that would shadow
+# the subdir versions; clean them on install and uninstall. Idempotent.
+_MOVED_SCRIPTS = {
+    "state.py", "rtl_utils.py", "init.py",
+    "iverilog_runner.py", "cocotb_runner.py", "yosys_equiv.py",
+    "benchmark_runner.py",
+    "timing_diagnostic.py", "timing_contract_checker.py", "design_graph.py",
+    "coverage_analyzer.py", "bug_pattern_match.py", "corner_case_generator.py",
+    "expected_trace_gen.py", "vcd2table.py",
+    "candidate_selector.py", "synth_score.py", "formal_prove.py",
+    "knowledge_base.py", "reference_kb.py", "self_improve.py",
+}
+
 # Source for coding_style.md is now in the skill directory itself
 CODING_STYLE_SRC = PROJECT_DIR / "src" / "claude_skills" / "vf-rtl" / "coding_style.md"
 CODING_STYLE_DST_NAME = "coding_style.md"
@@ -97,6 +121,29 @@ def main():
                     print(f"  Removed reference: {f.name}")
                     removed += 1
             references_dst.rmdir()
+
+        # Remove code subdirs (core/, runners/, analysis/, verify/, kb/)
+        for sub in CODE_SUBDIRS:
+            sub_dst = SKILL_DST_DIR / sub
+            if sub_dst.exists():
+                for f in sub_dst.iterdir():
+                    if f.is_file() or f.is_symlink():
+                        f.unlink()
+                        print(f"  Removed code: {sub}/{f.name}")
+                        removed += 1
+                try:
+                    sub_dst.rmdir()
+                except OSError:
+                    pass
+
+        # Remove orphaned flat copies of scripts that moved into subdirs
+        # (migration from pre-restructure installs).
+        for name in _MOVED_SCRIPTS:
+            flat_dst = SKILL_DST_DIR / name
+            if flat_dst.is_symlink() or flat_dst.is_file():
+                flat_dst.unlink()
+                print(f"  Removed moved-script (was flat): {name}")
+                removed += 1
 
         # Remove legacy veriflow_dsl/ symlink (if present from older installs)
         legacy_dsl_dst = SKILL_DST_DIR / "veriflow_dsl"
@@ -239,6 +286,27 @@ def main():
     else:
         print(f"  [skip]   vf-rtl/{REFERENCES_DIR}/ not found at {references_src}")
 
+    # 1c-ter. Install code subdirs (core/, runners/, analysis/, verify/, kb/).
+    # Each subdir's modules are symlinked into ~/.claude/skills/vf-rtl/<subdir>/
+    # so SKILL.md's ${CLAUDE_SKILL_DIR}/<subdir>/<script>.py refs resolve.
+    for sub in CODE_SUBDIRS:
+        sub_src = SKILL_SRC_DIR / sub
+        sub_dst = SKILL_DST_DIR / sub
+        sub_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(sub_src.iterdir()):
+            if f.is_file() and not f.name.endswith(".pyc") and f.name != ".DS_Store":
+                _symlink(f, sub_dst / f.name, "code")
+                skill_installed += 1
+
+    # 1c-quater. Migration: remove orphaned flat copies of scripts that moved
+    # into subdirs (from pre-restructure installs). Idempotent no-op on fresh
+    # installs; prevents the old flat copy shadowing the new subdir version.
+    for name in _MOVED_SCRIPTS:
+        flat_dst = SKILL_DST_DIR / name
+        if flat_dst.is_symlink() or flat_dst.is_file():
+            flat_dst.unlink()
+            print(f"  [clean]  Removed moved-script (was flat): {name}")
+
     # 1d. Clean up legacy veriflow_dsl/ and anchors/ from older installs.
     # These directories were part of the v2 DSL architecture that has been
     # retired; if they exist from a previous install they must go.
@@ -312,33 +380,27 @@ def main():
         else:
             verify_errors.append(f"  [FAIL] templates/{tname} missing at {tfile}")
 
-    # 3c. Check state.py is present
-    state_dst = SKILL_DST_DIR / "state.py"
-    if state_dst.exists():
-        print("  [OK]   state.py present")
-    else:
-        verify_errors.append(f"  [FAIL] state.py missing at {state_dst}")
+    # 3c. Check critical scripts are present in their subdirs (post-restructure)
+    critical_scripts = [
+        ("core/state.py", "state.py"),
+        ("analysis/vcd2table.py", "vcd2table.py"),
+        ("runners/cocotb_runner.py", "cocotb_runner.py"),
+        ("runners/iverilog_runner.py", "iverilog_runner.py"),
+    ]
+    for rel, label in critical_scripts:
+        script_dst = SKILL_DST_DIR / rel
+        if script_dst.exists():
+            print(f"  [OK]   {rel} present")
+        else:
+            verify_errors.append(f"  [FAIL] {label} missing at {script_dst}")
 
-    # 3d. Check vcd2table.py is present
-    vcd2table_dst = SKILL_DST_DIR / "vcd2table.py"
-    if vcd2table_dst.exists():
-        print("  [OK]   vcd2table.py present")
-    else:
-        verify_errors.append(f"  [FAIL] vcd2table.py missing at {vcd2table_dst}")
-
-    # 3e. Check cocotb_runner.py is present
-    cocotb_runner_dst = SKILL_DST_DIR / "cocotb_runner.py"
-    if cocotb_runner_dst.exists():
-        print("  [OK]   cocotb_runner.py present")
-    else:
-        verify_errors.append(f"  [FAIL] cocotb_runner.py missing at {cocotb_runner_dst}")
-
-    # 3f. Check iverilog_runner.py is present
-    iverilog_runner_dst = SKILL_DST_DIR / "iverilog_runner.py"
-    if iverilog_runner_dst.exists():
-        print("  [OK]   iverilog_runner.py present")
-    else:
-        verify_errors.append(f"  [FAIL] iverilog_runner.py missing at {iverilog_runner_dst}")
+    # 3d. Check every code subdir was deployed
+    for sub in CODE_SUBDIRS:
+        sub_dst = SKILL_DST_DIR / sub
+        if sub_dst.is_dir() and any(sub_dst.iterdir()):
+            print(f"  [OK]   {sub}/ deployed")
+        else:
+            verify_errors.append(f"  [FAIL] code subdir {sub}/ not deployed at {sub_dst}")
 
     if verify_errors:
         print("\n[verify] Issues found:")

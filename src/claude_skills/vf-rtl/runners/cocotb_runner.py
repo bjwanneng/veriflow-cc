@@ -28,11 +28,22 @@ import json
 import os
 import sys
 import traceback
+import contextlib
 from pathlib import Path
 from typing import Optional
 
-from rtl_utils import collect_rtl_sources
-import contextlib
+# cocotb_runner is subprocessed by candidate_selector without an inherited
+# PYTHONPATH, so make cross-subdir imports (rtl_utils lives in core/) resolve
+# on direct invocation. No-op when the dirs are already on sys.path.
+_SKILL_ROOT = Path(__file__).resolve().parent
+while not (_SKILL_ROOT / "SKILL.md").exists() and _SKILL_ROOT.parent != _SKILL_ROOT:
+    _SKILL_ROOT = _SKILL_ROOT.parent
+for _d in [*_SKILL_ROOT.iterdir(), _SKILL_ROOT]:
+    if _d.is_dir() and _d.name not in {"templates", "references", "docs", "__pycache__"} \
+            and str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
+
+from rtl_utils import collect_rtl_sources  # noqa: E402
 
 
 def _find_docs_dir(tb_dir: Path) -> Path | None:

@@ -177,7 +177,7 @@ def test_rollback_clears_summaries():
 def test_cli_rejects_invalid_stage():
     """CLI should reject unknown stage names."""
     result = subprocess.run(
-        [sys.executable, str(_SKILLS_DIR / "state.py"), "/tmp/test", "invalid_stage"],
+        [sys.executable, str(_SKILLS_DIR / "core" / "state.py"), "/tmp/test", "invalid_stage"],
         capture_output=True, text=True,
     )
     assert result.returncode != 0
@@ -188,7 +188,7 @@ def test_cli_accepts_valid_stage():
     """CLI should accept spec_golden with --start."""
     with tempfile.TemporaryDirectory() as tmp:
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "state.py"), tmp, "spec_golden", "--start"],
+            [sys.executable, str(_SKILLS_DIR / "core" / "state.py"), tmp, "spec_golden", "--start"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -228,7 +228,7 @@ def test_cli_blocks_prereq_violation():
     with tempfile.TemporaryDirectory() as tmp:
         # Try to mark verify_fix without codegen — should be blocked
         result = subprocess.run(
-            [sys.executable, str(_SKILLS_DIR / "state.py"), tmp, "verify_fix"],
+            [sys.executable, str(_SKILLS_DIR / "core" / "state.py"), tmp, "verify_fix"],
             capture_output=True, text=True,
         )
         assert result.returncode != 0

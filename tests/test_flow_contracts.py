@@ -27,7 +27,7 @@ def test_spec_template_has_explicit_timing_contract_fields():
 
 
 def test_iverilog_runner_uses_verilog_2005_mode():
-    content = _read(_SKILL_DIR / "iverilog_runner.py")
+    content = _read(_SKILL_DIR / "runners" / "iverilog_runner.py")
 
     assert '"-g2005"' in content
     assert '"-g2012"' not in content

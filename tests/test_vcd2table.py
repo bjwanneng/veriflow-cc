@@ -97,7 +97,7 @@ def test_vcd2table_accepts_vcd_alias():
         result = subprocess.run(
             [
                 sys.executable,
-                str(_SKILLS_DIR / "vcd2table.py"),
+                str(_SKILLS_DIR / "analysis" / "vcd2table.py"),
                 "--vcd",
                 str(vcd),
                 "--signals",

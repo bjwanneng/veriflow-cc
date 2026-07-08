@@ -25,7 +25,7 @@ All non-trivial changes must follow this cycle:
 ### Test location
 
 - Tests go in `tests/` at the project root.
-- One test file per source file: `tests/test_state.py` for `state.py`, etc.
+- One test file per source file: `tests/test_state.py` for `core/state.py`, etc.
 - Use only `assert` and `subprocess` — no pytest dependency required, but pytest is fine if available.
 
 ### What to test
@@ -37,7 +37,8 @@ All non-trivial changes must follow this cycle:
 
 ## Architecture Notes
 
-- `state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER = ["spec_golden", "codegen", "verify_fix", "lint_synth"]` and `STAGE_PREREQUISITES` enforce strict execution order.
+- `core/state.py` — Pipeline state machine with JSON persistence. `STAGE_ORDER = ["spec_golden", "codegen", "verify_fix", "lint_synth"]` and `STAGE_PREREQUISITES` enforce strict execution order.
+- `src/claude_skills/vf-rtl/` layout (mirrored under `~/.claude/skills/vf-rtl/`): code lives in subdirs `core/` (state.py, rtl_utils.py, init.py), `runners/`, `analysis/`, `verify/`, `kb/`; `templates/` and `references/` are data dirs. Scripts find the skill root by walking up to `SKILL.md` and put every subdir on `sys.path`, so bare imports resolve both under pytest and when subprocessed without PYTHONPATH. `install.py` deploys subdirs recursively; `core/init.py` exports them all on `PYTHONPATH` via `eda_env.sh`.
 - `src/claude_skills/vf-rtl/SKILL.md` — Pipeline orchestrator. Contains Step 0 (init + batch clarification), 4-stage dispatch, and Error Recovery. Installed to `~/.claude/skills/vf-rtl/`. Invoked via `/vf-rtl <project_dir>`.
 - `src/claude_skills/vf-rtl/templates/` — Template files loaded on demand by subagents: spec_template.json, golden_model_template.py, cocotb_template.py, tb_integration_template.v.
 - `src/claude_skills/vf-rtl/coding_style.md` — Verilog-2005 coding rules. Used by vf-coder sub-agent.
@@ -47,7 +48,7 @@ All non-trivial changes must follow this cycle:
 - `src/claude_agents/vf-rtl/vf-linter.md` — Sub-agent for lint (Stage 4: lint_synth, parallel).
 - `src/claude_agents/vf-rtl/vf-synthesizer.md` — Sub-agent for synthesis (Stage 4: lint_synth, parallel).
   - **CRITICAL**: Agent `tools` field MUST be comma-separated capitalized names: `tools: Read, Write, Glob, Grep, Bash`. YAML list syntax causes silent tool permission failure (see GitHub #12392).
-- `install.py` — Installs 1 skill (SKILL.md + state.py + coding_style.md + templates) + 5 agents to `~/.claude/`. Reads from `src/`.
+- `install.py` — Installs 1 skill (SKILL.md + coding_style.md + templates + code subdirs (core/runners/analysis/verify/kb)) + 5 agents to `~/.claude/`. Reads from `src/`.
 - **Multi-file input**: Projects accept `requirement.md` (required), `constraints.md` (optional), `design_intent.md` (optional), `context/*.md` (optional). Missing optional files trigger targeted clarification questions in Step 0b.
 - Stage 1 (spec_golden) produces: spec.json (interface-only) + golden_model.py (algorithm + test vectors). golden_model.py replaces behavior_spec.md and micro_arch.md.
 - spec.json contains: ports, parameters, module connectivity, constraints (timing/area/power/io/verification), and design_intent.

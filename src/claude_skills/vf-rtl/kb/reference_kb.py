@@ -17,7 +17,12 @@ import sys
 from pathlib import Path
 
 
-_REFERENCES_DIR = Path(__file__).parent / "references"
+# references/ lives at the skill root (a sibling of this file's kb/ subdir),
+# so walk up to the dir holding SKILL.md. Same in source and deployed layout.
+_SKILL_ROOT = Path(__file__).resolve().parent
+while not (_SKILL_ROOT / "SKILL.md").exists() and _SKILL_ROOT.parent != _SKILL_ROOT:
+    _SKILL_ROOT = _SKILL_ROOT.parent
+_REFERENCES_DIR = _SKILL_ROOT / "references"
 
 # classify_module() type -> reference filename (stem).
 _TYPE_FILE = {

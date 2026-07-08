@@ -27,7 +27,7 @@ def _read_skill():
 
 
 def _read_vcd2table():
-    return (_SKILLS_DIR / "vcd2table.py").read_text(encoding="utf-8")
+    return (_SKILLS_DIR / "analysis" / "vcd2table.py").read_text(encoding="utf-8")
 
 
 # ── Golden model template ────────────────────────────────────────────────

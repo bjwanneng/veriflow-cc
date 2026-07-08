@@ -25,11 +25,17 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Ensure same-directory siblings (rtl_utils) are importable when this script
-# is invoked directly (e.g. `python timing_diagnostic.py ...`).
-sys.path.insert(0, str(Path(__file__).parent))
+# rtl_utils lives in core/ (a sibling subdir); make cross-subdir imports
+# resolve when this script is invoked directly (e.g. `python timing_diagnostic.py`).
+_SKILL_ROOT = Path(__file__).resolve().parent
+while not (_SKILL_ROOT / "SKILL.md").exists() and _SKILL_ROOT.parent != _SKILL_ROOT:
+    _SKILL_ROOT = _SKILL_ROOT.parent
+for _d in [*_SKILL_ROOT.iterdir(), _SKILL_ROOT]:
+    if _d.is_dir() and _d.name not in {"templates", "references", "docs", "__pycache__"} \
+            and str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
 
-from rtl_utils import DIVERGENCE_SEARCH_WINDOW
+from rtl_utils import DIVERGENCE_SEARCH_WINDOW  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

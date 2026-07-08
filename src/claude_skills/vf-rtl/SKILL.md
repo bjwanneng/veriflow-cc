@@ -37,7 +37,7 @@ Run the initialization script:
 
 ```bash
 PY_INIT="${PYTHON_EXE:-python}"
-cd "$PROJECT_DIR" && "$PY_INIT" "${CLAUDE_SKILL_DIR}/init.py" "$PROJECT_DIR"
+cd "$PROJECT_DIR" && "$PY_INIT" "${CLAUDE_SKILL_DIR}/core/init.py" "$PROJECT_DIR"
 [ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
 ```
 
@@ -54,14 +54,14 @@ cd "$PROJECT_DIR"
 # For spec_golden: check if both outputs exist and marker is present
 if [ -f ".veriflow/done_spec_golden" ] && [ -f "workspace/docs/spec.json" ] && [ -f "workspace/docs/golden_model.py" ]; then
     echo "[RECOVERY] spec_golden outputs exist — running hook to mark complete"
-    python3 "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" \
+    python3 "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "spec_golden" \
         --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py"
 fi
 
 # For codegen: check if ALL module .v files and TB files exist
 if ls .veriflow/done_codegen_* >/dev/null 2>&1; then
     echo "[RECOVERY] codegen completion markers found — verifying outputs"
-    python3 "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" \
+    python3 "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "codegen" \
         --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" \
         --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" \
         --journal-notes="Recovered from interrupted codegen via completion markers"
@@ -162,14 +162,14 @@ Every stage MUST execute these 3 steps in order:
 
 **Pre-stage:**
 ```bash
-[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "<STAGE>" --start
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "<STAGE>" --start
 ```
 
 **Execute:** dispatch agents (Stages 1/2/4) or run inline (Stage 3)
 
 **Post-stage:**
 ```bash
-[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "<STAGE>" --hook="<HOOK_CMD>" --journal-outputs="<FILES>" --journal-notes="<NOTES>"
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "<STAGE>" --hook="<HOOK_CMD>" --journal-outputs="<FILES>" --journal-notes="<NOTES>"
 ```
 Then: `TaskUpdate` mark the stage task as completed.
 
@@ -235,13 +235,13 @@ cd "$PROJECT_DIR"
 if [ -f workspace/docs/golden_model.py ]; then
     # Redirect to the log (portable sh — no tee/PIPESTATUS); the file stays on
     # disk for the orchestrator to read, and $? is the runner's own exit code.
-    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/runners/iverilog_runner.py" \
         --golden-check workspace/docs/golden_model.py > logs/golden_selfcheck.log 2>&1
     GOLDEN_RC=$?
     cat logs/golden_selfcheck.log  # echo to console for visibility
     if [ "$GOLDEN_RC" -ne 0 ]; then
         echo "[GOLDEN] Self-check FAILED — fix golden_model.py before proceeding."
-        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --fail
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "spec_golden" --fail
         echo "[GOLDEN] Stage 1 marked failed; Stage 2 will not run. Main session: fix golden_model.py and re-run Stage 1."
         exit 1
     fi
@@ -250,14 +250,14 @@ fi
 
 **Timing contract check** (pre-verification, before codegen):
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/timing_contract_checker.py" \
     --spec workspace/docs/spec.json \
     --golden workspace/docs/golden_model.py \
     --output logs/timing_check.json
 ```
 If this reports errors, **auto-fix first** — the checker can correct most common timing contract mistakes (registered→combinational delays, missing handshake fields, latency mismatches):
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_contract_checker.py" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/timing_contract_checker.py" \
     --fix \
     --spec workspace/docs/spec.json \
     --golden workspace/docs/golden_model.py \
@@ -299,7 +299,7 @@ Do NOT proceed to Stage 2 with shortcut/delay paths that ignore fill latency.
 
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior"
 ```
 TaskUpdate complete.
 
@@ -334,7 +334,7 @@ By default **K=3 candidates per module** are generated and the best is selected 
   - `REFERENCES` (optional): type-matched reference Verilog from the reference
     KB. Build it before dispatching vf-coder:
     ```bash
-    REFS_JSON=$($PYTHON_EXE "${CLAUDE_SKILL_DIR}/reference_kb.py" \
+    REFS_JSON=$($PYTHON_EXE "${CLAUDE_SKILL_DIR}/kb/reference_kb.py" \
         --spec workspace/docs/spec.json --module "$MODULE_NAME" 2>/dev/null || echo "")
     ```
     Parse `references[].code` and include as structural idioms (not to copy).
@@ -381,7 +381,7 @@ print(s.get('constraints',{}).get('verification',{}).get('candidate_count', 3))
 ")
 if [ "${CAND_K:-3}" -gt 1 ] && ls workspace/rtl/.candidates/*_cand*.v >/dev/null 2>&1; then
     for M in $(ls workspace/rtl/.candidates/ 2>/dev/null | sed -E 's/_cand[0-9]+\.v//' | sort -u); do
-        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/candidate_selector.py" \
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/verify/candidate_selector.py" \
             --module "$M" \
             --candidates-dir workspace/rtl/.candidates \
             --tb-dir workspace/tb \
@@ -393,7 +393,7 @@ fi
 If no candidate passes, the fewest-fails one is kept so Stage 3 can still try to fix it.
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
 ```
 TaskUpdate complete.
 
@@ -412,7 +412,7 @@ TaskUpdate complete.
 
 Pre-stage:
 ```bash
-[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --start
+[ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh" && $PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "verify_fix" --start
 ```
 
 ### Golden Model Self-Check (BEFORE simulation)
@@ -426,7 +426,7 @@ cd "$PROJECT_DIR"
 if [ -f workspace/docs/golden_model.py ]; then
     # Redirect to the log (portable sh — no tee/PIPESTATUS); $? is the runner's
     # own exit code, and the file stays on disk for the orchestrator to read.
-    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/runners/iverilog_runner.py" \
         --golden-check workspace/docs/golden_model.py > logs/golden_selfcheck.log 2>&1
     GOLDEN_RC=$?
     cat logs/golden_selfcheck.log  # echo to console for visibility
@@ -436,7 +436,7 @@ if [ -f workspace/docs/golden_model.py ]; then
         # Do NOT consume retry budget — this is a golden model issue.
         # Mark stage failed AND abort so the main session is forced to fix
         # golden_model.py before any RTL debugging.
-        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --fail
+        $PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "verify_fix" --fail
         echo "[GOLDEN] verify_fix marked failed. Main session: fix golden_model.py, then re-run /vf-rtl."
         exit 1
     fi
@@ -459,7 +459,7 @@ import json
 for m in json.load(open('workspace/docs/spec.json')).get('modules', []):
     if m.get('module_type') == 'top': print(m['module_name']); break
 ")
-    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/cocotb_runner.py" \
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/runners/cocotb_runner.py" \
         --rtl-dir workspace/rtl \
         --tb-dir workspace/tb \
         --module $TOP_MODULE \
@@ -518,7 +518,7 @@ for m in json.load(open('workspace/docs/spec.json')).get('modules', []):
     if m.get('module_type') == 'top': print(m['module_name']); break
 ")
 VERILOG_TB=$(ls workspace/tb/tb_*.v 2>/dev/null | head -1)
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/runners/iverilog_runner.py" \
     --module $TOP_MODULE --rtl-dir workspace/rtl --tb-file "$VERILOG_TB" \
     --build-dir workspace/sim --verbose \
     --golden-model workspace/docs/golden_model.py \
@@ -528,7 +528,7 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/iverilog_runner.py" \
 ### If PASS
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q 'ALL TESTS PASSED' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q 'ALL TESTS PASSED' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
 ```
 
 ### Coverage check (soft gate — warn but don't fail in Phase 1)
@@ -581,7 +581,7 @@ s = json.load(open('workspace/docs/spec.json'))
 print(s.get('constraints',{}).get('verification',{}).get('min_functional_coverage', 0.85))
 ")
 if [ -n "$COV_FILE" ]; then
-    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/coverage_analyzer.py" \
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/coverage_analyzer.py" \
         --coverage "$COV_FILE" --spec workspace/docs/spec.json --module "$TOP_MODULE" \
         > logs/functional_coverage.json
     FRATIO=$($PYTHON_EXE -c "import json;print(json.load(open('logs/functional_coverage.json'))['ratio'])")
@@ -604,7 +604,7 @@ TaskUpdate complete. Go to Stage 4.
 ```bash
 [ -f "$PROJECT_DIR/.veriflow/eda_env.sh" ] && source "$PROJECT_DIR/.veriflow/eda_env.sh"
 LOG_FILE=$(test -f logs/cocotb.log && echo logs/cocotb.log || echo logs/sim.log)
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/timing_diagnostic.py" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/timing_diagnostic.py" \
     --log "$LOG_FILE" \
     --golden workspace/docs/golden_model.py \
     --spec workspace/docs/spec.json \
@@ -635,7 +635,7 @@ try:
 except Exception:
     print(16)
 ")
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/expected_trace_gen.py" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/expected_trace_gen.py" \
     --golden workspace/docs/golden_model.py \
     --cycles "$EXPECTED_TRACE_CYCLES" \
     --skip-cycles 1 \
@@ -683,7 +683,7 @@ if p.exists():
 else:
     print('no-diagnostic')
 ")
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "verify_fix" \
     --fail --error-sig="$SIG"
 ```
 
@@ -766,12 +766,12 @@ ask the user rather than rolling back with a vague description.
    retry slot. If the same divergence signature has fired 2+ times, fixing
    RTL is not converging — rollback to codegen instead of burning more attempts:
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "verify_fix" \
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "verify_fix" \
     --check-loop="$SIG"
 LOOP_STATUS=$?
 if [ "$LOOP_STATUS" -eq 2 ]; then
     echo "[STAGE3] Detected fix-loop on '$SIG' — rolling back to codegen."
-    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" --reset codegen
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" --reset codegen
     # Main session: BEFORE re-dispatching Stage 2, read the RTL at the
     # divergence point, diagnose root cause, write concrete FIX steps into
     # logs/prev_failure_summary.md. Then pass it as PREV_FAILURE — the agent
@@ -804,7 +804,7 @@ If lint failed → fix syntax errors in main session, re-run lint only.
 If synth failed → check report, fix if needed.
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
 ```
 
 ### Formal Equivalence Check (post-synthesis)
@@ -824,7 +824,7 @@ for m in json.load(open('workspace/docs/spec.json')).get('modules', []):
 SYNTH_V="workspace/synth/${TOP_MODULE}_synth.v"
 EQUIV="SKIP"
 if [ -f "$SYNTH_V" ] && command -v yosys &>/dev/null; then
-    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/yosys_equiv.py" \
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/runners/yosys_equiv.py" \
         --ref "workspace/rtl/${TOP_MODULE}.v" \
         --impl "$SYNTH_V" \
         --top "$TOP_MODULE" \
@@ -850,7 +850,7 @@ with open('logs/yosys_equiv_synth.json') as f:
         print(f'  {sig}')
 "
         # Mark stage as failed and abort pipeline
-        "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" "lint_synth" \
+        "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "lint_synth" \
             --fail --error-sig="equiv_check_failed"
         exit 1
     fi
@@ -867,7 +867,7 @@ surfaced for review, not a hard gate. Generates the property file even if sby
 is unavailable (useful artifact). Skips cleanly when sby is absent.
 ```bash
 if command -v sby &>/dev/null; then
-    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/formal_prove.py" \
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/verify/formal_prove.py" \
         --spec workspace/docs/spec.json \
         --module "$TOP_MODULE" \
         --rtl-dir workspace/rtl \
@@ -885,7 +885,7 @@ print(d.get('status') or 'SKIP')
     fi
 else
     # Still generate the property file as an artifact (no prove).
-    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/formal_prove.py" \
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/verify/formal_prove.py" \
         --spec workspace/docs/spec.json --module "$TOP_MODULE" \
         --rtl-dir workspace/rtl \
         --output "workspace/docs/${TOP_MODULE}_formal.v" 2>/dev/null || true
@@ -900,15 +900,15 @@ knowledge base for future pattern learning:
 
 ```bash
 # Record project outcome if pipeline completed successfully
-if "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/state.py" "$PROJECT_DIR" lint_synth --check-loop=dummy 2>/dev/null; then
-    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/knowledge_base.py" \
+if "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" lint_synth --check-loop=dummy 2>/dev/null; then
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/kb/knowledge_base.py" \
         --record-fix logs/timing_diagnostic.json \
         --project "$(basename $PROJECT_DIR)" \
         --fix-attempts "$(cat .veriflow/pipeline_state.json | python -c 'import sys,json;print(sum(json.load(sys.stdin).get(\"retry_count\",{}).values()))')" 2>/dev/null || true
 
     # Self-improvement: append structured per-module observations (runs.jsonl)
     # for offline mining. Best-effort, append-only, never blocks the pipeline.
-    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/self_improve.py" record --project-dir "$PROJECT_DIR" \
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/kb/self_improve.py" record --project-dir "$PROJECT_DIR" \
         >> logs/self_improve.log 2>&1 || true
 fi
 ```
@@ -921,7 +921,7 @@ If the user invoked `/vf-rtl` with `--benchmark`, generate an evaluation report:
 
 ```bash
 if [ -n "$RUN_BENCHMARK" ]; then
-    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/benchmark_runner.py" \
+    "$PYTHON_EXE" "${CLAUDE_SKILL_DIR}/runners/benchmark_runner.py" \
         --project "$PROJECT_DIR" \
         --output "logs/benchmark_report.json" \
         --markdown

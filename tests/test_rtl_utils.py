@@ -70,7 +70,7 @@ def test_collect_rtl_sources_empty_dir_exits(tmp_path):
     rtl_dir.mkdir()
     result = subprocess.run(
         [sys.executable, "-c",
-         f"import sys; sys.path.insert(0, '{_SKILLS_DIR}'); "
+         f"import sys; sys.path.insert(0, '{_SKILLS_DIR}/core'); "
          f"from rtl_utils import collect_rtl_sources; "
          f"from pathlib import Path; "
          f"collect_rtl_sources(Path('{rtl_dir}'))"],

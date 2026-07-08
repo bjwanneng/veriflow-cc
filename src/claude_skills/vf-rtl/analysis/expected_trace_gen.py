@@ -23,6 +23,17 @@ import argparse
 import sys
 from pathlib import Path
 
+# Invoked directly by SKILL.md Stage 3; imports across subdirs (rtl_utils in
+# core/, vcd2table in this analysis/ dir). Put the skill root + every subdir on
+# sys.path so bare imports resolve on direct invocation.
+_SKILL_ROOT = Path(__file__).resolve().parent
+while not (_SKILL_ROOT / "SKILL.md").exists() and _SKILL_ROOT.parent != _SKILL_ROOT:
+    _SKILL_ROOT = _SKILL_ROOT.parent
+for _d in [*_SKILL_ROOT.iterdir(), _SKILL_ROOT]:
+    if _d.is_dir() and _d.name not in {"templates", "references", "docs", "__pycache__"} \
+            and str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
+
 
 def _load_golden(path: Path):
     """Load golden model module via rtl_utils canonical loader."""
