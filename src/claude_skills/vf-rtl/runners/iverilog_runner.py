@@ -75,8 +75,8 @@ def golden_check(golden_path: str, verbose: bool = False) -> dict:
         return {"error": f"Golden model execution error: {e}", "passed": False}
 
     # Check for [PASS] and [FAIL] markers
-    pass_lines = [l for l in output.splitlines() if "[PASS]" in l]
-    fail_lines = [l for l in output.splitlines() if "[FAIL]" in l]
+    pass_lines = [line for line in output.splitlines() if "[PASS]" in line]
+    fail_lines = [line for line in output.splitlines() if "[FAIL]" in line]
 
     if verbose:
         print(f"[golden_check] Output:\n{output[:3000]}", file=sys.stderr)

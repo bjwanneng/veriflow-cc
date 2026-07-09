@@ -47,7 +47,8 @@ def classify_module(mod: dict) -> str:
     misread as a generic handshake etc.
     """
     names = _port_names(mod)
-    has = lambda *keys: any(k in names for k in keys)
+    def has(*keys):
+        return any(k in names for k in keys)
     params = {(p.get("name") or "").lower() for p in (mod.get("parameters") or [])}
 
     # FIFO: write/read enables + full/empty flags (optionally a DEPTH param).

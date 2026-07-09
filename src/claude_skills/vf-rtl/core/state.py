@@ -407,14 +407,14 @@ class PipelineState:
             output = result.stdout + result.stderr
 
             # Check for [FAIL] markers
-            fail_lines = [l for l in output.splitlines() if "[FAIL]" in l]
+            fail_lines = [line for line in output.splitlines() if "[FAIL]" in line]
             if fail_lines:
                 for fl in fail_lines[:5]:
                     issues.append(f"golden_model.py self-test failed: {fl.strip()}")
                 return (False, issues)
 
             # If no PASS markers and non-zero exit, something is wrong
-            pass_lines = [l for l in output.splitlines() if "[PASS]" in l]
+            pass_lines = [line for line in output.splitlines() if "[PASS]" in line]
             if not pass_lines and result.returncode != 0:
                 issues.append(
                     f"golden_model.py exited with code {result.returncode} "
