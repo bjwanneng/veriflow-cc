@@ -67,7 +67,7 @@ atexit.register(_dump_coverage)
 CLK_PERIOD_NS = None  # codegen: MUST set FULL period from spec.timing.target_frequency_mhz
                       # (period_ns = 1000 / target_frequency_mhz). cocotb's Clock()
                       # takes the FULL period, NOT half-period.
-RESET_CYCLE_SKIP = 1  # Golden cycle 0 is the reset state; comparison starts at cycle 1
+RESET_CYCLE_SKIP = 1  # codegen: set from spec.timing_convention.reset_cycle_skip (default 1; cycle 0 is reset)
 TIMEOUT_CYCLES = 500
 FAIL_COUNT = 0  # Accumulates across ALL tests; do NOT reset inside individual tests
 _STIMULUS_DELIVERED = False  # Set True by drive_inputs(); checked by comparison tests
@@ -126,6 +126,23 @@ if DRIVE_PHASE_CYCLES == 0:
                     DRIVE_PHASE_CYCLES = max(_delays)
     except Exception:
         pass
+
+# ─── RESET_CYCLE_SKIP resolution (begin) ───
+# Mirror of DRIVE_PHASE_CYCLES: if codegen didn't override (still default 1),
+# read spec.timing_convention.reset_cycle_skip so both alignment knobs are
+# spec-driven. 0 = compare from the reset cycle, 1 = skip reset cycle (default).
+if RESET_CYCLE_SKIP == 1:
+    try:
+        _rcs_spec_path = Path(__file__).parent.parent / "docs" / "spec.json"
+        if _rcs_spec_path.exists():
+            import json as _rcs_json
+            _rcs_spec = _rcs_json.loads(_rcs_spec_path.read_text())
+            _rcs = _rcs_spec.get("timing_convention", {}).get("reset_cycle_skip")
+            if isinstance(_rcs, int) and _rcs >= 0:
+                RESET_CYCLE_SKIP = _rcs
+    except Exception:
+        pass
+# ─── RESET_CYCLE_SKIP resolution (end) ───
 
 
 # ─── Divergence collection ──────────────────────────────────────────────

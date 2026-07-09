@@ -138,15 +138,43 @@ class PipelineState:
         # Auto-fix: if start is an ISO string from older data, overwrite with float
         self.save()
 
+    def _previous_end(self, stage: str) -> Optional[float]:
+        """Most recent `end` among stages before `stage` in STAGE_ORDER.
+
+        Used to infer a stage's start when `--start` was omitted.
+        """
+        try:
+            idx = STAGE_ORDER.index(stage)
+        except ValueError:
+            return None
+        for prev in reversed(STAGE_ORDER[:idx]):
+            end = self.stage_timings.get(prev, {}).get("end")
+            if end and isinstance(end, (int, float)):
+                return end
+        return None
+
     def _record_end(self, stage: str):
-        """Record the end time and compute duration for a stage."""
+        """Record the end time and compute duration for a stage.
+
+        If `--start` was omitted (no `start` recorded), fall back to the previous
+        stage's end time so a duration is still captured. Such durations carry
+        `duration_inferred: true` so consumers (benchmark/report) can tell them
+        apart from directly-measured ones.
+        """
         now = time.time()
         if stage not in self.stage_timings:
             self.stage_timings[stage] = {}
         self.stage_timings[stage]["end"] = now
         start = self.stage_timings[stage].get("start")
+        inferred = False
+        if not (start and isinstance(start, (int, float))):
+            prev_end = self._previous_end(stage)
+            if prev_end:
+                start, inferred = prev_end, True
         if start and isinstance(start, (int, float)):
             self.stage_timings[stage]["duration_s"] = round(now - start, 1)
+            if inferred:
+                self.stage_timings[stage]["duration_inferred"] = True
 
     def inc_retry(self, stage: str):
         self.retry_count[stage] = self.retry_count.get(stage, 0) + 1
@@ -507,6 +535,94 @@ def _get_arg(argv: list, flag: str) -> str | None:
     return None
 
 
+def evaluate_hook(spec, project_dir: str) -> tuple[bool, str]:
+    """Evaluate a structured hook predicate. Pure — no subprocess.
+
+    Cross-platform replacement for shell-based hooks (test/ls/grep). `spec`
+    is a JSON string (starts with '{') or a parsed dict. Relative paths are
+    resolved against `project_dir`.
+
+    Predicates:
+      {"exists": "relpath"}                          file/dir exists
+      {"glob": "pattern", "min": N}                  N glob matches (min default 1)
+      {"contains": "relpath", "text": str, "case": bool}
+                                                     file contains text (case default True)
+    Combinators (short-circuit):
+      {"all": [...]}                                 every child passes
+      {"any": [...]}                                 at least one child passes
+
+    Returns (passed, detail) where detail is a human string for the journal /
+    [HOOK] diagnostics. Never raises on bad input — returns (False, reason).
+    """
+    import glob as _glob
+
+    if isinstance(spec, str):
+        try:
+            parsed = json.loads(spec)
+        except json.JSONDecodeError as e:
+            return (False, f"invalid JSON hook: {e.msg}")
+    else:
+        parsed = spec
+
+    if not isinstance(parsed, dict):
+        return (False, f"hook must be a JSON object, got {type(parsed).__name__}")
+
+    base = Path(project_dir)
+
+    def one(node):
+        if not isinstance(node, dict):
+            return (False, f"predicate must be object, got {type(node).__name__}")
+
+        if "all" in node:
+            seq = node["all"]
+            if not isinstance(seq, list) or not seq:
+                return (False, "'all' needs a non-empty list")
+            for child in seq:
+                ok, detail = one(child)
+                if not ok:
+                    return (False, detail)      # short-circuit
+            return (True, "all passed")
+
+        if "any" in node:
+            seq = node["any"]
+            if not isinstance(seq, list) or not seq:
+                return (False, "'any' needs a non-empty list")
+            for child in seq:
+                ok, detail = one(child)
+                if ok:
+                    return (True, detail)       # short-circuit
+            return (False, "no predicate in 'any' passed")
+
+        if "exists" in node:
+            rel = node["exists"]
+            p = base / rel
+            return (p.exists(), f"exists: {rel}" if p.exists() else f"missing: {rel}")
+
+        if "glob" in node:
+            pattern = node["glob"]
+            minimum = node.get("min", 1)
+            matches = _glob.glob(str(base / pattern))
+            ok = len(matches) >= minimum
+            return (ok, f"glob {pattern}: {len(matches)} match(es), need {minimum}")
+
+        if "contains" in node:
+            rel = node["contains"]
+            text = node.get("text", "")
+            case = node.get("case", True)
+            p = base / rel
+            if not p.exists():
+                return (False, f"missing file: {rel}")
+            content = p.read_text(errors="ignore")
+            hay = content if case else content.lower()
+            needle = text if case else text.lower()
+            ok = needle in hay
+            return (ok, f"contains '{text}' in {rel}" if ok else f"text not found in {rel}")
+
+        return (False, f"unknown predicate: {', '.join(node.keys())}")
+
+    return one(parsed)
+
+
 def _append_journal(project_dir: str, stage: str, outputs: str = "", notes: str = "",
                     status: str = "completed"):
     """Append a stage journal entry to logs/stage_journal.md."""
@@ -613,24 +729,31 @@ if __name__ == "__main__":
         # Run hook if provided
         _hook_passed = True
         if _hook_cmd:
-            _hook_cmd_resolved = _hook_cmd.replace("$PROJECT_DIR", _project_dir)
-            try:
-                result = subprocess.run(
-                    _hook_cmd_resolved,
-                    shell=True,
-                    capture_output=True, text=True, cwd=_project_dir,
-                    env={**os.environ, "PROJECT_DIR": _project_dir},
-                )
-                if result.stdout.strip():
-                    print(result.stdout.strip())
-                if result.returncode != 0:
+            if _hook_cmd.lstrip().startswith("{"):
+                # Structured cross-platform predicate — no shell, no test/ls/grep.
+                _hook_passed, _hook_detail = evaluate_hook(_hook_cmd, _project_dir)
+                if not _hook_passed:
+                    print(f"[HOOK] FAIL — {_hook_detail}", file=sys.stderr)
+            else:
+                # Back-compat: run as a shell command (legacy `test`/`grep` hooks).
+                _hook_cmd_resolved = _hook_cmd.replace("$PROJECT_DIR", _project_dir)
+                try:
+                    result = subprocess.run(
+                        _hook_cmd_resolved,
+                        shell=True,
+                        capture_output=True, text=True, cwd=_project_dir,
+                        env={**os.environ, "PROJECT_DIR": _project_dir},
+                    )
+                    if result.stdout.strip():
+                        print(result.stdout.strip())
+                    if result.returncode != 0:
+                        _hook_passed = False
+                        print(f"[HOOK] FAIL (exit code {result.returncode})")
+                        if result.stderr.strip():
+                            print(result.stderr.strip(), file=sys.stderr)
+                except Exception as e:
                     _hook_passed = False
-                    print(f"[HOOK] FAIL (exit code {result.returncode})")
-                    if result.stderr.strip():
-                        print(result.stderr.strip(), file=sys.stderr)
-            except Exception as e:
-                _hook_passed = False
-                print(f"[HOOK] FAIL (exception: {e})", file=sys.stderr)
+                    print(f"[HOOK] FAIL (exception: {e})", file=sys.stderr)
 
         if _hook_passed:
             if _state.mark_complete(_stage, {"success": True, "summary": "Hook passed"}):

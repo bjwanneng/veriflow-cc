@@ -12,7 +12,9 @@ sys.path.insert(0, str(skill_dir))
 from benchmark_runner import BenchmarkRunner, ProjectResult, parse_realbench_jsonl
 
 
-def _make_project(tmp: Path, name: str, sim_pass: bool = True, stages: list[str] | None = None):
+def _make_project(tmp: Path, name: str, sim_pass: bool = True, stages: list[str] | None = None,
+                  timings: dict | None = None, start_time: float | None = None,
+                  last_updated: float | None = None):
     """Create a mock project directory with state and logs."""
     proj = tmp / name
     proj.mkdir(parents=True)
@@ -25,6 +27,12 @@ def _make_project(tmp: Path, name: str, sim_pass: bool = True, stages: list[str]
         "stages_completed": stages or ["spec_golden", "codegen", "verify_fix", "lint_synth"],
         "retry_count": {"verify_fix": 1},
     }
+    if timings is not None:
+        state["stage_timings"] = timings
+    if start_time is not None:
+        state["start_time"] = start_time
+    if last_updated is not None:
+        state["last_updated"] = last_updated
     (veriflow / "pipeline_state.json").write_text(json.dumps(state), encoding="utf-8")
 
     # logs
@@ -128,3 +136,117 @@ def test_to_markdown():
         assert "# VeriFlow Benchmark Report" in md
         assert "p1" in md
         assert "PASS" in md
+
+
+# ===========================================================================
+# WS5: timing fields, aggregate timing stats, generate_pipeline_report.
+# ===========================================================================
+
+_TIMINGS_FULL = {
+    "spec_golden": {"start": 100.0, "end": 300.0, "duration_s": 200.0},
+    "codegen": {"start": 300.0, "end": 500.0, "duration_s": 200.0, "duration_inferred": True},
+    "verify_fix": {"start": 500.0, "end": 560.0, "duration_s": 60.0},
+    "lint_synth": {"start": 560.0, "end": 600.0, "duration_s": 40.0},
+}
+
+
+def test_analyze_reads_stage_timings():
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "t", timings=_TIMINGS_FULL,
+                             start_time=100.0, last_updated=600.0)
+        r = BenchmarkRunner().analyze_project(proj)
+        assert set(r.stage_timings.keys()) == {"spec_golden", "codegen",
+                                               "verify_fix", "lint_synth"}
+        assert r.stage_timings["codegen"] == 200.0
+
+
+def test_analyze_total_duration_from_start_last_updated():
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "t", start_time=100.0, last_updated=600.0)
+        r = BenchmarkRunner().analyze_project(proj)
+        assert r.total_duration_s == 500.0
+
+
+def test_analyze_total_duration_fallback_sum():
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "t", timings=_TIMINGS_FULL)
+        r = BenchmarkRunner().analyze_project(proj)
+        assert r.total_duration_s == round(200 + 200 + 60 + 40, 1)
+
+
+def test_analyze_retries_per_stage():
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "t")
+        r = BenchmarkRunner().analyze_project(proj)
+        assert r.retries_per_stage.get("verify_fix") == 1
+        assert r.retry_count == 1
+
+
+def test_analyze_marks_inferred_durations():
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "t", timings=_TIMINGS_FULL,
+                             start_time=100.0, last_updated=600.0)
+        r = BenchmarkRunner().analyze_project(proj)
+        assert any("inferred" in n and "codegen" in n for n in r.notes)
+
+
+def test_aggregate_has_timing_stats():
+    with tempfile.TemporaryDirectory() as tmp:
+        p1 = _make_project(Path(tmp), "p1", timings=_TIMINGS_FULL,
+                           start_time=100.0, last_updated=600.0)
+        agg = BenchmarkRunner.aggregate([BenchmarkRunner().analyze_project(p1)])
+        assert "total_duration_s_sum" in agg
+        assert "avg_duration_s" in agg
+        assert "per_stage_avg" in agg
+        assert agg["per_stage_avg"].get("spec_golden") == 200.0
+
+
+def test_to_markdown_has_timing_section():
+    with tempfile.TemporaryDirectory() as tmp:
+        p1 = _make_project(Path(tmp), "p1", timings=_TIMINGS_FULL,
+                           start_time=100.0, last_updated=600.0)
+        agg = BenchmarkRunner.aggregate([BenchmarkRunner().analyze_project(p1)])
+        md = BenchmarkRunner.to_markdown(agg)
+        assert "## Timing" in md
+
+
+def test_generate_pipeline_report_basic():
+    from benchmark_runner import generate_pipeline_report
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "rep", timings=_TIMINGS_FULL,
+                             start_time=100.0, last_updated=600.0)
+        body = generate_pipeline_report(proj)
+        assert "Pipeline Report" in body
+        assert "PASS" in body
+        assert (proj / "pipeline_report.md").exists()
+
+
+def test_generate_pipeline_report_sim_fail():
+    from benchmark_runner import generate_pipeline_report
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "rep", sim_pass=False)
+        body = generate_pipeline_report(proj)
+        assert "FAIL" in body
+
+
+def test_generate_pipeline_report_missing_logs_safe():
+    from benchmark_runner import generate_pipeline_report
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp) / "empty"
+        proj.mkdir()
+        (proj / ".veriflow").mkdir()
+        (proj / ".veriflow" / "pipeline_state.json").write_text("{}", encoding="utf-8")
+        body = generate_pipeline_report(proj)  # must not raise
+        assert "Pipeline Report" in body
+
+
+def test_report_cli_flag():
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "cli")
+        r = subprocess.run(
+            [sys.executable, str(skill_dir / "runners" / "benchmark_runner.py"),
+             "--report", str(proj)],
+            capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        assert (proj / "pipeline_report.md").exists()

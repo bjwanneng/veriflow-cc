@@ -49,7 +49,8 @@
     "golden_model": "software_instantaneous",
     "rtl": "post_nba_registered",
     "golden_to_rtl_offset_cycles": 1,
-    "description": "Set this to max(pipeline_delay_cycles) across all module_connectivity timing_contract entries. pipeline_delay_cycles already counts the input sampling register, so do NOT add +1. cocotb's drive_inputs() holds inputs for this many cycles before starting the per-cycle compare loop. timing_contract_checker.py enforces offset == max(pipeline_delay_cycles)."
+    "reset_cycle_skip": 1,
+    "description": "Set this to max(pipeline_delay_cycles) across all module_connectivity timing_contract entries. pipeline_delay_cycles already counts the input sampling register, so do NOT add +1. cocotb's drive_inputs() holds inputs for this many cycles before starting the per-cycle compare loop. timing_contract_checker.py enforces offset == max(pipeline_delay_cycles). reset_cycle_skip: golden cycle index where post-reset comparison begins (0 = compare from the reset cycle, 1 = skip the reset cycle — the default, since cycle 0 holds reset state)."
   },
   "design_intent": {
     "architecture_style": "iterative",

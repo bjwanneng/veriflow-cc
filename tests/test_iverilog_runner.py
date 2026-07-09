@@ -87,6 +87,134 @@ def test_classify_timing_mismatch_is_type_b():
     assert "pipeline alignment" in result[0]["reasoning"]
 
 
+# =============================================================================
+# WS6: compile-cmd build (VCD/NODUMP), -Wall -tnull syntax gate, timing.
+# =============================================================================
+
+def test_build_compile_cmd_default_has_no_nodump():
+    from iverilog_runner import _build_compile_cmd
+    cmd = _build_compile_cmd("/fake/iverilog", "out.vvp", "tb",
+                             ["a.v", "b.v"], "tb.v", no_vcd=False)
+    assert "-DNODUMP" not in cmd
+    assert "-g2005" in cmd
+    assert cmd[-1] == "tb.v"
+
+
+def test_build_compile_cmd_no_vcd_adds_nodump():
+    from iverilog_runner import _build_compile_cmd
+    cmd = _build_compile_cmd("/fake/iverilog", "out.vvp", "tb",
+                             ["a.v"], "tb.v", no_vcd=True)
+    assert "-DNODUMP" in cmd
+
+
+def test_syntax_check_pass(monkeypatch):
+    import iverilog_runner as ivr
+    import types as _types
+    monkeypatch.setattr(ivr.subprocess, "run", lambda *a, **k: _types.SimpleNamespace(
+        stdout="", stderr="", returncode=0))
+    ok, snippet = ivr._syntax_check(["a.v"], "tb.v", "/fake/iverilog", {}, "/tmp")
+    assert ok is True
+    assert snippet == ""
+
+
+def test_syntax_check_fail_returns_snippet(monkeypatch):
+    import iverilog_runner as ivr
+    import types as _types
+    monkeypatch.setattr(ivr.subprocess, "run", lambda *a, **k: _types.SimpleNamespace(
+        stdout="", stderr="syntax error near line 5\n", returncode=1))
+    ok, snippet = ivr._syntax_check(["a.v"], "tb.v", "/fake/iverilog", {}, "/tmp")
+    assert ok is False
+    assert "syntax error" in snippet
+
+
+def test_syntax_check_exception_safe(monkeypatch):
+    import iverilog_runner as ivr
+
+    def boom(*a, **k):
+        raise OSError("iverilog vanished")
+    monkeypatch.setattr(ivr.subprocess, "run", boom)
+    ok, snippet = ivr._syntax_check(["a.v"], "tb.v", "/fake/iverilog", {}, "/tmp")
+    assert ok is False
+    assert snippet  # non-empty explanation
+
+
+def _wire_main(monkeypatch, tmp_path, spy_return=(True, "")):
+    """Stand up a fake environment so main() reaches the syntax gate."""
+    import iverilog_runner as ivr
+    import types as _types
+    rtl = tmp_path / "rtl"
+    rtl.mkdir()
+    (rtl / "top.v").write_text("module top; endmodule")
+    tb = tmp_path / "tb.v"
+    tb.write_text("module tb; endmodule")
+    build = tmp_path / "build"
+    build.mkdir()
+    monkeypatch.setattr(ivr, "find_iverilog", lambda: "/fake/iverilog")
+    monkeypatch.setattr(ivr, "find_vvp", lambda: "/fake/vvp")
+    monkeypatch.setattr(ivr, "collect_rtl_sources",
+                        lambda d: [str(p) for p in Path(d).glob("*.v")])
+    spy = {"n": 0}
+
+    def _spy(*a, **k):
+        spy["n"] += 1
+        return spy_return
+    monkeypatch.setattr(ivr, "_syntax_check", _spy)
+    # compile + sim both succeed; sim reports PASS
+    monkeypatch.setattr(ivr.subprocess, "run", lambda *a, **k: _types.SimpleNamespace(
+        stdout="ALL TESTS PASSED\n", stderr="", returncode=0))
+    return rtl, tb, build, spy
+
+
+def test_main_runs_syntax_gate_by_default(monkeypatch, tmp_path, capsys):
+    import iverilog_runner as ivr
+    rtl, tb, build, spy = _wire_main(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "iverilog_runner.py", "--rtl-dir", str(rtl), "--tb-file", str(tb),
+        "--module", "top", "--build-dir", str(build)])
+    try:
+        ivr.main()
+    except SystemExit:
+        pass
+    assert spy["n"] == 1
+
+
+def test_main_skips_syntax_gate_with_flag(monkeypatch, tmp_path, capsys):
+    import iverilog_runner as ivr
+    rtl, tb, build, spy = _wire_main(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "iverilog_runner.py", "--rtl-dir", str(rtl), "--tb-file", str(tb),
+        "--module", "top", "--build-dir", str(build), "--no-syntax-check"])
+    try:
+        ivr.main()
+    except SystemExit:
+        pass
+    assert spy["n"] == 0
+
+
+def test_tb_template_dumps_gated_by_nodump():
+    """The Verilog TB template gates $dumpvars behind `ifndef NODUMP so
+    iverilog_runner --no-vcd (-DNODUMP) suppresses waveform generation."""
+    src = (_SKILLS_DIR / "templates" / "tb_integration_template.v").read_text()
+    assert "`ifndef NODUMP" in src
+    assert src.index("`ifndef NODUMP") < src.index("$dumpvars") < src.index("`endif")
+
+
+def test_main_emits_timing_when_verbose(monkeypatch, tmp_path, capsys):
+    import iverilog_runner as ivr
+    rtl, tb, build, _ = _wire_main(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "iverilog_runner.py", "--rtl-dir", str(rtl), "--tb-file", str(tb),
+        "--module", "top", "--build-dir", str(build), "--verbose"])
+    try:
+        ivr.main()
+    except SystemExit:
+        pass
+    err = capsys.readouterr().err
+    assert "[TIMING] step=iverilog_compile" in err
+    assert "[TIMING] step=iverilog_sim" in err
+
+
+
 def test_classify_computation_error_is_type_a():
     """No golden match and no init issue -> computation."""
     failures = [{

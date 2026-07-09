@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import traceback
 import contextlib
 from pathlib import Path
@@ -406,6 +407,7 @@ def main():
         print(f"[cocotb_runner] Building {module_name}...", file=sys.stderr)
 
     try:
+        _t0 = time.perf_counter()
         runner.build(
             sources=rtl_sources,
             hdl_toplevel=module_name,
@@ -413,6 +415,9 @@ def main():
             build_args=build_args,
             waves=args.vcd,
         )
+        if args.verbose:
+            print(f"[TIMING] step=cocotb_build duration={time.perf_counter() - _t0:.2f}s",
+                  file=sys.stderr)
     except Exception as e:
         traceback.print_exc()
         print(json.dumps({
@@ -428,6 +433,7 @@ def main():
     results_xml_path = args.results_file or str(build_dir / "results.xml")
 
     try:
+        _t0 = time.perf_counter()
         runner.test(
             test_module=test_module,
             hdl_toplevel=module_name,
@@ -436,6 +442,9 @@ def main():
             results_xml=results_xml_path,
             waves=args.vcd,
         )
+        if args.verbose:
+            print(f"[TIMING] step=cocotb_test duration={time.perf_counter() - _t0:.2f}s",
+                  file=sys.stderr)
     except Exception as e:
         traceback.print_exc()
         # Simulation crashed before producing results

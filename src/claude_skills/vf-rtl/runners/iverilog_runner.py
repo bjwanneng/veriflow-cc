@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # iverilog_runner is subprocessed (via eda_env in prod, directly in some tests);
@@ -316,6 +317,42 @@ def _build_diff_summary(
     return "\n".join(lines)
 
 
+def _build_compile_cmd(iverilog_exe, output_vvp, tb_stem, rtl_sources, tb_file,
+                       no_vcd=False):
+    """Build the iverilog compile command.
+
+    -g2005 keeps Verilog-2005 compatibility; -DCOCOTB_SIM=0 marks the pure-Verilog
+    path. When no_vcd is set, -DNODUMP is passed so a testbench that gates
+    $dumpvars behind `ifndef NODUMP` skips waveform generation.
+    """
+    cmd = [iverilog_exe, "-g2005", "-o", output_vvp, "-s", tb_stem, "-DCOCOTB_SIM=0"]
+    if no_vcd:
+        cmd.append("-DNODUMP")
+    cmd.extend(rtl_sources)
+    cmd.append(str(tb_file))
+    return cmd
+
+
+def _syntax_check(rtl_sources, tb_file, iverilog_exe, sim_env, build_dir):
+    """Cheap syntax/wiring gate: iverilog -Wall -tnull (parse+elaborate, no vvp).
+
+    Surfaces syntax errors and common wiring issues (e.g. default_nettype/
+    forward-declaration problems) in seconds. Returns (ok, stderr_snippet).
+    Never raises — a failed invocation is reported as (False, reason).
+    """
+    cmd = [iverilog_exe, "-Wall", "-tnull", "-g2005", "-DCOCOTB_SIM=0"]
+    cmd.extend(rtl_sources)
+    cmd.append(str(tb_file))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           cwd=str(build_dir), env=sim_env)
+    except Exception as e:
+        return (False, f"syntax-check invocation failed: {e}")
+    if r.returncode == 0:
+        return (True, "")
+    return (False, (r.stderr or r.stdout)[:2000])
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Pure-Verilog simulation runner for VeriFlow-CC pipeline"
@@ -330,6 +367,8 @@ def main():
                         help="Build directory for compilation artifacts")
     parser.add_argument("--no-vcd", action="store_true",
                         help="Disable VCD waveform dump")
+    parser.add_argument("--no-syntax-check", action="store_true",
+                        help="Skip the iverilog -Wall -tnull syntax gate (default: run)")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed output")
     parser.add_argument("--save-raw-log",
@@ -414,26 +453,6 @@ def main():
         print(f"[iverilog_runner] Module    : {args.module}", file=sys.stderr)
         print(f"[iverilog_runner] Build dir : {build_dir}", file=sys.stderr)
 
-    # Compile with iverilog
-    # Note: use -g2005 for Verilog-2005 compatibility
-    # Add timescale for proper clock timing
-    output_vvp = str(build_dir / f"{args.module}.vvp")
-    compile_cmd = [
-        iverilog_exe,
-        "-g2005",
-        "-o", output_vvp,
-        "-s", tb_file.stem,  # testbench module is top for simulation
-    ]
-    # Add timescale directive support
-    compile_cmd.extend(["-DCOCOTB_SIM=0"])
-
-    # Add all RTL sources and testbench
-    compile_cmd.extend(rtl_sources)
-    compile_cmd.append(str(tb_file))
-
-    if args.verbose:
-        print(f"[iverilog_runner] Compile cmd: {' '.join(compile_cmd)}", file=sys.stderr)
-
     # Ensure EDA binary/lib paths are in PATH for DLL resolution on Windows.
     # eda_env.sh sets these in the shell, but subprocess needs explicit PATH.
     sim_env = os.environ.copy()
@@ -444,7 +463,36 @@ def main():
     extra = [p for p in [eda_bin, eda_lib] if p and p not in existing_dirs]
     if extra:
         sim_env["PATH"] = os.pathsep.join(extra) + os.pathsep + existing_path
+
+    # Smoke gate: cheap iverilog -Wall -tnull syntax/wiring check before the
+    # full compile. Catches errors (default_nettype / forward-decl, typos) in
+    # seconds without producing a vvp. Skip with --no-syntax-check.
+    if not args.no_syntax_check:
+        ok, snippet = _syntax_check(rtl_sources, tb_file, iverilog_exe, sim_env, build_dir)
+        if not ok:
+            print(json.dumps({
+                "tests": 0, "passed": 0, "failed": 0,
+                "error": "iverilog syntax check failed (-Wall -tnull)",
+                "syntax_stderr": snippet,
+            }))
+            if args.verbose:
+                print("[iverilog_runner] SYNTAX CHECK FAILED:\n" + snippet, file=sys.stderr)
+            sys.exit(2)
+        if args.verbose:
+            print("[iverilog_runner] Syntax check passed.", file=sys.stderr)
+
+    # Compile with iverilog (-g2005 for Verilog-2005 compatibility).
+    output_vvp = str(build_dir / f"{args.module}.vvp")
+    compile_cmd = _build_compile_cmd(
+        iverilog_exe, output_vvp, tb_file.stem, rtl_sources, tb_file,
+        no_vcd=args.no_vcd,
+    )
+
+    if args.verbose:
+        print(f"[iverilog_runner] Compile cmd: {' '.join(compile_cmd)}", file=sys.stderr)
+
     try:
+        _t0 = time.perf_counter()
         result = subprocess.run(
             compile_cmd,
             capture_output=True,
@@ -452,6 +500,9 @@ def main():
             cwd=str(build_dir),
             env=sim_env,
         )
+        if args.verbose:
+            print(f"[TIMING] step=iverilog_compile duration={time.perf_counter() - _t0:.2f}s",
+                  file=sys.stderr)
         if result.returncode != 0:
             print(json.dumps({
                 "tests": 0, "passed": 0, "failed": 0,
@@ -484,6 +535,7 @@ def main():
     # VCD is generated by $dumpfile/$dumpvars in the testbench itself
 
     try:
+        _t0 = time.perf_counter()
         result = subprocess.run(
             sim_cmd,
             capture_output=True,
@@ -492,6 +544,9 @@ def main():
             env=sim_env,
             timeout=sim_timeout,
         )
+        if args.verbose:
+            print(f"[TIMING] step=iverilog_sim duration={time.perf_counter() - _t0:.2f}s",
+                  file=sys.stderr)
 
         sim_output = result.stdout + result.stderr
 

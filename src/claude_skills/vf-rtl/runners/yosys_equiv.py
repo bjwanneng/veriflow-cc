@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,10 @@ def _build_yosys_script(
     impl_path: str,
     ref_top: str,
     impl_top: str | None = None,
+    *,
+    clk2fflogic: bool = False,
+    async2sync: bool = False,
+    flatten: bool = False,
 ) -> str:
     """Generate a Yosys script for equivalence checking.
 
@@ -40,9 +45,13 @@ def _build_yosys_script(
         impl_path: Path to implementation Verilog.
         ref_top: Top module name in reference.
         impl_top: Top module name in implementation (defaults to ref_top).
+        clk2fflogic: Handle async-reset FFs ($adff) — convert clocked FFs to
+            formal logic on the equiv module (inserted after equiv_make).
+        async2sync: Convert async resets to sync on each side (after read_verilog).
+        flatten: Dissolve hierarchy so submodule cells match across the two
+            designs (inserted after equiv_make; exposes hierarchical/blackbox cells).
 
-    Returns:
-        Yosys commands as a single string.
+    With all flags False the original fixed recipe is emitted.
     """
     if impl_top is None:
         impl_top = ref_top
@@ -50,23 +59,22 @@ def _build_yosys_script(
     # Approach: prep each side in its own namespace via `design -stash`,
     # then combine. This is the only reliable way to handle the common
     # case where both files define a top module with the same name.
-    #
-    # Why not a single design with two `prep -top` calls? `prep -top X`
-    # internally runs `hierarchy -check -top X`, which prunes every module
-    # not reachable from X. So the second prep would have already lost the
-    # first design. Stashing each prepped side keeps them alive.
-    #
-    # Why not `-defer`? Deferred modules are stored as `$abstract\name`,
-    # which the plain `rename name new_name` command cannot find.
+    async_cmd = "async2sync\n" if async2sync else ""
+    post_equiv = ""
+    if flatten:
+        post_equiv += "flatten equiv\n"
+    if clk2fflogic:
+        post_equiv += "clk2fflogic equiv\n"
+
     return f"""# VeriFlow Yosys equivalence check
 read_verilog "{ref_path}"
-prep -top {ref_top}
+{async_cmd}prep -top {ref_top}
 rename {ref_top} ref_top
 design -stash veriflow_ref
 
 design -reset
 read_verilog "{impl_path}"
-prep -top {impl_top}
+{async_cmd}prep -top {impl_top}
 rename {impl_top} impl_top
 design -stash veriflow_impl
 
@@ -74,7 +82,7 @@ design -copy-from veriflow_ref -as ref_top ref_top
 design -copy-from veriflow_impl -as impl_top impl_top
 
 equiv_make ref_top impl_top equiv
-opt -full equiv
+{post_equiv}opt -full equiv
 equiv_simple equiv
 equiv_induct equiv
 equiv_status -assert equiv
@@ -94,14 +102,16 @@ def _parse_equiv_output(output: str) -> dict:
     }
 
     # 1. Scan for concrete unproven-cell lines FIRST. These are authoritative:
-    #    if yosys lists "gold.x != gate.x", the design is NOT equivalent even if
-    #    a success banner also appears (some yosys builds print both on partial
+    #    if yosys lists unproven cells, the design is NOT equivalent even if a
+    #    success banner also appears (some yosys builds print both on partial
     #    runs). This also stops "Found 0 unproven ..." from being misread below.
+    #    Covers two yosys phrasings: the legacy "gold.x != gate.x" form and the
+    #    modern "Unproven $equiv ... \\y_gold [i] \\y_gate [i]" form.
     for line in output.splitlines():
         s = line.strip()
-        if ("unproven" in s.lower() and "!=" in s) or (
-            s.startswith("gold.") and "!=" in s
-        ):
+        if (s.lower().startswith("unproven $equiv")
+                or ("unproven" in s.lower() and "!=" in s)
+                or (s.startswith("gold.") and "!=" in s)):
             result["unproven"].append(s)
     if result["unproven"]:
         result["equivalent"] = False
@@ -129,6 +139,124 @@ def _parse_equiv_output(output: str) -> dict:
                 break
 
     return result
+
+
+# Ordered strategies, most-likely-to-succeed first. clk2fflogic/async2sync
+# handle async reset ($adff); flatten exposes hierarchical/blackbox cells so
+# they can be matched across the two designs.
+STRATEGIES = [
+    {"name": "base"},
+    {"name": "clk2fflogic", "clk2fflogic": True},
+    {"name": "flatten", "flatten": True},
+    {"name": "async2sync", "async2sync": True},
+    {"name": "flatten+clk2fflogic", "flatten": True, "clk2fflogic": True},
+]
+
+
+def _detect_async_reset(verilog_path, top, yosys_path, timeout=30) -> bool:
+    """Quick yosys probe: does the design contain $adff (async-reset FF)?"""
+    script = f'read_verilog "{verilog_path}"\nprep -top {top}\nstat\n'
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ys", delete=False) as f:
+            f.write(script)
+            script_path = f.name
+        try:
+            r = subprocess.run([yosys_path, "-s", script_path],
+                               capture_output=True, text=True, timeout=timeout)
+            return "$adff" in (r.stdout or "")
+        finally:
+            Path(script_path).unlink(missing_ok=True)
+    except Exception:
+        return False
+
+
+def _decide(tried: list[dict]) -> dict:
+    """Pick the final verdict from a list of per-strategy attempts.
+
+    Each attempt: {"name", "flatten", "equivalent", "unproven"}.
+    Returns {equivalent, unproven, strategy_used, is_blackbox_limitation, message}.
+
+    is_blackbox_limitation is True iff a non-flatten strategy reported unproven
+    cells that then VANISHED under a flatten strategy — a hierarchical blackbox
+    artifact (known yosys limitation), NOT functional inequivalence.
+    """
+    proven = [t for t in tried if t["equivalent"] is True]
+    if proven:
+        p = proven[0]
+        non_flatten_had_unproven = any(
+            (not t["flatten"]) and bool(t["unproven"]) for t in tried
+        )
+        is_bb = non_flatten_had_unproven and p["flatten"]
+        return {
+            "equivalent": True,
+            "unproven": [],
+            "strategy_used": p["name"],
+            "is_blackbox_limitation": is_bb,
+            "message": (
+                "Equivalent after flattening hierarchy — earlier unproven cells "
+                "were blackbox artifacts (known yosys limitation), not functional "
+                "inequivalence."
+            ) if is_bb else None,
+        }
+    counter = [t for t in tried if t["equivalent"] is False]
+    if counter:
+        return {
+            "equivalent": False,
+            "unproven": counter[0]["unproven"],
+            "strategy_used": counter[0]["name"],
+            "is_blackbox_limitation": False,
+            "message": None,
+        }
+    return {
+        "equivalent": None,
+        "unproven": [],
+        "strategy_used": tried[-1]["name"] if tried else None,
+        "is_blackbox_limitation": False,
+        "message": None,
+    }
+
+
+def _run_strategy(strat, ref_path, impl_path, top_name, impl_top,
+                  yosys_path, timeout):
+    """Run one yosys strategy. Returns (parsed, returncode, error_str|None)."""
+    script = _build_yosys_script(
+        str(ref_path), str(impl_path), top_name, impl_top,
+        clk2fflogic=strat.get("clk2fflogic", False),
+        async2sync=strat.get("async2sync", False),
+        flatten=strat.get("flatten", False),
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".ys", delete=False) as f:
+        f.write(script)
+        script_path = f.name
+    try:
+        _t0 = time.perf_counter()
+        result = subprocess.run(
+            [yosys_path, "-s", script_path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        print(f"[TIMING] step=yosys_equiv strategy={strat.get('name')} "
+              f"duration={time.perf_counter() - _t0:.2f}s", file=sys.stderr)
+        rc = result.returncode
+        err = None
+    except subprocess.TimeoutExpired:
+        return (_parse_equiv_output(""), None, f"Yosys timed out after {timeout}s")
+    except Exception as e:
+        return (_parse_equiv_output(""), None, str(e))
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+
+    combined = result.stdout
+    if result.stderr:
+        combined += "\n--- STDERR ---\n" + result.stderr
+    parsed = _parse_equiv_output(combined)
+    # equiv_status -assert exits non-zero on unproven; exit 0 with no unproven
+    # means equivalence held even without a recognized success banner.
+    if parsed["equivalent"] is None:
+        if rc == 0 and not parsed["unproven"]:
+            parsed["equivalent"] = True
+        elif rc != 0:
+            err = f"Yosys exited with code {rc}"
+    return (parsed, rc, err)
 
 
 def check_equivalence(
@@ -168,6 +296,8 @@ def check_equivalence(
                 "yosys_returncode": None,
                 "unproven": [],
                 "error": f"File not found: {p}",
+                "strategy_used": None,
+                "is_blackbox_limitation": False,
             }
 
     yosys_path = shutil.which(yosys_bin)
@@ -178,61 +308,57 @@ def check_equivalence(
             "yosys_returncode": None,
             "unproven": [],
             "error": f"Yosys not found: {yosys_bin}",
+            "strategy_used": None,
+            "is_blackbox_limitation": False,
         }
 
-    script = _build_yosys_script(
-        str(ref_path), str(impl_path), top_name, impl_top
-    )
+    if impl_top is None:
+        impl_top = top_name
 
-    script_path = ""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".ys", delete=False) as f:
-        f.write(script)
-        script_path = f.name
+    # Detect async-reset FFs; if present, try clk2fflogic-bearing strategies
+    # first (they converge faster on $adff designs).
+    has_async = (_detect_async_reset(ref_path, top_name, yosys_path) or
+                 _detect_async_reset(impl_path, impl_top, yosys_path))
+    strategies = list(STRATEGIES)
+    if has_async:
+        strategies.sort(key=lambda s: 0 if s.get("clk2fflogic") else 1)
 
-    try:
-        result = subprocess.run(
-            [yosys_path, "-s", script_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+    tried = []
+    last_rc = None
+    last_error = None
+    for strat in strategies:
+        parsed, rc, err = _run_strategy(
+            strat, ref_path, impl_path, top_name, impl_top, yosys_path, timeout
         )
-    except subprocess.TimeoutExpired:
-        return {
-            "equivalent": None,
-            "yosys_available": True,
-            "yosys_returncode": None,
-            "unproven": [],
-            "error": f"Yosys timed out after {timeout}s",
-        }
-    except Exception as e:
-        return {
-            "equivalent": None,
-            "yosys_available": True,
-            "yosys_returncode": None,
-            "unproven": [],
-            "error": str(e),
-        }
-    finally:
-        Path(script_path).unlink(missing_ok=True)
+        last_rc = rc
+        if err and last_error is None:
+            last_error = err
+        tried.append({
+            "name": strat["name"],
+            "flatten": strat.get("flatten", False),
+            "equivalent": parsed["equivalent"],
+            "unproven": parsed["unproven"],
+        })
+        if parsed["equivalent"] is True:
+            break                       # proved — decide now
+        # flatten couldn't clear the unproven cells → real counterexample; stop.
+        if (parsed["equivalent"] is False and parsed["unproven"]
+                and strat.get("flatten")):
+            break
 
-    combined_output = result.stdout
-    if result.stderr:
-        combined_output += "\n--- STDERR ---\n" + result.stderr
-    parsed = _parse_equiv_output(combined_output)
-    parsed["yosys_available"] = True
-    parsed["yosys_returncode"] = result.returncode
-    if parsed["equivalent"] is None:
-        # The yosys script ends with `equiv_status -assert`, which exits non-zero
-        # when any $equiv cell is unproven. So exit 0 with no unproven lines means
-        # equivalence held even if the success banner was worded unlike our known
-        # phrases. Conservative: this can never turn a real FAIL (non-zero exit or
-        # unproven cells) into a PASS.
-        if result.returncode == 0 and not parsed["unproven"]:
-            parsed["equivalent"] = True
-        elif result.returncode != 0:
-            parsed["error"] = f"Yosys exited with code {result.returncode}"
-
-    return parsed
+    decision = _decide(tried)
+    result = {
+        "equivalent": decision["equivalent"],
+        "yosys_available": True,
+        "yosys_returncode": last_rc,
+        "unproven": decision["unproven"],
+        "error": last_error,
+        "strategy_used": decision["strategy_used"],
+        "is_blackbox_limitation": decision["is_blackbox_limitation"],
+    }
+    if decision["message"]:
+        result["message"] = decision["message"]
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

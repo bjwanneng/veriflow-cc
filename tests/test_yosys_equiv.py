@@ -4,7 +4,6 @@ Tests script generation, output parsing, and graceful fallback when
 Yosys is not installed.
 """
 
-import json
 import sys
 import tempfile
 import unittest
@@ -198,6 +197,198 @@ class TestSameNameCollision(unittest.TestCase):
                 f"Expected PASS. Got equivalent={result['equivalent']}. "
                 f"Raw:\n{result.get('raw', '')[-500:]}"
             )
+
+
+# ===========================================================================
+# WS3: async-reset handling, strategy iteration, blackbox verdict.
+# Pytest-style (uses monkeypatch + tmp_path fixtures); all mock yosys.
+# ===========================================================================
+import types as _types  # noqa: E402
+
+import yosys_equiv as ye  # noqa: E402
+
+
+def test_build_script_base_has_no_optional_cmds():
+    s = ye._build_yosys_script("a.v", "b.v", "top")
+    assert "clk2fflogic" not in s
+    assert "async2sync" not in s
+    assert "flatten" not in s
+
+
+def test_build_script_emits_clk2fflogic():
+    assert "clk2fflogic" in ye._build_yosys_script("a.v", "b.v", "top", clk2fflogic=True)
+
+
+def test_build_script_flatten_after_equiv_make():
+    s = ye._build_yosys_script("a.v", "b.v", "top", flatten=True)
+    assert "flatten" in s
+    assert s.index("equiv_make") < s.index("flatten")
+
+
+def test_build_script_async2sync_present():
+    assert "async2sync" in ye._build_yosys_script("a.v", "b.v", "top", async2sync=True)
+
+
+def _attempt(name, flatten, equivalent, unproven=None):
+    return {"name": name, "flatten": flatten,
+            "equivalent": equivalent, "unproven": unproven or []}
+
+
+def test_decide_proof_on_base_is_not_blackbox():
+    r = ye._decide([_attempt("base", False, True)])
+    assert r["equivalent"] is True
+    assert r["is_blackbox_limitation"] is False
+    assert r["strategy_used"] == "base"
+
+
+def test_decide_blackbox_limitation_when_flatten_clears_unproven():
+    tried = [_attempt("base", False, False, ["gold.x != gate.x"]),
+             _attempt("flatten", True, True)]
+    r = ye._decide(tried)
+    assert r["equivalent"] is True
+    assert r["is_blackbox_limitation"] is True
+    assert "blackbox" in (r.get("message") or "").lower()
+
+
+def test_decide_real_counterexample_persists_through_flatten():
+    tried = [_attempt("base", False, False, ["gold.x != gate.x"]),
+             _attempt("flatten", True, False, ["gold.x != gate.x"])]
+    r = ye._decide(tried)
+    assert r["equivalent"] is False
+    assert r["is_blackbox_limitation"] is False
+    assert r["unproven"]
+
+
+def test_decide_unknown_when_nothing_definitive():
+    r = ye._decide([_attempt("base", False, None)])
+    assert r["equivalent"] is None
+    assert r["is_blackbox_limitation"] is False
+
+
+class _Seq:
+    """Fake subprocess.run returning scripted (stdout, stderr, rc) per call.
+
+    Captures each yosys script's content (the `-s <path>` file) while it still
+    exists on disk, before _run_strategy's finally deletes it.
+    """
+    def __init__(self, outputs):
+        self.outputs = outputs
+        self.i = 0
+        self.calls = []
+        self.scripts = []
+
+    def __call__(self, cmd, *a, **k):
+        self.calls.append(cmd)
+        if isinstance(cmd, list) and "-s" in cmd:
+            try:
+                self.scripts.append(Path(cmd[cmd.index("-s") + 1]).read_text())
+            except OSError:
+                self.scripts.append(None)
+        else:
+            self.scripts.append(None)
+        out = self.outputs[self.i] if self.i < len(self.outputs) else ("", "", 1)
+        self.i += 1
+        return _types.SimpleNamespace(stdout=out[0], stderr=out[1], returncode=out[2])
+
+
+def _patch_no_async(monkeypatch):
+    monkeypatch.setattr(ye, "_detect_async_reset", lambda *a, **k: False)
+
+
+def _make_files(tmp, body="module top; endmodule"):
+    (tmp / "ref.v").write_text(body)
+    (tmp / "impl.v").write_text(body)
+    return tmp / "ref.v", tmp / "impl.v"
+
+
+def test_check_proof_on_base(monkeypatch, tmp_path):
+    _patch_no_async(monkeypatch)
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: "/fake/yosys")
+    seq = _Seq([("Equivalence successfully proved\n", "", 0)])
+    monkeypatch.setattr(ye.subprocess, "run", seq)
+    ref, impl = _make_files(tmp_path)
+    r = ye.check_equivalence(ref, impl, "top")
+    assert r["equivalent"] is True
+    assert r["strategy_used"] == "base"
+    assert r["is_blackbox_limitation"] is False
+    assert len(seq.calls) == 1
+
+
+def test_check_blackbox_limitation_path(monkeypatch, tmp_path):
+    _patch_no_async(monkeypatch)
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: "/fake/yosys")
+    # base unproven -> clk2fflogic unknown -> flatten proves
+    seq = _Seq([
+        ("gold.x != gate.x\n", "", 1),
+        ("irrelevant noise\n", "", 1),
+        ("Equivalence successfully proved\n", "", 0),
+    ])
+    monkeypatch.setattr(ye.subprocess, "run", seq)
+    ref, impl = _make_files(tmp_path)
+    r = ye.check_equivalence(ref, impl, "top")
+    assert r["equivalent"] is True
+    assert r["is_blackbox_limitation"] is True
+    assert r["strategy_used"] == "flatten"
+
+
+def test_check_real_counterexample(monkeypatch, tmp_path):
+    _patch_no_async(monkeypatch)
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: "/fake/yosys")
+    seq = _Seq([
+        ("gold.x != gate.x\n", "", 1),       # base
+        ("irrelevant noise\n", "", 1),        # clk2fflogic unknown
+        ("gold.x != gate.x\n", "", 1),        # flatten still unproven -> real
+    ])
+    monkeypatch.setattr(ye.subprocess, "run", seq)
+    ref, impl = _make_files(tmp_path)
+    r = ye.check_equivalence(ref, impl, "top")
+    assert r["equivalent"] is False
+    assert r["is_blackbox_limitation"] is False
+
+
+def test_check_yosys_unavailable_schema_stable(monkeypatch, tmp_path):
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: None)
+    ref, impl = _make_files(tmp_path)
+    r = ye.check_equivalence(ref, impl, "top")
+    assert r["equivalent"] is None
+    assert r["yosys_available"] is False
+    assert "strategy_used" in r
+    assert "is_blackbox_limitation" in r
+    assert r["is_blackbox_limitation"] is False
+
+
+def test_detect_async_reset_true_on_adff(monkeypatch, tmp_path):
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: "/fake/yosys")
+    monkeypatch.setattr(ye.subprocess, "run", lambda *a, **k: _types.SimpleNamespace(
+        stdout="   $_DFF_  10\n   $adff   4\n", stderr="", returncode=0))
+    (tmp_path / "r.v").write_text("module top; endmodule")
+    assert ye._detect_async_reset(tmp_path / "r.v", "top", "/fake/yosys") is True
+
+
+def test_detect_async_reset_false_without_adff(monkeypatch, tmp_path):
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: "/fake/yosys")
+    monkeypatch.setattr(ye.subprocess, "run", lambda *a, **k: _types.SimpleNamespace(
+        stdout="   $_DFF_  10\n", stderr="", returncode=0))
+    (tmp_path / "r.v").write_text("module top; endmodule")
+    assert ye._detect_async_reset(tmp_path / "r.v", "top", "/fake/yosys") is False
+
+
+def test_detect_async_reset_error_returns_false(monkeypatch, tmp_path):
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: "/fake/yosys")
+    monkeypatch.setattr(ye.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    (tmp_path / "r.v").write_text("module top; endmodule")
+    assert ye._detect_async_reset(tmp_path / "r.v", "top", "/fake/yosys") is False
+
+
+def test_async_reset_reorders_clk2fflogic_first(monkeypatch, tmp_path):
+    monkeypatch.setattr(ye, "_detect_async_reset", lambda *a, **k: True)
+    monkeypatch.setattr(ye.shutil, "which", lambda *a: "/fake/yosys")
+    seq = _Seq([("Equivalence successfully proved\n", "", 0)])
+    monkeypatch.setattr(ye.subprocess, "run", seq)
+    ref, impl = _make_files(tmp_path)
+    ye.check_equivalence(ref, impl, "top")
+    assert seq.scripts, "no yosys strategy ran"
+    assert "clk2fflogic" in seq.scripts[0]
 
 
 if __name__ == "__main__":

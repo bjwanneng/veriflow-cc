@@ -370,6 +370,278 @@ def test_detect_fix_loop_single_occurrence_no_loop():
     assert not s.detect_fix_loop("verify_fix", "cycle:5:signal:w_reg")
 
 
+# =============================================================================
+# WS1: structured cross-platform hook predicate (evaluate_hook)
+# Lazy import keeps the existing 30 tests green during the TDD red phase.
+# =============================================================================
+
+def _eh(spec, project_dir):
+    from state import evaluate_hook  # noqa: E402
+    return evaluate_hook(spec, project_dir)
+
+
+def test_hook_exists_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "a.txt").write_text("x")
+        passed, _ = _eh({"exists": "a.txt"}, tmp)
+        assert passed is True
+
+
+def test_hook_exists_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, detail = _eh({"exists": "nope.txt"}, tmp)
+        assert passed is False
+        assert "nope.txt" in detail
+
+
+def test_hook_exists_directory_counts():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "sub").mkdir()
+        passed, _ = _eh({"exists": "sub"}, tmp)
+        assert passed is True
+
+
+def test_hook_glob_default_min_one():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "rtl").mkdir()
+        (Path(tmp) / "rtl" / "a.v").write_text("m")
+        assert _eh({"glob": "rtl/*.v"}, tmp)[0] is True
+        (Path(tmp) / "rtl" / "a.v").unlink()
+        assert _eh({"glob": "rtl/*.v"}, tmp)[0] is False
+
+
+def test_hook_glob_min_n():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "rtl").mkdir()
+        for n in ("a.v", "b.v"):
+            (Path(tmp) / "rtl" / n).write_text("m")
+        assert _eh({"glob": "rtl/*.v", "min": 3}, tmp)[0] is False
+        (Path(tmp) / "rtl" / "c.v").write_text("m")
+        assert _eh({"glob": "rtl/*.v", "min": 3}, tmp)[0] is True
+
+
+def test_hook_glob_no_match_detail():
+    with tempfile.TemporaryDirectory() as tmp:
+        _, detail = _eh({"glob": "rtl/*.v"}, tmp)
+        assert "rtl/*.v" in detail
+
+
+def test_hook_contains_hit_and_miss():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "sim.log"
+        p.write_text("blah\nALL TESTS PASSED\n")
+        assert _eh({"contains": "sim.log", "text": "ALL TESTS PASSED"}, tmp)[0] is True
+        assert _eh({"contains": "sim.log", "text": "NOPE"}, tmp)[0] is False
+
+
+def test_hook_contains_case_sensitive_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "f.log").write_text("error here")
+        # default case=True: "ERROR" != "error"
+        assert _eh({"contains": "f.log", "text": "ERROR"}, tmp)[0] is False
+        # case=False: matches
+        assert _eh({"contains": "f.log", "text": "ERROR", "case": False}, tmp)[0] is True
+
+
+def test_hook_contains_missing_file_is_false_not_exception():
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, detail = _eh({"contains": "missing.log", "text": "x"}, tmp)
+        assert passed is False
+        assert "missing.log" in detail
+
+
+def test_hook_combinator_all():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "a").write_text("1")
+        spec_all_pass = {"all": [{"exists": "a"}, {"contains": "a", "text": "1"}]}
+        assert _eh(spec_all_pass, tmp)[0] is True
+        spec_one_fail = {"all": [{"exists": "a"}, {"exists": "b"}]}
+        assert _eh(spec_one_fail, tmp)[0] is False
+
+
+def test_hook_combinator_all_short_circuits():
+    """`all` stops at first failing predicate — second is not surfaced."""
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = {"all": [{"exists": "first_missing"}, {"exists": "second_missing"}]}
+        passed, detail = _eh(spec, tmp)
+        assert passed is False
+        assert "first_missing" in detail
+        assert "second_missing" not in detail
+
+
+def test_hook_combinator_any():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "a").write_text("1")
+        assert _eh({"any": [{"exists": "nope"}, {"exists": "a"}]}, tmp)[0] is True
+        assert _eh({"any": [{"exists": "nope"}, {"exists": "alsobgone"}]}, tmp)[0] is False
+
+
+def test_hook_combinator_any_short_circuits():
+    """`any` stops at first passing predicate — second is not surfaced."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "first").write_text("1")
+        spec = {"any": [{"exists": "first"}, {"exists": "second"}]}
+        passed, detail = _eh(spec, tmp)
+        assert passed is True
+        assert "first" in detail
+        assert "second" not in detail
+
+
+def test_hook_combinator_nested():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "rtl").mkdir()
+        (Path(tmp) / "rtl" / "top.v").write_text("m")
+        spec = {"all": [
+            {"glob": "rtl/*.v", "min": 1},
+            {"any": [{"exists": "rtl/missing.py"}, {"exists": "rtl/top.v"}]},
+        ]}
+        assert _eh(spec, tmp)[0] is True
+
+
+def test_hook_unknown_predicate_returns_false():
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, detail = _eh({"frobnicate": "x"}, tmp)
+        assert passed is False
+        assert "frobnicate" in detail
+
+
+def test_hook_accepts_json_string_or_dict():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "a").write_text("1")
+        import json as _json
+        as_str = _json.dumps({"exists": "a"})
+        assert _eh(as_str, tmp)[0] is True
+        assert _eh({"exists": "a"}, tmp)[0] is True
+
+
+def test_hook_malformed_json_returns_false():
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, detail = _eh("{not valid json", tmp)
+        assert passed is False
+        assert detail  # non-empty explanation
+
+
+def test_hook_not_a_dict_returns_false():
+    """A JSON value that isn't an object (e.g. a list) is rejected."""
+    with tempfile.TemporaryDirectory() as tmp:
+        assert _eh('["exists", "a"]', tmp)[0] is False
+
+
+# --- CLI integration (subprocess) ---
+
+_STATE_PY = str(_SKILLS_DIR / "core" / "state.py")
+
+
+def test_hook_back_compat_shell_path():
+    """A non-JSON hook value (starts with 'test ') still runs as a shell command."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "marker").write_text("1")
+        r = subprocess.run(
+            [sys.executable, _STATE_PY, tmp, "spec_golden",
+             "--hook=test -f marker"],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "spec_golden → COMPLETE" in r.stdout
+
+
+def test_hook_structured_via_cli():
+    """JSON hook predicate marks the stage complete end-to-end."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "workspace" / "docs").mkdir(parents=True)
+        (Path(tmp) / "workspace" / "docs" / "spec.json").write_text("{}")
+        (Path(tmp) / "workspace" / "docs" / "golden_model.py").write_text("x=1")
+        hook = '{"all":[{"exists":"workspace/docs/spec.json"},' \
+               '{"exists":"workspace/docs/golden_model.py"}]}'
+        r = subprocess.run(
+            [sys.executable, _STATE_PY, tmp, "spec_golden", f"--hook={hook}"],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "spec_golden → COMPLETE" in r.stdout
+        state = json.loads((Path(tmp) / ".veriflow" / "pipeline_state.json").read_text())
+        assert "spec_golden" in state["stages_completed"]
+
+
+def test_hook_structured_fail_via_cli():
+    """A failing JSON predicate does NOT mark the stage complete."""
+    with tempfile.TemporaryDirectory() as tmp:
+        hook = '{"exists":"workspace/docs/absent.json"}'
+        r = subprocess.run(
+            [sys.executable, _STATE_PY, tmp, "spec_golden", f"--hook={hook}"],
+            capture_output=True, text=True,
+        )
+        assert "spec_golden → COMPLETE" not in r.stdout
+        state = json.loads((Path(tmp) / ".veriflow" / "pipeline_state.json").read_text())
+        assert "spec_golden" not in state["stages_completed"]
+
+
+# =============================================================================
+# WS2: accurate per-stage timing (previous-stage-end fallback + inferred flag)
+# =============================================================================
+
+def test_record_end_no_start_uses_previous_end():
+    """A stage completed without --start falls back to the previous stage's end."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.mark_started("spec_golden")
+        s.mark_complete("spec_golden", {"success": True, "summary": "x"})
+        s.mark_complete("codegen", {"success": True, "summary": "x"})  # no mark_started
+        t = s.stage_timings["codegen"]
+        assert "duration_s" in t
+        assert t.get("duration_inferred") is True
+
+
+def test_record_end_explicit_start_not_inferred():
+    """A stage with an explicit --start is NOT flagged inferred."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.mark_started("spec_golden")
+        s.mark_complete("spec_golden", {"success": True, "summary": "x"})
+        s.mark_started("codegen")
+        s.mark_complete("codegen", {"success": True, "summary": "x"})
+        t = s.stage_timings["codegen"]
+        assert "duration_s" in t
+        assert t.get("duration_inferred") is not True
+
+
+def test_record_end_no_data_no_duration():
+    """First stage with no start and no previous end has no duration_s."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.mark_complete("spec_golden", {"success": True, "summary": "x"})
+        assert "duration_s" not in s.stage_timings["spec_golden"]
+
+
+def test_previous_end_skips_middle_without_end():
+    """_previous_end walks back to the nearest stage that has an end."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.stage_timings["spec_golden"] = {"end": 1000.0}
+        s.stage_timings["codegen"] = {}  # present, but no end
+        assert s._previous_end("verify_fix") == 1000.0
+        assert s._previous_end("codegen") == 1000.0
+        assert s._previous_end("spec_golden") is None
+
+
+def test_all_four_stages_have_duration_cli():
+    """End-to-end: every stage gets a duration_s when --start is called."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for st in STAGE_ORDER:
+            (Path(tmp) / f"m_{st}").write_text("1")
+        for st in STAGE_ORDER:
+            r1 = subprocess.run([sys.executable, _STATE_PY, tmp, st, "--start"],
+                                capture_output=True, text=True)
+            assert r1.returncode == 0, r1.stderr
+            r2 = subprocess.run([sys.executable, _STATE_PY, tmp, st, f'--hook={{"exists":"m_{st}"}}'],
+                                capture_output=True, text=True)
+            assert r2.returncode == 0, (st, r2.stderr, r2.stdout)
+        state = json.loads((Path(tmp) / ".veriflow" / "pipeline_state.json").read_text())
+        for st in STAGE_ORDER:
+            assert "duration_s" in state["stage_timings"][st], st
+            assert state["stage_timings"][st]["duration_s"] >= 0
+
+
 if __name__ == "__main__":
     # Run all tests
     import traceback

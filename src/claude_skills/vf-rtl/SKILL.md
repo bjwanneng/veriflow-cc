@@ -55,14 +55,14 @@ cd "$PROJECT_DIR"
 if [ -f ".veriflow/done_spec_golden" ] && [ -f "workspace/docs/spec.json" ] && [ -f "workspace/docs/golden_model.py" ]; then
     echo "[RECOVERY] spec_golden outputs exist — running hook to mark complete"
     python3 "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "spec_golden" \
-        --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py"
+        --hook='{"all":[{"exists":"workspace/docs/spec.json"},{"exists":"workspace/docs/golden_model.py"}]}'
 fi
 
 # For codegen: check if ALL module .v files and TB files exist
 if ls .veriflow/done_codegen_* >/dev/null 2>&1; then
     echo "[RECOVERY] codegen completion markers found — verifying outputs"
     python3 "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "codegen" \
-        --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" \
+        --hook='{"all":[{"glob":"workspace/rtl/*.v","min":1},{"any":[{"glob":"workspace/tb/test_*.py","min":1},{"glob":"workspace/tb/tb_*.v","min":1}]}]}' \
         --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" \
         --journal-notes="Recovered from interrupted codegen via completion markers"
 fi
@@ -176,6 +176,11 @@ Then: `TaskUpdate` mark the stage task as completed.
 ---
 
 ## Stage 1: spec_golden
+
+**Stage timing** — record start (before any stage work, so `duration_s` is captured):
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "spec_golden" --start
+```
 
 ### Pre-stage: Web Research
 
@@ -299,13 +304,18 @@ Do NOT proceed to Stage 2 with shortcut/delay paths that ignore fill latency.
 
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "spec_golden" --hook="test -f workspace/docs/spec.json && test -f workspace/docs/golden_model.py" --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "spec_golden" --hook='{"all":[{"exists":"workspace/docs/spec.json"},{"exists":"workspace/docs/golden_model.py"}]}' --journal-outputs="workspace/docs/spec.json, workspace/docs/golden_model.py" --journal-notes="spec.json interface + golden_model.py behavior"
 ```
 TaskUpdate complete.
 
 ---
 
 ## Stage 2: codegen
+
+**Stage timing** — record start (before any stage work, so `duration_s` is captured):
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "codegen" --start
+```
 
 Read spec.json, golden_model.py, and coding_style.md (parallel Read calls) to include inline in prompts.
 
@@ -360,6 +370,7 @@ Dispatch ALL agents in parallel (single message):
 - **One vf-tb-gen** (subagent_type: general-purpose)
   - Prompt includes: PROJECT_DIR, DESIGN_NAME, spec.json content, golden_model.py content, COCOTB_AVAILABLE flag, `${CLAUDE_SKILL_DIR}/templates` path
   - **DRIVE_PHASE_CYCLES**: Read from `spec.json timing_convention.golden_to_rtl_offset_cycles`. If not set, fall back to `max(pipeline_delay_cycles)` from timing_contract.
+  - **RESET_CYCLE_SKIP**: Read from `spec.json timing_convention.reset_cycle_skip` (default 1). This is the golden cycle index where post-reset comparison begins (cycle 0 is the reset state). Set it in the generated `test_<module>.py` (`RESET_CYCLE_SKIP = ...`); if omitted, the template falls back to the spec value at import time.
   - **CRITICAL**: The Verilog testbench MUST respect input hold time derived from spec.json `module_connectivity` timing_contract. Data inputs MUST remain stable for at least `DRIVE_PHASE_CYCLES + 1` cycles after the valid pulse.
 
 After ALL return, verify outputs exist:
@@ -393,7 +404,7 @@ fi
 If no candidate passes, the fewest-fails one is kept so Stage 3 can still try to fix it.
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "codegen" --hook="ls workspace/rtl/*.v >/dev/null 2>&1 && (test -f workspace/tb/test_*.py || test -f workspace/tb/tb_*.v)" --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "codegen" --hook='{"all":[{"glob":"workspace/rtl/*.v","min":1},{"any":[{"glob":"workspace/tb/test_*.py","min":1},{"glob":"workspace/tb/tb_*.v","min":1}]}]}' --journal-outputs="workspace/rtl/*.v, workspace/tb/test_*.py, workspace/tb/tb_*.v" --journal-notes="RTL and testbench generated in parallel"
 ```
 TaskUpdate complete.
 
@@ -528,7 +539,7 @@ $PYTHON_EXE "${CLAUDE_SKILL_DIR}/runners/iverilog_runner.py" \
 ### If PASS
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "verify_fix" --hook="grep -q 'ALL TESTS PASSED' logs/sim.log" --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "verify_fix" --hook='{"contains":"logs/sim.log","text":"ALL TESTS PASSED"}' --journal-outputs="logs/sim.log" --journal-notes="Simulation passed"
 ```
 
 ### Coverage check (soft gate — warn but don't fail in Phase 1)
@@ -793,6 +804,11 @@ fi
 
 ## Stage 4: lint_synth
 
+**Stage timing** — record start (before any stage work, so `duration_s` is captured):
+```bash
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "lint_synth" --start
+```
+
 Dispatch 2 parallel agents (single message):
 
 - **vf-linter** (subagent_type: general-purpose) — include PROJECT_DIR, EDA_ENV path, PYTHON_EXE, SKILL_DIR
@@ -804,7 +820,7 @@ If lint failed → fix syntax errors in main session, re-run lint only.
 If synth failed → check report, fix if needed.
 
 ```bash
-$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "lint_synth" --hook="test -f logs/lint.log && test -f workspace/synth/synth_report.txt" --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
+$PYTHON_EXE "${CLAUDE_SKILL_DIR}/core/state.py" "$PROJECT_DIR" "lint_synth" --hook='{"all":[{"exists":"logs/lint.log"},{"exists":"workspace/synth/synth_report.txt"}]}' --journal-outputs="logs/lint.log, workspace/synth/synth_report.txt" --journal-notes="Lint and synthesis complete"
 ```
 
 ### Formal Equivalence Check (post-synthesis)

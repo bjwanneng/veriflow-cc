@@ -26,11 +26,14 @@ module tb_<design_name>;
     // Cycle counter — increment every posedge
     always @(posedge clk) cycle_count = cycle_count + 1;
 
-    // VCD capture — REQUIRED for waveform analysis
+    // VCD capture — REQUIRED for waveform analysis. Suppress with `define NODUMP
+    // (the runner passes -DNODUMP when invoked with --no-vcd).
+`ifndef NODUMP
     initial begin
         $dumpfile("tb_<design_name>.vcd");
         $dumpvars(0, tb_<design_name>);
     end
+`endif
 
     // ===========================================================================
     // TESTBENCH TIMING METHODOLOGY — Read Before Modifying This Testbench

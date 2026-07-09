@@ -17,7 +17,7 @@ import argparse
 import csv
 import json
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 import contextlib
 
@@ -39,6 +39,9 @@ class ProjectResult:
     lint_log_path: str = ""
     synth_report_path: str = ""
     timing_diagnostic_path: str = ""
+    stage_timings: dict = field(default_factory=dict)
+    total_duration_s: float | None = None
+    retries_per_stage: dict = field(default_factory=dict)
     notes: list[str] = None
 
     def __post_init__(self):
@@ -77,9 +80,29 @@ class BenchmarkRunner:
             try:
                 state = json.loads(state_file.read_text(encoding="utf-8"))
                 result.stages_completed = state.get("stages_completed", [])
-                result.retry_count = sum(
-                    state.get("retry_count", {}).values()
-                )
+                _rc = state.get("retry_count", {}) or {}
+                result.retries_per_stage = dict(_rc) if isinstance(_rc, dict) else {}
+                result.retry_count = sum(_rc.values()) if isinstance(_rc, dict) else 0
+                # Per-stage durations (keep duration_s; drop raw timestamps).
+                _st = state.get("stage_timings", {}) or {}
+                _inferred = []
+                for _stage, _t in _st.items():
+                    if isinstance(_t, dict):
+                        if "duration_s" in _t:
+                            result.stage_timings[_stage] = _t["duration_s"]
+                        if _t.get("duration_inferred"):
+                            _inferred.append(_stage)
+                if _inferred:
+                    result.notes.append(
+                        f"timing inferred (no --start) for: {', '.join(_inferred)}"
+                    )
+                # Total duration: prefer start_time/last_updated; else sum stages.
+                _start = state.get("start_time")
+                _last = state.get("last_updated")
+                if isinstance(_start, (int, float)) and isinstance(_last, (int, float)):
+                    result.total_duration_s = round(_last - _start, 1)
+                elif result.stage_timings:
+                    result.total_duration_s = round(sum(result.stage_timings.values()), 1)
             except (json.JSONDecodeError, OSError) as e:
                 result.notes.append(f"state parse error: {e}")
         else:
@@ -232,6 +255,15 @@ class BenchmarkRunner:
         total_retries = sum(r.retry_count for r in results)
         total_lines = sum(r.rtl_lines for r in results)
 
+        durations = [r.total_duration_s for r in results if r.total_duration_s is not None]
+        avg_duration_s = round(sum(durations) / len(durations), 1) if durations else None
+        per_stage_avg = {}
+        for stage in ("spec_golden", "codegen", "verify_fix", "lint_synth"):
+            vals = [r.stage_timings[stage] for r in results
+                    if isinstance(r.stage_timings.get(stage), (int, float))]
+            if vals:
+                per_stage_avg[stage] = round(sum(vals) / len(vals), 1)
+
         return {
             "total_projects": total,
             "overall_pass": passed,
@@ -242,6 +274,9 @@ class BenchmarkRunner:
             "synth_completed": synth_done,
             "total_retries": total_retries,
             "total_rtl_lines": total_lines,
+            "total_duration_s_sum": sum(durations),
+            "avg_duration_s": avg_duration_s,
+            "per_stage_avg": per_stage_avg,
             "per_project": [asdict(r) for r in results],
         }
 
@@ -273,6 +308,24 @@ class BenchmarkRunner:
                 f"| {r['project_name']} | {stages} | {sim} | {lint} | {synth} | "
                 f"{r['rtl_lines']} | {notes} |"
             )
+
+        # Timing section
+        per_stage_avg = aggregate.get("per_stage_avg", {}) or {}
+        total_dur = aggregate.get("total_duration_s_sum")
+        avg = aggregate.get("avg_duration_s")
+        lines.append("")
+        lines.append("## Timing")
+        if total_dur is not None:
+            lines.append(f"**Total duration (sum)**: {round(total_dur, 1)}s")
+        if avg is not None:
+            lines.append(f"**Average per project**: {avg}s")
+        if per_stage_avg:
+            lines.append("")
+            lines.append("| Stage | Avg (s) |")
+            lines.append("|-------|---------|")
+            for stage in ("spec_golden", "codegen", "verify_fix", "lint_synth"):
+                if stage in per_stage_avg:
+                    lines.append(f"| {stage} | {per_stage_avg[stage]} |")
         return "\n".join(lines)
 
 
@@ -320,6 +373,92 @@ def realbench_to_project(task: dict, output_dir: Path) -> Path:
 # CLI
 # ------------------------------------------------------------------
 
+def generate_pipeline_report(project_dir: str | Path) -> str:
+    """Build a markdown pipeline_report.md for one project from its logs + state.
+
+    Reads logs/sim.log, logs/lint.log, workspace/synth/synth_report.txt and
+    .veriflow/pipeline_state.json. Missing artifacts render as N/A — never raises.
+    Writes <project_dir>/pipeline_report.md and returns the body.
+    """
+    p = Path(project_dir).resolve()
+    state = {}
+    state_file = p / ".veriflow" / "pipeline_state.json"
+    if state_file.exists():
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    stages = state.get("stages_completed", []) or []
+    st = state.get("stage_timings", {}) or {}
+    retries = state.get("retry_count", {}) or {}
+    start = state.get("start_time")
+    last = state.get("last_updated")
+    total = (round(last - start, 1)
+             if isinstance(start, (int, float)) and isinstance(last, (int, float))
+             else None)
+
+    def _read(rel):
+        f = p / rel
+        return f.read_text(encoding="utf-8", errors="ignore") if f.exists() else ""
+
+    sim = _read("logs/sim.log")
+    lint = _read("logs/lint.log")
+    synth = _read("workspace/synth/synth_report.txt")
+
+    if sim and "ALL TESTS PASSED" in sim and "[FAIL]" not in sim and "FAILED:" not in sim:
+        sim_verdict = "PASS"
+    elif sim:
+        sim_verdict = "FAIL"
+    else:
+        sim_verdict = "N/A"
+    fail_line = next((ln.strip() for ln in sim.splitlines()
+                      if "[FAIL]" in ln or "FAILED:" in ln), "")
+
+    low = lint.lower()
+    has_err = (("error" in low and "no errors" not in low and "0 errors" not in low)
+               or "syntax error" in low)
+    lint_verdict = "PASS" if (lint and not has_err) else ("FAIL" if lint else "N/A")
+    cells = next((ln.strip() for ln in synth.splitlines() if "Number of cells:" in ln), "")
+
+    lines = [
+        f"# Pipeline Report — {p.name}",
+        "",
+        "## Summary",
+        f"- Stages completed: {', '.join(stages) if stages else 'none'}",
+        f"- Simulation: **{sim_verdict}**",
+        f"- Lint: **{lint_verdict}**",
+        f"- Synthesis: {cells or 'N/A'}",
+        "",
+        "## Timing",
+    ]
+    for stage in ("spec_golden", "codegen", "verify_fix", "lint_synth"):
+        t = st.get(stage, {})
+        if isinstance(t, dict):
+            d = t.get("duration_s", "—")
+            mark = " (inferred)" if t.get("duration_inferred") else ""
+            lines.append(f"- {stage}: {d}s{mark}")
+    lines.append(f"- **Total**: {total if total is not None else '—'}s")
+    lines += [
+        "",
+        "## Simulation",
+        ("ALL TESTS PASSED." if sim_verdict == "PASS"
+         else (f"First failure: `{fail_line}`" if fail_line else "No simulation log.")),
+        "",
+        "## Retries",
+    ]
+    if retries:
+        for k, v in retries.items():
+            lines.append(f"- {k}: {v}")
+    else:
+        lines.append("None.")
+
+    body = "\n".join(lines) + "\n"
+    with contextlib.suppress(OSError):
+        (p / "pipeline_report.md").write_text(body, encoding="utf-8")
+    return body
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="VeriFlow-CC benchmark runner")
     parser.add_argument("--project", help="Single project directory to evaluate")
@@ -334,7 +473,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--markdown", "-m", action="store_true",
                         help="Print Markdown report to stdout")
     parser.add_argument("--skill-dir", help="Path to installed skill directory")
+    parser.add_argument("--report", help="Generate pipeline_report.md for a project dir and exit")
     args = parser.parse_args(argv)
+
+    if args.report:
+        generate_pipeline_report(args.report)
+        print(f"[Benchmark] pipeline_report.md written to "
+              f"{Path(args.report) / 'pipeline_report.md'}")
+        return 0
 
     runner = BenchmarkRunner(skill_dir=args.skill_dir)
 
