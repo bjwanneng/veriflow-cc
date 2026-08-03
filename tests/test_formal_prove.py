@@ -100,3 +100,15 @@ if __name__ == "__main__":
             fn()
             print(f"  PASS  {name}")
     print("All formal_prove tests passed.")
+
+
+# --- Batch 4: exit-code mapping (ERROR/TIMEOUT no longer read as success) ---
+
+def test_exit_code_mapping():
+    from formal_prove import _exit_code
+    assert _exit_code({"proven": True, "status": "PASS"}) == 0
+    assert _exit_code({"proven": False, "status": "FAIL"}) == 1
+    assert _exit_code({"proven": None, "status": "ERROR"}) == 2
+    assert _exit_code({"proven": None, "status": "TIMEOUT"}) == 2
+    # UNKNOWN (couldn't prove) is not a tool error → 0
+    assert _exit_code({"proven": None, "status": "UNKNOWN"}) == 0

@@ -142,7 +142,14 @@ class BenchmarkRunner:
         result.synth_report_path = str(synth_report) if synth_report.exists() else ""
         if synth_report.exists():
             content = synth_report.read_text(encoding="utf-8", errors="ignore")
-            result.synth_passed = "error" not in content.lower() or "synth" in content.lower()
+            # Tight heuristic: require a positive completion marker (yosys prints
+            # "Number of cells:") AND no error markers. The old rule
+            # `"error" not in content or "synth" in content` was always True
+            # (every report contains "synth"), masking real synthesis errors.
+            lower = content.lower()
+            has_synth_output = "number of cells:" in lower
+            has_synth_error = "error" in lower or "synthesis failed" in lower
+            result.synth_passed = has_synth_output and not has_synth_error
             # Extract cell count
             for line in content.splitlines():
                 if "Number of cells:" in line:

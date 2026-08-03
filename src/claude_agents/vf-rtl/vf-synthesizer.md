@@ -78,5 +78,5 @@ Report: workspace/synth/synth_report.txt
 
 ## Bash Safety
 
-- All commands MUST use `timeout`: `timeout 120s yosys ...`
+- Time-bound long commands. `timeout` is Linux-only (macOS lacks it by default), so resolve and fall back: `TO=$(command -v gtimeout || command -v timeout || true); $TO 120s yosys ... || yosys ...`.
 - Before reading `synth_report.txt`, check with `wc -l`. If > 300 lines, read with `offset` and `limit`.

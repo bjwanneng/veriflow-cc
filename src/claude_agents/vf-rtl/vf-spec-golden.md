@@ -149,6 +149,23 @@ written in Step 2) to align golden_model.py's trace cycles:
 - **Test vectors must be real values** from the standard specification — not made up
 - Size target: 150-300 lines, max 400
 
+#### Multi-block designs (MUST export chaining fixtures)
+
+If the design is multi-block — spec.json port list contains `is_last` (or any
+`*_last*` / `is_final`), OR the category/name indicates hash, Merkle-Damgård,
+sponge, CBC/CTR cipher chain, accumulator, or streaming filter — then
+golden_model.py MUST export two parallel fixtures (see golden_model_template.py):
+
+- `MULTI_BLOCK_INPUTS: list[list[dict]]` — one entry per message; each entry is
+  the per-block input list. At least one message MUST have length ≥ 2.
+- `MULTI_BLOCK_EXPECTED_DIGEST: list[int]` — final digest per message, same
+  length as `MULTI_BLOCK_INPUTS`.
+
+These feed the cocotb `test_multi_block_chaining` test, which is the ONLY stage
+that catches chaining-reset bugs (pattern 11) and valid-not-gated-by-is_last
+bugs (pattern 14) — both pass single-block tests. For single-block designs,
+OMIT both exports (their absence signals vf-tb-gen to skip multi-block testing).
+
 ### Step 4: Math Validation (spec.json)
 
 1. Counter width: `ceil(log2(max_count))`, power of 2: +1 bit
@@ -197,6 +214,6 @@ Notes: <any warnings or issues>
 
 ## Bash Safety
 
-- All long-running commands MUST use `timeout`: `timeout 30s python ...`, `timeout 15s <cmd>`
+- Time-bound long commands. `timeout` is Linux-only (macOS lacks it by default), so resolve and fall back: `TO=$(command -v gtimeout || command -v timeout || true); $TO 30s <cmd> || <cmd>`. Use `"${PYTHON_EXE:-python3}"`, not bare `python`.
 - Before reading any file whose size is unknown, check with `wc -l <file>`. If > 500 lines, read with `offset` and `limit` — never dump an entire large file into context.
 - Never run `cat` on binary files or VCD files.

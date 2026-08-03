@@ -407,6 +407,8 @@ def main():
         for err in verify_errors:
             print(err)
         print("\n[verify] Fix the above issues before running /vf-rtl")
+        print("\nUsage: /vf-rtl <project_dir>")
+        return 1  # non-zero so CI / automation can detect a broken install
     else:
         print("\n[verify] All checks passed.")
 

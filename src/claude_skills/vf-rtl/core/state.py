@@ -1,5 +1,6 @@
 """Pipeline state management - zero external dependencies."""
 
+import contextlib
 import json
 import os
 import subprocess
@@ -87,6 +88,9 @@ class PipelineState:
 
     def mark_complete(self, stage: str, result: dict) -> bool:
         """Mark a stage as complete. Returns False if prerequisites not met."""
+        if stage not in STAGE_ORDER:
+            print(f"[ERROR] Unknown stage '{stage}'. Valid stages: {list(STAGE_ORDER)}", file=sys.stderr)
+            return False
         if stage in STAGE_PREREQUISITES:
             ok, reason = can_execute(stage, self.stages_completed)
             if not ok:
@@ -197,14 +201,22 @@ class PipelineState:
     # -- Persistence ---------------------------------------------------------
 
     def save(self) -> Path:
-        """Save state to .veriflow/pipeline_state.json"""
+        """Save state to .veriflow/pipeline_state.json (atomic: tmp + rename)."""
         d = Path(self.project_dir) / ".veriflow"
         d.mkdir(parents=True, exist_ok=True)
         p = d / "pipeline_state.json"
+        tmp = d / "pipeline_state.json.tmp"
         try:
-            p.write_text(json.dumps(asdict(self), indent=2, default=str), encoding="utf-8")
+            # Write to a temp file then atomically rename. A crash mid-write
+            # leaves the previous good state intact instead of a truncated file
+            # that would silently reset the pipeline on the next load().
+            tmp.write_text(json.dumps(asdict(self), indent=2, default=str), encoding="utf-8")
+            os.replace(tmp, p)
         except OSError as e:
             print(f"[ERROR] Failed to save pipeline state: {e}", file=sys.stderr)
+            with contextlib.suppress(OSError):
+                if tmp.exists():
+                    tmp.unlink()
         return p
 
     @classmethod
@@ -218,6 +230,8 @@ class PipelineState:
         if p.exists():
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise TypeError(f"state file root is {type(data).__name__}, not object")
                 # Filter to only known fields to survive schema evolution
                 known = {f.name for f in fields(cls)}
                 filtered = {k: v for k, v in data.items() if k in known}
@@ -238,6 +252,15 @@ class PipelineState:
             setattr(self, f"{s}_output", None)
             self.stage_summaries.pop(s, None)
             self.stage_timings.pop(s, None)
+            # Clear error history + retry budget for rolled-back stages so
+            # --check-loop doesn't fire on pre-rollback errors and the KB
+            # fix-attempt count resets for a fresh attempt.
+            self.error_history.pop(s, None)
+            self.retry_count.pop(s, None)
+        # equivalence_check belongs to lint_synth; drop it if lint_synth is
+        # being redone so a stale netlist result can't leak forward.
+        if "lint_synth" in to_remove:
+            self.equivalence_check = None
         self.save()
 
     def next_stage(self) -> str | None:
@@ -248,6 +271,8 @@ class PipelineState:
         """Pre-execution validation. Must be called before every stage execution."""
         # 1. Check strict ordering
         expected = next_pending_stage(self.stages_completed)
+        if expected is None:
+            return False, "Pipeline already complete — no pending stages."
         if stage != expected:
             return False, f"Order violation: expected '{expected}', but attempted '{stage}'. Stages cannot be skipped."
 
@@ -280,12 +305,17 @@ class PipelineState:
                     modules = spec["modules"]
                     if isinstance(modules, dict):
                         for name, m in modules.items():
+                            if not isinstance(m, dict):
+                                missing.append(f"spec.json: module {name} is malformed (not an object)")
+                                continue
                             if not m.get("ports"):
                                 missing.append(f"spec.json: module {name} missing ports")
                             if m.get("module_type") == "top":
                                 has_top = True
                     elif isinstance(modules, list):
                         for m in modules:
+                            if not isinstance(m, dict):
+                                continue
                             mod_name = m.get("module_name", "?")
                             if not m.get("module_name"):
                                 missing.append("spec.json: module missing module_name")
@@ -310,7 +340,13 @@ class PipelineState:
                     missing.append("spec.json: timing_convention missing")
                 # Check timing_contract in connectivity entries
                 if spec.get("module_connectivity"):
-                    for i, conn in enumerate(spec["module_connectivity"]):
+                    conn_iter = spec["module_connectivity"]
+                    # Tolerate a dict (legacy/malformed) instead of the expected list.
+                    if isinstance(conn_iter, dict):
+                        conn_iter = list(conn_iter.values())
+                    for i, conn in enumerate(conn_iter):
+                        if not isinstance(conn, dict):
+                            continue
                         if not conn.get("timing_contract"):
                             missing.append(f"spec.json: module_connectivity[{i}] missing timing_contract")
                 # fanout_groups is optional but if present must have valid structure
@@ -371,14 +407,18 @@ class PipelineState:
 
         recent_errors = self.error_history[stage][-3:]  # Last 3 attempts
 
-        if isinstance(error_signature, tuple):
+        if isinstance(error_signature, (tuple, list)):
             # Structured matching: compare (classification, signal_root, cycle_offset)
             # This is robust to code changes that shift line numbers.
             sig_class, sig_signal, sig_offset = error_signature
             signature_count = 0
             for e in recent_errors:
                 for err in e.get("errors", []):
-                    if isinstance(err, tuple) and len(err) == 3:
+                    # Accept tuple OR list: JSON persistence round-trips tuples
+                    # to lists, so a signature stored last session reloads as a
+                    # list. Without this, structured loop detection is dead for
+                    # every cross-process CLI call.
+                    if isinstance(err, (tuple, list)) and len(err) == 3:
                         err_class, err_signal, err_offset = err
                         if (sig_class == err_class and
                                 sig_signal == err_signal and
@@ -540,7 +580,9 @@ def evaluate_hook(spec, project_dir: str) -> tuple[bool, str]:
 
     Cross-platform replacement for shell-based hooks (test/ls/grep). `spec`
     is a JSON string (starts with '{') or a parsed dict. Relative paths are
-    resolved against `project_dir`.
+    resolved against `project_dir` and MUST stay inside it — absolute paths
+    and ``..`` traversal are rejected so an LLM-authored hook can't read
+    outside the project.
 
     Predicates:
       {"exists": "relpath"}                          file/dir exists
@@ -555,6 +597,22 @@ def evaluate_hook(spec, project_dir: str) -> tuple[bool, str]:
     [HOOK] diagnostics. Never raises on bad input — returns (False, reason).
     """
     import glob as _glob
+
+    def _safe_join(base: Path, rel) -> Path | None:
+        """Join base + rel, rejecting non-strings and paths that escape base."""
+        if not isinstance(rel, str) or not rel:
+            return None
+        candidate = (base / rel).resolve()
+        try:
+            base_resolved = base.resolve()
+        except OSError:
+            return None
+        # Path.is_relative_to is 3.9+; use a prefix check for portability.
+        if str(candidate) != str(base_resolved) and not str(candidate).startswith(
+            str(base_resolved) + os.sep
+        ):
+            return None
+        return candidate
 
     if isinstance(spec, str):
         try:
@@ -595,13 +653,19 @@ def evaluate_hook(spec, project_dir: str) -> tuple[bool, str]:
 
         if "exists" in node:
             rel = node["exists"]
-            p = base / rel
+            p = _safe_join(base, rel)
+            if p is None:
+                return (False, f"exists: invalid or escaping path {rel!r}")
             return (p.exists(), f"exists: {rel}" if p.exists() else f"missing: {rel}")
 
         if "glob" in node:
             pattern = node["glob"]
             minimum = node.get("min", 1)
-            matches = _glob.glob(str(base / pattern))
+            try:
+                minimum = int(minimum)
+            except (TypeError, ValueError):
+                return (False, f"glob {pattern}: 'min' must be an integer, got {minimum!r}")
+            matches = _glob.glob(str(base / pattern)) if isinstance(pattern, str) else []
             ok = len(matches) >= minimum
             return (ok, f"glob {pattern}: {len(matches)} match(es), need {minimum}")
 
@@ -609,7 +673,9 @@ def evaluate_hook(spec, project_dir: str) -> tuple[bool, str]:
             rel = node["contains"]
             text = node.get("text", "")
             case = node.get("case", True)
-            p = base / rel
+            p = _safe_join(base, rel)
+            if p is None:
+                return (False, f"contains: invalid or escaping path {rel!r}")
             if not p.exists():
                 return (False, f"missing file: {rel}")
             content = p.read_text(errors="ignore")
@@ -704,6 +770,7 @@ if __name__ == "__main__":
 
     _is_start = "--start" in sys.argv
     _is_fail = "--fail" in sys.argv
+    _is_inc_retry = "--inc-retry" in sys.argv
     _hook_cmd = _get_arg(sys.argv, "hook")
     _journal_outputs = _get_arg(sys.argv, "journal-outputs")
     _journal_notes = _get_arg(sys.argv, "journal-notes")
@@ -725,6 +792,17 @@ if __name__ == "__main__":
         print(f"[STATE] {_stage} → FAILED")
         if _error_sig:
             print(f"[STATE] Error signature recorded: {_error_sig}")
+    elif _is_inc_retry:
+        # Record a retry attempt for this stage. Used by the Stage 3 fix loop
+        # so the retry budget (and Stage 4's --fix-attempts KB count) is
+        # accurate; without it, retry_count stays 0 for every project.
+        _state.inc_retry(_stage)
+        _state.save()
+        _count = _state.retry_count.get(_stage, 0)
+        print(f"[STATE] {_stage} → RETRY++ (now {_count}/{_state.max_retries_per_stage})")
+        if _state.is_retry_exhausted(_stage):
+            print(f"[BUDGET] Stage '{_stage}' exhausted {_state.max_retries_per_stage} retries. Escalating to user.",
+                  file=sys.stderr)
     else:
         # Run hook if provided
         _hook_passed = True

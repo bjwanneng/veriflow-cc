@@ -333,3 +333,32 @@ def test_cli_fix_latency_mismatch():
         fixed = json.loads(Path(spec_path).read_text())
         latency = fixed["modules"][0]["cycle_timing"]["pipeline_timing"]["input_to_output_latency_cycles"]
         assert latency >= 3
+
+
+def test_cli_fix_atomic_no_tmp_leftover_and_backup_present():
+    """MED: --fix must write spec.json atomically (no .tmp leftover) and keep
+    a .bak backup so a crash mid-write can't truncate the spec."""
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = _minimal_spec(module_connectivity=[
+            {"source": "fsm.x", "destination": "top_mod.y",
+             "timing_contract": {"producer_type": "registered",
+                                  "consumer_type": "combinational",
+                                  "same_cycle_visible": True,
+                                  "pipeline_delay_cycles": 0}},
+        ])
+        spec_path = _write_spec(tmp, spec)
+
+        result = subprocess.run(
+            [sys.executable, str(_SKILLS_DIR / "analysis" / "timing_contract_checker.py"),
+             "--fix", "--spec", spec_path],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr
+
+        # Primary file is still valid JSON
+        json.loads(Path(spec_path).read_text())
+        # Backup exists
+        assert Path(spec_path + ".bak").exists()
+        # No leftover .tmp file
+        leftovers = [p.name for p in Path(tmp).iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []

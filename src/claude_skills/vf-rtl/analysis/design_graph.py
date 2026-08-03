@@ -155,23 +155,30 @@ class DesignGraph:
         return sorted(self.nodes - reachable)
 
     def check_fanout_skew(self) -> list[dict]:
-        """Check fanout_groups for skew violations."""
+        """Check fanout_groups for skew violations.
+
+        Canonical spec fields (templates/spec_template.json):
+          - ``constraint: "same_arrival"``  (NOT a legacy ``same_arrival: bool``)
+          - ``max_delay_skew_cycles``        (NOT ``max_skew_cycles``)
+        This is a structural reporter: it surfaces same-arrival groups that
+        need timing verification (actual arrival-cycle checking needs synthesis
+        data). Tolerates the legacy bool/``max_skew_cycles`` shape too.
+        """
         violations = []
         groups = self.spec.get("fanout_groups", [])
         for fg in groups:
             name = fg.get("name", "?")
             signals = fg.get("signals", [])
-            max_skew = fg.get("max_skew_cycles", 0)
-            same_arrival = fg.get("same_arrival", False)
+            # Canonical: constraint == "same_arrival". Legacy fallback: bool.
+            constraint = fg.get("constraint")
+            same_arrival = (constraint == "same_arrival") or bool(fg.get("same_arrival", False))
+            max_skew = fg.get("max_delay_skew_cycles", fg.get("max_skew_cycles", 0))
 
             if same_arrival and len(signals) > 1:
-                # Check that all signals in group arrive at same cycle
-                # This is a structural check — actual timing verification
-                # would need synthesis data
                 violations.append({
                     "group": name,
                     "signals": signals,
-                    "issue": "same_arrival=True requires all signals to arrive "
+                    "issue": "same_arrival requires all signals to arrive "
                              f"within {max_skew} cycle(s)",
                     "max_skew": max_skew,
                 })

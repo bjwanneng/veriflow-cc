@@ -122,6 +122,29 @@ TEST_VECTORS = [
 ]
 
 
+# --- Multi-block chaining exports (ONLY for multi-block designs) ---
+# Required when the design has an `is_last` / `*_last*` / `is_final` port, or is
+# a hash / Merkle-Damgård / sponge / CBC-CTR chain / accumulator / streaming
+# filter. The cocotb testbench's test_multi_block_chaining consumes these to
+# exercise the 2nd+ block — where chaining-reset bugs (pattern 11) and
+# valid-not-gated-by-is_last bugs (pattern 14) only manifest.
+#
+# For single-block designs, OMIT this section entirely (its absence is how
+# vf-tb-gen detects single-block and skips the multi-block test).
+MULTI_BLOCK_INPUTS = [
+    # list of messages, each a list of per-block input dicts; at least one
+    # message must have length >= 2.
+    # [
+    #     [{"data": 0x1122..., "is_last": False}, {"data": 0x3344..., "is_last": True}],
+    # ],
+]
+
+MULTI_BLOCK_EXPECTED_DIGEST = [
+    # final digest for each message above, parallel list, same length.
+    # [0x<expected_hash>],
+]
+
+
 # --- Standard Interface ---
 
 def run(test_vector_index: int = 0) -> list[dict]:

@@ -21,7 +21,12 @@ The prompt will contain these paths:
 
 ```bash
 source <EDA_ENV path from prompt>
-cd <PROJECT_DIR path from prompt> && iverilog -Wall -tnull workspace/rtl/*.v 2>&1 | tee logs/lint.log; echo "EXIT_CODE: ${PIPESTATUS[0]}"
+cd <PROJECT_DIR path from prompt>
+# Portable: redirect to the log (no tee / PIPESTATUS — both are bash-only and
+# break under zsh, the macOS default). $? is iverilog's own exit code.
+iverilog -Wall -tnull workspace/rtl/*.v > logs/lint.log 2>&1
+echo "EXIT_CODE: $?"
+cat logs/lint.log  # echo to console for visibility
 ```
 
 Replace placeholder paths with actual paths from your prompt.
@@ -69,5 +74,5 @@ Log: logs/lint.log
 
 ## Bash Safety
 
-- All commands MUST use `timeout`: `timeout 60s iverilog ...`
+- Time-bound long commands. `timeout` is Linux-only (macOS lacks it by default), so resolve and fall back: `TO=$(command -v gtimeout || command -v timeout || true); $TO 60s iverilog ... || iverilog ...`.
 - Before reading `logs/lint.log`, check with `wc -l`. If > 200 lines, read with `offset` and `limit`.

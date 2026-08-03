@@ -16,7 +16,7 @@ The prompt contains ALL context inline:
   describe this module's behavior. Translate them into Verilog combinational +
   sequential logic.
 - `GOLDEN_MODEL_PATH`: absolute path to the full golden_model.py file — you may
-  run `python <path>` if you want to see the actual trace output for one or two
+  run `"${PYTHON_EXE:-python3}" <path>` if you want to see the actual trace output for one or two
   test vectors before writing RTL (recommended for FSM / multi-cycle modules).
 - `MODULE_SPEC`: ports, parameters, timing_contract from spec.json. Key fields:
   - `registered_outputs`: list of output port names that must use `output wire` + internal `reg` + `assign`
@@ -93,7 +93,7 @@ For multi-cycle / FSM modules, run the golden model and look at its trace
 for the FIRST test vector:
 
 ```bash
-python "$GOLDEN_MODEL_PATH" 2>&1 | head -40
+"${PYTHON_EXE:-python3}" "$GOLDEN_MODEL_PATH" 2>&1 | head -40
 ```
 
 The trace gives you concrete register values per cycle (e.g.
@@ -341,7 +341,7 @@ Before writing the file, mentally verify ALL 10:
 4. **Output timing**: `registered_outputs` flow through a `_reg` → `assign`;
    `same_cycle_visible` outputs go straight from combinational logic.
 5. **FSM defaults**: Every `case` has a `default:` branch.
-6. **Golden model cross-check**: Pick the first 3 cycles of `python "$GOLDEN_MODEL_PATH"`
+6. **Golden model cross-check**: Pick the first 3 cycles of `"${PYTHON_EXE:-python3}" "$GOLDEN_MODEL_PATH"`
    trace output. Mentally walk through your RTL with the same inputs. The
    register values at cycle 1, 2, 3 must match.
 7. **PREV_FAILURE address** (only on retry): If `PREV_FAILURE` is in your
@@ -398,9 +398,13 @@ more than 100 lines of code review.
 
 ## Bash Safety
 
-- All commands MUST use `timeout`: `timeout 30s python ...`, `timeout 10s grep ...`
+- Use the discovered interpreter, not bare `python` (which may not exist, e.g.
+  on macOS): `"${PYTHON_EXE:-python3}"`.
+- Time-bound long commands, but `timeout` is Linux-only (macOS has neither
+  `timeout` nor `gtimeout` by default). Resolve it once and fall back to bare:
+  `TO=$(command -v gtimeout || command -v timeout || true); $TO 30s <cmd> || <cmd>`.
 - Before reading any file whose size is unknown, check with `wc -l <file>`. If > 500 lines, read with `offset` and `limit`.
-- The golden model trace command (`python "$GOLDEN_MODEL_PATH"`) MUST use `| head -40` — never dump the full trace.
+- The golden model trace command (`"${PYTHON_EXE:-python3}" "$GOLDEN_MODEL_PATH"`) MUST use `| head -40` — never dump the full trace.
 
 ---
 

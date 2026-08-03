@@ -86,11 +86,19 @@ def score_candidate(
 
     synth = quick_synth(rtl_file, module, str(work / "synth"))
     cells = synth.get("cells", 0)
+    # Source line count (non-blank) — a deterministic tiebreaker for when yosys
+    # is absent and every candidate reports cells=0.
+    try:
+        rtl_lines = sum(1 for ln in Path(rtl_file).read_text(encoding="utf-8",
+                         errors="ignore").splitlines() if ln.strip())
+    except OSError:
+        rtl_lines = 0
     return {
         "rtl": rtl_file,
         "passed": passed,
         "fails": fails,
         "cells": cells,
+        "rtl_lines": rtl_lines,
         "score": cells,
     }
 
@@ -98,16 +106,24 @@ def score_candidate(
 def select_best(scores: list[dict | None]) -> dict | None:
     """Pick the best candidate.
 
-    Ranking key: (not passed, fails, cells). Passing candidates all have
-    fails==0 so cells decides among them; failing candidates rank by fewest
-    fails first (closest to correct), then cells.
+    Ranking key: (not passed, fails, cells, rtl_lines). Passing candidates all
+    have fails==0 so cells decides among them; failing candidates rank by fewest
+    fails first (closest to correct), then cells. ``rtl_lines`` is a last-resort
+    tiebreaker: when yosys is absent every candidate has cells=0, so without it
+    ``min`` would degrade to "pick cand0" by iteration order and test-time
+    scaling would mean nothing. Smaller source wins (simpler design).
     """
     valid = [s for s in (scores or []) if s]
     if not valid:
         return None
     return min(
         valid,
-        key=lambda s: (not s.get("passed", False), s.get("fails", 1 << 30), s.get("cells", 1 << 30)),
+        key=lambda s: (
+            not s.get("passed", False),
+            s.get("fails", 1 << 30),
+            s.get("cells", 1 << 30),
+            s.get("rtl_lines", 1 << 30),
+        ),
     )
 
 
@@ -153,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({
         "module": args.module,
         "winner": best,
+        "winner_passed": bool(best and best.get("passed")),
+        "any_passed": any(s.get("passed") for s in scores),
         "winner_path": str(winner_path),
         "all": scores,
     }, indent=2))

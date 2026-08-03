@@ -630,6 +630,28 @@ _PATTERN_MATCHERS = [
 ]
 
 
+def _normalize_divergences(divergences) -> list[dict]:
+    """Drop non-dict / signal-less entries and fill defaults for keys the
+    matchers access directly (signal, classification, expected, actual, cycle).
+
+    Without this, a single malformed divergence dict made a matcher raise
+    KeyError, and the per-matcher try/except in match_patterns then disabled
+    that matcher for the ENTIRE batch — silently shrinking the pattern set.
+    """
+    out = []
+    for d in divergences or []:
+        if not isinstance(d, dict):
+            continue
+        if not d.get("signal"):
+            continue
+        d.setdefault("classification", "")
+        d.setdefault("expected", 0)
+        d.setdefault("actual", 0)
+        d.setdefault("cycle", 0)
+        out.append(d)
+    return out
+
+
 def match_patterns(divergences: list[dict]) -> list[PatternMatch]:
     """Match a list of divergence dicts against the bug catalog.
 
@@ -637,6 +659,7 @@ def match_patterns(divergences: list[dict]) -> list[PatternMatch]:
     divergence dict expects: `signal`, `classification`, `expected`,
     `actual`, `cycle`; optional `offset_cycles`, `kind`.
     """
+    divergences = _normalize_divergences(divergences)
     matches: list[PatternMatch] = []
     for matcher in _PATTERN_MATCHERS:
         try:

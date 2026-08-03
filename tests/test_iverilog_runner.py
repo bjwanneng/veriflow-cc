@@ -261,3 +261,59 @@ def test_parse_fail_line_handles_quoted_values():
     assert result["cycle"] == 3
     assert result.get("message_field") in (None, "something broke at posedge") \
         or "broke" in result.get("message", "")
+
+
+# ── golden_check (HIGH#6) + _normalize_value (MED bare-hex) ───────────────
+
+
+def _write_golden(tmp: Path, body: str) -> str:
+    p = tmp / "golden_model.py"
+    p.write_text(body)
+    return str(p)
+
+
+def test_golden_check_rejects_empty_output(tmp_path):
+    """HIGH#6: a golden model that exits 0 but prints NO [PASS] marker must
+    be reported as failed — otherwise a broken/empty reference model passes the
+    Stage-1 self-check and then masks RTL bugs during A/B/D classification."""
+    import tempfile
+    from iverilog_runner import golden_check
+    with tempfile.TemporaryDirectory() as tmp:
+        # Exits 0, prints nothing useful
+        path = _write_golden(Path(tmp), "print('hello world')\n")
+        result = golden_check(path)
+        assert result["passed"] is False
+        assert "no [PASS]" in result.get("error", "").lower() or result.get("fail_count", 0) >= 0
+
+
+def test_golden_check_accepts_real_pass(tmp_path):
+    """A golden model printing [PASS] and exiting 0 is accepted."""
+    import tempfile
+    from iverilog_runner import golden_check
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_golden(Path(tmp), "print('[PASS] vector 0 ok')\n")
+        result = golden_check(path)
+        assert result["passed"] is True
+        assert result["pass_count"] >= 1
+
+
+def test_golden_check_rejects_fail_marker():
+    """A [FAIL] marker → passed=False."""
+    import tempfile
+    from iverilog_runner import golden_check
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_golden(Path(tmp), "print('[FAIL] vector 0 mismatch')\n")
+        result = golden_check(path)
+        assert result["passed"] is False
+
+
+def test_normalize_value_bare_hex():
+    """MED: bare hex without 0x prefix (e.g. a TB printing expected=1f) must
+    parse, not return None and mis-classify a real timing mismatch as Type A."""
+    from iverilog_runner import _normalize_value
+    assert _normalize_value("1f") == 31
+    assert _normalize_value("0x1f") == 31
+    assert _normalize_value("deadbeef") == 0xdeadbeef
+    assert _normalize_value("42") == 42
+    assert _normalize_value("xx") is None
+    assert _normalize_value("") is None

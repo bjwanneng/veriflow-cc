@@ -82,6 +82,61 @@ def test_detect_cycles_self_loop():
     assert len(DesignGraph(spec).detect_cycles()) >= 1
 
 
+# --- fanout skew (HIGH#5: was reading wrong field names → always no-op) ---
+
+
+def test_check_fanout_skew_canonical_constraint_and_skew():
+    """HIGH#5: a same_arrival group with skew > 0 must be reported. Previously
+    the checker read 'max_skew_cycles' (canonical is 'max_delay_skew_cycles')
+    and read 'same_arrival' as a bool (canonical is constraint='same_arrival'),
+    so every group passed silently."""
+    spec = {
+        "modules": [_mod("top", module_type="top")],
+        "fanout_groups": [{
+            "name": "g",
+            "constraint": "same_arrival",
+            "max_delay_skew_cycles": 1,
+            "signals": [{"name": "a"}, {"name": "b"}],
+        }],
+    }
+    v = DesignGraph(spec).check_fanout_skew()
+    assert len(v) == 1
+    assert v[0]["group"] == "g"
+    assert v[0]["max_skew"] == 1
+
+
+def test_check_fanout_skew_no_violation_when_skew_zero():
+    """A same_arrival group with max_delay_skew_cycles=0 is the STRICTEST
+    same-arrival case (signals must arrive same cycle) and is still flagged,
+    with max_skew reported as 0."""
+    spec = {
+        "modules": [_mod("top", module_type="top")],
+        "fanout_groups": [{
+            "name": "g",
+            "constraint": "same_arrival",
+            "max_delay_skew_cycles": 0,
+            "signals": [{"name": "a"}, {"name": "b"}],
+        }],
+    }
+    v = DesignGraph(spec).check_fanout_skew()
+    assert len(v) == 1
+    assert v[0]["max_skew"] == 0
+
+
+def test_check_fanout_skew_ignores_non_same_arrival():
+    """A group whose constraint is NOT same_arrival is not flagged."""
+    spec = {
+        "modules": [_mod("top", module_type="top")],
+        "fanout_groups": [{
+            "name": "g",
+            "constraint": "relaxed",
+            "max_delay_skew_cycles": 5,
+            "signals": [{"name": "a"}, {"name": "b"}],
+        }],
+    }
+    assert DesignGraph(spec).check_fanout_skew() == []
+
+
 if __name__ == "__main__":
     test_find_unreachable_returns_none_when_no_top()
     test_find_unreachable_finds_isolated_module()
@@ -89,4 +144,7 @@ if __name__ == "__main__":
     test_detect_cycles_finds_simple_cycle()
     test_detect_cycles_acyclic_returns_empty()
     test_detect_cycles_self_loop()
+    test_check_fanout_skew_canonical_constraint_and_skew()
+    test_check_fanout_skew_no_violation_when_skew_zero()
+    test_check_fanout_skew_ignores_non_same_arrival()
     print("All design_graph tests passed.")

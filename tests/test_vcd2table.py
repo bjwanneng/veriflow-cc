@@ -117,3 +117,13 @@ def test_error_recovery_uses_working_vcd2table_command():
     assert "--sim-log logs/sim.log" in content
     assert "--output logs/wave_diff.txt" in content
     assert "--output logs/wave_table.txt" in content
+
+
+def test_error_recovery_vcd2table_path_is_under_analysis():
+    """HIGH#3: error_recovery.md must reference analysis/vcd2table.py (the file
+    lives under analysis/, and install.py removes orphaned flat copies). A flat
+    ${CLAUDE_SKILL_DIR}/vcd2table.py path breaks error recovery on every FAIL."""
+    content = (_SKILLS_DIR / "error_recovery.md").read_text(encoding="utf-8")
+    assert "analysis/vcd2table.py" in content
+    # No flat copy reference should remain
+    assert '"${CLAUDE_SKILL_DIR}/vcd2table.py"' not in content

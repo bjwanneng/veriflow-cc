@@ -260,6 +260,46 @@ def test_rollback_restores_previous_content():
         assert bp.read_text() == "ORIGINAL\n"
 
 
+# --- Batch 4: safety (path-escape guard + fail-safe auto-promote) ----------
+
+
+def test_promote_rejects_path_escaping_reference_type():
+    """A staged reference whose 'type' contains path traversal must NOT be
+    promoted to a path outside references_dir (cand JSON is hand-editable)."""
+    with tempfile.TemporaryDirectory() as kb_tmp, tempfile.TemporaryDirectory() as ref_tmp:
+        si = SelfImprover(kb_dir=kb_tmp, references_dir=ref_tmp)
+        artifact = Path(kb_tmp) / "evil.v"
+        artifact.write_text("module m; endmodule\n")
+        _stage(si, "reference", {
+            "id": "evil__p__d",
+            "type": "../../etc/evil",  # path-escape attempt
+            "artifact": str(artifact),
+            "validation": "validated",
+        })
+        out = si.promote(apply_id="evil__p__d")
+        # Must refuse / error, and write nothing under references_dir
+        assert out.get("error") or out.get("refused") or out.get("mode") == "manual" and "promotion_id" not in out
+        assert list(Path(ref_tmp).glob("*.v")) == []
+        # And nothing escaped outside
+        assert not (Path(kb_tmp).parent.parent.parent / "etc" / "evil_learned_1.v").exists()
+
+
+def test_promote_auto_rolls_back_when_after_is_none():
+    """If the post-promotion benchmark produces no pass_rate (after=None), the
+    batch must be rolled back fail-safe — same as the baseline=None refusal.
+    Previously 'after is None' was treated as 'keep', silently promoting
+    unvetted skill modifications."""
+    with tempfile.TemporaryDirectory() as kb_tmp, tempfile.TemporaryDirectory() as ref_tmp:
+        si = SelfImprover(kb_dir=kb_tmp, references_dir=ref_tmp)
+        si.benchmark_cmd = "echo skipped"
+        _validated_ref(si, _SKILLS_DIR / "references" / "handshake_valid_ready.v")
+        seq = [0.9, None]  # baseline OK, after-promotion produced no pass_rate
+        si._run_benchmark = lambda: seq.pop(0)
+        out = si.promote(auto=True)
+        assert out.get("rolled_back"), f"expected fail-safe rollback, got {out}"
+        assert not list(Path(ref_tmp).glob("*_learned_*.v"))
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

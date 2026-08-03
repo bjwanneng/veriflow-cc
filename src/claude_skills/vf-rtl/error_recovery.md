@@ -30,14 +30,14 @@ VCD_FILE=$(ls -t workspace/sim/*.vcd 2>/dev/null | head -1)
 3. Run vcd2table golden model diff:
 ```bash
 if [ -f workspace/docs/golden_model.py ] && [ -n "$VCD_FILE" ] && [ -f "$VCD_FILE" ]; then
-    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/vcd2table.py" \
         "$VCD_FILE" \
         --sim-log logs/sim.log \
         --golden-model workspace/docs/golden_model.py \
         --module $TOP_MODULE \
         --output logs/wave_diff.txt 2>&1 | tee logs/vcd2table.log
 elif [ -n "$VCD_FILE" ] && [ -f "$VCD_FILE" ]; then
-    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/vcd2table.py" \
+    $PYTHON_EXE "${CLAUDE_SKILL_DIR}/analysis/vcd2table.py" \
         "$VCD_FILE" \
         --sim-log logs/sim.log \
         --module $TOP_MODULE \

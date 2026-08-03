@@ -43,6 +43,28 @@ def test_select_best_cells_tiebreak_among_passing():
     assert select_best(scores)["rtl"] == "b"
 
 
+def test_select_best_cells_zero_tiebreak_uses_rtl_lines():
+    """When yosys is absent, every passing candidate has cells=0 (quick_synth
+    returns cells=0). The selector used to fall back to 'pick cand0' by
+    iteration order; it must instead use source size (rtl_lines) as a
+    deterministic secondary signal so test-time-scaling still means something."""
+    scores = [
+        {"rtl": "cand0", "passed": True, "fails": 0, "cells": 0, "rtl_lines": 80},
+        {"rtl": "cand1", "passed": True, "fails": 0, "cells": 0, "rtl_lines": 40},
+    ]
+    assert select_best(scores)["rtl"] == "cand1"
+
+
+def test_select_best_rtl_lines_only_breaks_cells_tie():
+    """rtl_lines is only a tiebreaker — a candidate with more cells but fewer
+    lines must NOT beat one with fewer cells."""
+    scores = [
+        {"rtl": "a", "passed": True, "fails": 0, "cells": 10, "rtl_lines": 200},
+        {"rtl": "b", "passed": True, "fails": 0, "cells": 20, "rtl_lines": 5},
+    ]
+    assert select_best(scores)["rtl"] == "a"
+
+
 # --- score_candidate: graceful degradation --------------------------------
 
 

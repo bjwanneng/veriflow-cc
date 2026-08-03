@@ -64,6 +64,18 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+# Safe-name guard for candidate ids / reference types. These flow from
+# hand-editable staging JSON into filesystem paths, so reject anything that
+# could traverse directories (slash, backslash, '..', NUL, etc.).
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+
+
+def _assert_safe_name(name: str, what: str) -> None:
+    """Raise ValueError if `name` is not a safe single path component."""
+    if not isinstance(name, str) or not name or not _SAFE_NAME_RE.match(name) or name in (".", ".."):
+        raise ValueError(f"unsafe {what}: {name!r}")
+
+
 class SelfImprover:
     """Drives the Observe→Stage→Validate→Promote→Rollback loop."""
 
@@ -349,18 +361,34 @@ class SelfImprover:
         return (max(idxs) + 1) if idxs else 1
 
     def _apply_one(self, kind: str, cand: dict) -> dict:
-        """Apply ONE validated candidate to the hot path + log it (reversible)."""
+        """Apply ONE validated candidate to the hot path + log it (reversible).
+
+        Raises ValueError if a candidate id/type is unsafe (path escape), so
+        the caller can skip it without touching the hot path.
+        """
         ts = _now_iso()
         cid = cand["id"]
+        _assert_safe_name(cid, "candidate id")
         if kind == "reference":
             self.references_dir.mkdir(parents=True, exist_ok=True)
             mtype = cand.get("type", "generic")
+            _assert_safe_name(mtype, "reference type")
             idx = self._next_learned_index(mtype)
             target = self.references_dir / f"{mtype}_learned_{idx}.v"
+            # Defense-in-depth: the resolved target must stay inside references_dir
+            # even if a safe-name check is somehow bypassed.
+            try:
+                target.resolve().relative_to(self.references_dir.resolve())
+            except ValueError:
+                raise ValueError(f"reference target escapes references_dir: {target}")
             artifact = Path(cand["artifact"])
             content = artifact.read_text(encoding="utf-8") if artifact.exists() else ""
+            # Capture pre-existing state so rollback restores (not deletes) if a
+            # stale learned file occupied this index from a crashed prior run.
+            existed = target.exists()
+            previous = target.read_text(encoding="utf-8") if existed else None
             target.write_text(content, encoding="utf-8")
-            is_new, previous = True, None
+            is_new = not existed
         else:  # pattern → append to bug_patterns.md
             target = self.bug_patterns_path
             existed = target.exists()
@@ -414,7 +442,12 @@ class SelfImprover:
         if apply_id:
             for kind, cand in validated:
                 if cand["id"] == apply_id:
-                    entry = self._apply_one(kind, cand)
+                    try:
+                        entry = self._apply_one(kind, cand)
+                    except ValueError as e:
+                        # Unsafe candidate (path-escape / bad id) — refuse to
+                        # touch the hot path; nothing is written.
+                        return {"mode": "manual", "refused": True, "error": str(e)}
                     return {"mode": "manual", "promotion_id": entry["promotion_id"],
                             "candidate_id": apply_id}
             return {"mode": "manual", "error": f"no validated candidate '{apply_id}'"}
@@ -437,15 +470,28 @@ class SelfImprover:
         if baseline is None:
             return {"mode": "auto", "refused": True,
                     "reason": "benchmark produced no pass_rate — refusing"}
-        applied = [self._apply_one(kind, cand) for kind, cand in validated]
+        # Skip unsafe candidates (path-escape / bad id) rather than aborting the
+        # whole batch; a bad staging entry shouldn't block good ones.
+        applied = []
+        skipped = []
+        for kind, cand in validated:
+            try:
+                applied.append(self._apply_one(kind, cand))
+            except ValueError as e:
+                skipped.append({"candidate_id": cand.get("id"), "error": str(e)})
         after = self._run_benchmark()
-        if after is not None and after < baseline:
+        # Fail-safe: roll back unless we have POSITIVE confirmation (after is a
+        # number AND >= baseline). 'after is None' means we could not confirm
+        # no-regression, so we must not keep unvetted hot-path modifications.
+        if after is None or after < baseline:
             for entry in applied:
                 self._undo(entry)
+            reason = "no post-promotion pass_rate — fail-safe" if after is None else "regression"
             return {"mode": "auto", "rolled_back": [e["promotion_id"] for e in applied],
-                    "baseline": baseline, "after": after, "reason": "regression"}
+                    "baseline": baseline, "after": after, "reason": reason,
+                    "skipped": skipped}
         return {"mode": "auto", "applied": [e["promotion_id"] for e in applied],
-                "baseline": baseline, "after": after}
+                "baseline": baseline, "after": after, "skipped": skipped}
 
     def rollback(self, promotion_id: str) -> dict:
         for entry in reversed(self._read_jsonl(self.log_file)):

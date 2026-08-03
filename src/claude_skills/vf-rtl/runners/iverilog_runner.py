@@ -99,6 +99,20 @@ def golden_check(golden_path: str, verbose: bool = False) -> dict:
             "output": output[:2000],
         }
 
+    # Exit 0 with NO [PASS] marker means the golden model produced no verifiable
+    # result (broken/empty/stub, or it wrote to a file instead of stdout). Treat
+    # this as a failure so a bad reference model can't pass the Stage-1 gate and
+    # then mask RTL bugs during A/B/D classification (which trusts golden values).
+    if not pass_lines:
+        return {
+            "passed": False,
+            "error": "Golden model produced no [PASS] markers — output is empty or unverified",
+            "test_count": 0,
+            "pass_count": 0,
+            "fail_count": 0,
+            "output": output[:2000],
+        }
+
     return {
         "passed": True,
         "test_count": len(pass_lines),
@@ -159,7 +173,16 @@ def _normalize_value(val: str) -> int | None:
     try:
         return int(val)
     except ValueError:
-        return None
+        pass
+    # Bare hex without 0x prefix (e.g. a TB printing expected=1f). Only treat
+    # as hex when every char is a hex digit — otherwise a non-numeric token
+    # like a signal mnemonic would be mis-parsed.
+    if val and all(c in "0123456789abcdef" for c in val):
+        try:
+            return int(val, 16)
+        except ValueError:
+            return None
+    return None
 
 
 def _is_unknown(val: str) -> bool:

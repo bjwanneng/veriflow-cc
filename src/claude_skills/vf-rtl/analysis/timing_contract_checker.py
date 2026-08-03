@@ -23,6 +23,7 @@ import argparse
 import contextlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -682,7 +683,18 @@ def main():
                 bak_path.write_text(
                     spec_path.read_text(encoding="utf-8"), encoding="utf-8"
                 )
-            spec_path.write_text(json.dumps(fixed_spec, indent=2), encoding="utf-8")
+            # Atomic write: tmp + rename. A crash mid-write leaves the previous
+            # spec.json intact instead of a truncated/unparseable file that
+            # would block Stage 1.
+            tmp_path = spec_path.with_suffix(spec_path.suffix + ".tmp")
+            try:
+                tmp_path.write_text(json.dumps(fixed_spec, indent=2), encoding="utf-8")
+                os.replace(tmp_path, spec_path)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                raise
             print(json.dumps({"fixed": True, "fixes_applied": fixes}, indent=2))
         else:
             print(json.dumps({"fixed": False, "message": "No auto-fixable issues found"}, indent=2))

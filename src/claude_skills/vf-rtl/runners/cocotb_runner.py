@@ -26,6 +26,7 @@ Output (stdout):
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 import traceback
@@ -337,6 +338,11 @@ def main():
                         help="Override the default test_<module>.py with a specific "
                              "test file (absolute path or relative to --tb-dir). "
                              "Useful for running debug/alternative test files.")
+    parser.add_argument("--sim-timeout", type=int, default=300,
+                        help="Hard wall-clock cap on the simulation in seconds "
+                             "(default: 300). COCOTB_TIMEOUT bounds the test "
+                             "coroutines but a hung vvp subprocess can outlive it; "
+                             "this guarantees Stage 3 can never hang forever.")
     parser.set_defaults(vcd=True)
     args = parser.parse_args()
 
@@ -434,17 +440,43 @@ def main():
 
     try:
         _t0 = time.perf_counter()
-        runner.test(
-            test_module=test_module,
-            hdl_toplevel=module_name,
-            test_dir=str(tb_dir),
-            build_dir=str(build_dir),
-            results_xml=results_xml_path,
-            waves=args.vcd,
-        )
+        # Hard wall-clock cap. COCOTB_TIMEOUT bounds the test coroutines, but a
+        # hung vvp subprocess (infinite $finish-free loop, VPI deadlock) can
+        # outlive it. signal.alarm guarantees Stage 3 can never hang forever.
+        _sim_timed_out = False
+
+        def _alarm_handler(signum, frame):
+            nonlocal _sim_timed_out
+            _sim_timed_out = True
+            raise TimeoutError(f"simulation exceeded {args.sim_timeout}s wall-clock cap")
+
+        _prev_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(args.sim_timeout)
+        try:
+            runner.test(
+                test_module=test_module,
+                hdl_toplevel=module_name,
+                test_dir=str(tb_dir),
+                build_dir=str(build_dir),
+                results_xml=results_xml_path,
+                waves=args.vcd,
+            )
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, _prev_handler)
         if args.verbose:
             print(f"[TIMING] step=cocotb_test duration={time.perf_counter() - _t0:.2f}s",
                   file=sys.stderr)
+    except TimeoutError as e:
+        traceback.print_exc()
+        print(json.dumps({
+            "tests": 0, "passed": 0, "failed": 1,
+            "error": str(e),
+            "timed_out": True,
+            "xml_path": results_xml_path,
+            "failures": [{"test": test_module, "message": str(e)}]
+        }))
+        sys.exit(1)
     except Exception as e:
         traceback.print_exc()
         # Simulation crashed before producing results

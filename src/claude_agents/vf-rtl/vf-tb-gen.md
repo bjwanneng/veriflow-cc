@@ -176,9 +176,17 @@ A single-block test will pass even when the design is broken for any
 real-world use case. The earliest stage these bugs can be caught is at
 testbench-time, which is what `test_multi_block_chaining` guarantees.
 
-If golden_model.py does NOT export the multi-block exports above, vf-tb-gen
-MUST request them from vf-spec-golden before generating the testbench — do
-not silently fall back to a single-block test for a multi-block design.
+If golden_model.py does NOT export the multi-block fixtures above for a design
+that IS multi-block (per the triggers listed), vf-tb-gen CANNOT generate a
+correct testbench — and a sub-agent cannot request files from another
+sub-agent. So vf-tb-gen MUST STOP and return an error to the orchestrator:
+
+> "MULTI_BLOCK_INPUTS / MULTI_BLOCK_EXPECTED_DIGEST missing from
+> golden_model.py for multi-block design <name>. Re-run Stage 1 (vf-spec-golden)
+> to add the multi-block exports, then re-run Stage 2."
+
+Do NOT silently fall back to a single-block test for a multi-block design —
+that hides exactly the chaining bugs (patterns 11, 14) this test exists to catch.
 
 ### RULE 6: Every cocotb test MUST start with `await ensure_clock(dut)`
 
@@ -631,8 +639,9 @@ VLOG_TB="$PROJECT_DIR/workspace/tb/tb_<design_name>.v"
 test -f "$COCOTB_TB" || echo "[HOOK] FAIL: cocotb TB missing"
 test -f "$VLOG_TB"   || echo "[HOOK] FAIL: Verilog TB missing"
 
-# B. Python syntax
-python -c "import py_compile; py_compile.compile('$COCOTB_TB', doraise=True)" 2>/dev/null \
+# B. Python syntax (use the discovered interpreter; bare `python` does not
+#    exist on macOS and would false-fail this hook on a good TB)
+"${PYTHON_EXE:-python3}" -c "import py_compile; py_compile.compile('$COCOTB_TB', doraise=True)" 2>/dev/null \
     && echo "[HOOK] cocotb TB: syntax OK" \
     || echo "[HOOK] FAIL: cocotb TB has syntax errors"
 
@@ -664,7 +673,7 @@ grep -n  '<CODEGEN:'                                     "$COCOTB_TB" \
 
 # C2. Every @cocotb.test() body MUST start with `await ensure_clock(dut)`
 #     (RULE 6). Missing it = silent test-level hang with no divergence data.
-python - "$COCOTB_TB" <<'PY' || true
+"${PYTHON_EXE:-python3}" - "$COCOTB_TB" <<'PY' || true
 import re, sys
 path = sys.argv[1]
 src = open(path).read()
@@ -743,6 +752,6 @@ Notes: <any warnings or issues>
 
 ## Bash Safety
 
-- All commands MUST use `timeout`: `timeout 30s python ...`, `timeout 15s <cmd>`
+- Time-bound long commands. `timeout` is Linux-only (macOS lacks it by default), so resolve and fall back: `TO=$(command -v gtimeout || command -v timeout || true); $TO 30s <cmd> || <cmd>`. Use `"${PYTHON_EXE:-python3}"`, not bare `python`.
 - Before reading any file whose size is unknown, check with `wc -l <file>`. If > 500 lines, read with `offset` and `limit`.
 - Hook validation (Step 5) is the only multi-command bash block — no individual command should exceed 15s.

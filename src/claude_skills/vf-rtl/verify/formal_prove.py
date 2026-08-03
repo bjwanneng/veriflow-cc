@@ -239,7 +239,26 @@ def main(argv: list[str] | None = None) -> int:
     result = run_formal(dut, props, args.module, timeout=args.timeout)
     result["props_path"] = str(out)
     print(json.dumps(result, indent=2))
-    return 0 if result.get("proven") else (1 if result.get("status") == "FAIL" else 0)
+    return _exit_code(result)
+
+
+def _exit_code(result: dict) -> int:
+    """Map a formal result to a process exit code.
+
+    0 = proven OR genuinely unknown (couldn't prove either way — not an error).
+    1 = FAIL (a real counterexample — equivalence/logic bug found).
+    2 = ERROR/TIMEOUT (the tool itself crashed or hit the deadline; distinct
+        from FAIL so callers gating on ``$?`` don't read a hard sby crash as
+        success, which the old ``else 0`` branch did).
+    """
+    if result.get("proven") is True:
+        return 0
+    status = result.get("status")
+    if status == "FAIL":
+        return 1
+    if status in ("ERROR", "TIMEOUT"):
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

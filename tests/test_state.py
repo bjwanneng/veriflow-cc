@@ -642,6 +642,164 @@ def test_all_four_stages_have_duration_cli():
             assert state["stage_timings"][st]["duration_s"] >= 0
 
 
+# =============================================================================
+# Batch 1: robustness fixes (HIGH#2 detect_fix_loop, MED load/save/hook/spec)
+# =============================================================================
+
+def test_detect_fix_loop_structured_survives_json_roundtrip():
+    """HIGH#2: a structured (class, signal, offset) signature stored as a *list*
+    after a JSON round-trip must still be detected. Tuple-only matching made the
+    Stage-3 fix-loop gate dead for every cross-process CLI call."""
+    s = PipelineState(project_dir="/tmp/test")
+    s.error_history["verify_fix"] = [
+        {"time": 1.0, "errors": [["B_late", "hash_out", 1]]},  # list, not tuple
+        {"time": 2.0, "errors": [["B_late", "hash_out", 1]]},
+    ]
+    # Caller may pass either a tuple or a list signature
+    assert s.detect_fix_loop("verify_fix", ("B_late", "hash_out", 1))
+    assert s.detect_fix_loop("verify_fix", ["B_late", "hash_out", 1])
+
+
+def test_load_non_dict_json_starts_fresh():
+    """MED: a corrupted state file whose JSON root is a list/int must not crash
+    load() — it should start fresh instead of bricking every later CLI call."""
+    with tempfile.TemporaryDirectory() as tmp:
+        veriflow = Path(tmp) / ".veriflow"
+        veriflow.mkdir()
+        (veriflow / "pipeline_state.json").write_text("[1, 2, 3]")  # not a dict
+        s = PipelineState.load(tmp)  # must not raise
+        assert s.stages_completed == []
+
+
+def test_save_is_atomic_no_tmp_leftover():
+    """MED: save() writes via tmp+rename so a crash mid-write can't truncate the
+    state file, and no .tmp file leaks."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.stages_completed = ["spec_golden"]
+        s.save()
+        state_file = Path(tmp) / ".veriflow" / "pipeline_state.json"
+        # Primary file is valid JSON with our data
+        data = json.loads(state_file.read_text())
+        assert data["stages_completed"] == ["spec_golden"]
+        # No leftover temp file in the dir
+        leftovers = [p.name for p in (Path(tmp) / ".veriflow").iterdir()
+                     if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+
+def test_evaluate_hook_min_as_string_does_not_crash():
+    """MED: {'glob': ..., 'min': '2'} must coerce to int, not raise TypeError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "rtl").mkdir()
+        for n in ("a.v", "b.v"):
+            (Path(tmp) / "rtl" / n).write_text("m")
+        passed, _ = _eh({"glob": "rtl/*.v", "min": "2"}, tmp)
+        assert passed is True
+
+
+def test_evaluate_hook_min_non_numeric_returns_false():
+    """MED: a non-numeric 'min' must return (False, ...), not raise."""
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, detail = _eh({"glob": "rtl/*.v", "min": "abc"}, tmp)
+        assert passed is False
+
+
+def test_evaluate_hook_exists_non_string_does_not_crash():
+    """MED: {'exists': 123} must return (False, ...), not raise TypeError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, _ = _eh({"exists": 123}, tmp)
+        assert passed is False
+
+
+def test_evaluate_hook_rejects_absolute_path_escape():
+    """MED: {'exists': '/etc/passwd'} must NOT escape project_dir."""
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, _ = _eh({"exists": "/etc/passwd"}, tmp)
+        assert passed is False
+
+
+def test_evaluate_hook_rejects_dotdot_escape():
+    """MED: {'exists': '../../x'} must not escape project_dir."""
+    with tempfile.TemporaryDirectory() as tmp:
+        passed, _ = _eh({"exists": "../../x"}, tmp)
+        assert passed is False
+
+
+def test_validate_spec_handles_none_module_value():
+    """MED: modules dict with a None value must not crash validate_spec_completeness."""
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = {
+            "design_name": "x",
+            "modules": {"m": None},
+            "constraints": {"timing": {"target_frequency_mhz": 100}},
+            "timing_convention": {"golden_to_rtl_offset_cycles": 1},
+        }
+        _make_spec_dir(tmp, spec)
+        s = PipelineState(project_dir=tmp)
+        ok, missing = s.validate_spec_completeness(tmp)  # must not raise
+        assert ok is False
+        assert any("m" in m for m in missing)
+
+
+def test_validate_spec_handles_dict_connectivity():
+    """MED: module_connectivity as a dict (instead of a list) must not crash."""
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = _minimal_spec()
+        spec["module_connectivity"] = {"a": {"timing_contract": {}}}  # dict not list
+        _make_spec_dir(tmp, spec)
+        s = PipelineState(project_dir=tmp)
+        ok, _ = s.validate_spec_completeness(tmp)  # must not raise
+        assert ok in (True, False)
+
+
+def test_reset_stage_clears_error_history_and_equivalence():
+    """MED: reset_stage must clear error_history/retry_count for rolled-back
+    stages and equivalence_check when rolling back lint_synth."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = PipelineState(project_dir=tmp)
+        s.stages_completed = list(STAGE_ORDER)
+        s.error_history = {"verify_fix": [{"time": 1, "errors": ["x"]}],
+                           "lint_synth": [{"time": 2, "errors": ["y"]}]}
+        s.retry_count = {"verify_fix": 2}
+        s.equivalence_check = {"equivalent": True}
+        s.reset_stage("verify_fix")
+        assert "verify_fix" not in s.error_history
+        assert "lint_synth" not in s.error_history
+        assert s.retry_count.get("verify_fix") is None
+        assert s.equivalence_check is None
+
+
+def test_cli_inc_retry_flag_records_retry():
+    """MED: --inc-retry increments retry_count and exits 0."""
+    with tempfile.TemporaryDirectory() as tmp:
+        PipelineState(project_dir=tmp).save()  # init state file
+        res = subprocess.run(
+            [sys.executable, _STATE_PY, tmp, "verify_fix", "--inc-retry"],
+            capture_output=True, text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        s2 = PipelineState.load(tmp)
+        assert s2.retry_count.get("verify_fix") == 1
+
+
+def test_mark_complete_rejects_unknown_stage():
+    """LOW: an unknown stage name must not be appended to stages_completed."""
+    s = PipelineState(project_dir="/tmp/test")
+    assert s.mark_complete("bogus_stage", {"summary": "x"}) is False
+    assert "bogus_stage" not in s.stages_completed
+
+
+def test_validate_before_run_message_when_pipeline_complete():
+    """LOW: validate_before_run on a fully-complete pipeline reports 'complete',
+    not 'expected None'."""
+    s = PipelineState(project_dir="/tmp/test")
+    s.stages_completed = list(STAGE_ORDER)
+    ok, msg = s.validate_before_run("lint_synth")
+    assert ok is False
+    assert "complete" in msg.lower()
+
+
 if __name__ == "__main__":
     # Run all tests
     import traceback

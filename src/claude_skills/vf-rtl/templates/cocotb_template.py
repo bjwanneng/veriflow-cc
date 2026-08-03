@@ -30,11 +30,12 @@ stage. If codegen does not populate them, defaults are used and only
 top-level port signals are checked.
 """
 
-import os, sys
+import os
+import sys
 from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles  # noqa: F401  (FallingEdge used by codegen-inserted test_timing_contract body)
 import atexit
 import contextlib
 import json
@@ -442,7 +443,17 @@ async def drive_inputs(dut, input_values, valid_name='valid_in',
 
 
 async def wait_valid(dut, valid_name='valid_out', max_cycles=200):
-    """Poll for valid=1, return cycle count waited."""
+    """Poll for valid=1, return cycle count waited, or -1 on timeout.
+
+    Raises a clear RuntimeError if `valid_name` is not a real port instead of
+    a cryptic cocotb AttributeError (which masks the real cause: codegen didn't
+    set DONE_SIGNAL_PORT for a non-'valid*' done signal like `hash_valid`).
+    """
+    if not hasattr(dut, valid_name):
+        raise RuntimeError(
+            f"wait_valid: done/valid port '{valid_name}' not found on DUT. "
+            f"Set DONE_SIGNAL_PORT in the testbench to the design's 1-bit "
+            f"done/valid signal name.")
     valid_sig = getattr(dut, valid_name)
     for i in range(max_cycles):
         await RisingEdge(dut.clk)
@@ -917,6 +928,14 @@ async def test_internal_signals(dut):
 
 DIGEST_OUTPUT_PORT = None  # codegen: set to the design's final output port name
 
+# DONE_SIGNAL_PORT: name of the 1-bit signal that asserts when a block's result
+# is ready (e.g. "valid_out", "hash_valid", "done"). Codegen MUST set this for
+# any design whose done signal is not literally "valid_out" — otherwise the
+# multi-block driver can't tell when each block finishes. Defaults to None, in
+# which case the test falls back to DIGEST_OUTPUT_PORT (if it looks like a
+# valid signal) and finally to "valid_out".
+DONE_SIGNAL_PORT = None  # codegen: set to the design's 1-bit done/valid signal
+
 
 @cocotb.test()
 async def test_multi_block_chaining(dut):
@@ -978,7 +997,9 @@ async def test_multi_block_chaining(dut):
         )
         final_done = await drive_block_sequence(
             dut, blocks,
-            done_name=DIGEST_OUTPUT_PORT if DIGEST_OUTPUT_PORT.startswith("valid") else "valid_out",
+            done_name=(DONE_SIGNAL_PORT
+                       or (DIGEST_OUTPUT_PORT if DIGEST_OUTPUT_PORT.startswith("valid") else None)
+                       or "valid_out"),
         )
         if final_done < 0:
             FAIL_COUNT += 1

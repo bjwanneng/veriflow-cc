@@ -30,27 +30,46 @@ def _iter_modules(spec: dict):
     return modules or []
 
 
+def _fsm_states(cycle_timing) -> list[str]:
+    """Extract FSM state names from a module's cycle_timing.
+
+    Supports both shapes that appear in the wild:
+      - canonical dict: {"fsm_states": [{"name": "IDLE"}, ...], ...}
+        (this is what templates/spec_template.json produces)
+      - legacy list:    [{"state": "IDLE"}, ...]  (and [{"name": "IDLE"}])
+    """
+    if isinstance(cycle_timing, dict):
+        states = cycle_timing.get("fsm_states") or []
+        return [s.get("name") for s in states if isinstance(s, dict) and s.get("name")]
+    if isinstance(cycle_timing, list):
+        out = []
+        for ct in cycle_timing:
+            if isinstance(ct, dict):
+                name = ct.get("state") or ct.get("name")
+                if name:
+                    out.append(name)
+        return out
+    return []
+
+
 def extract_cover_goals(spec: dict, module: str | None = None) -> list[dict]:
     """Derive functional cover goals from spec.json.
 
-    Goals: every named FSM state (cycle_timing[].state) and every valid/ready
-    handshake combo (port protocol=valid + ack_port). Scoped to `module` when
-    given.
+    Goals: every named FSM state and every valid/ready handshake combo
+    (port protocol=valid + ack_port). Scoped to `module` when given.
     """
     goals: list[dict] = []
     for mod in _iter_modules(spec):
         if module and mod.get("module_name") != module:
             continue
         mname = mod.get("module_name", "?")
-        for ct in mod.get("cycle_timing") or []:
-            state = ct.get("state") if isinstance(ct, dict) else None
-            if state:
-                goals.append({
-                    "key": f"fsm:{mname}:{state}",
-                    "kind": "fsm_state",
-                    "name": str(state),
-                    "desc": f"FSM state {state} of {mname} is reached",
-                })
+        for state in _fsm_states(mod.get("cycle_timing")):
+            goals.append({
+                "key": f"fsm:{mname}:{state}",
+                "kind": "fsm_state",
+                "name": str(state),
+                "desc": f"FSM state {state} of {mname} is reached",
+            })
         for port in mod.get("ports") or []:
             if port.get("protocol") == "valid" and port.get("ack_port"):
                 v = port.get("name", "?")
@@ -109,7 +128,13 @@ def main(argv: list[str] | None = None) -> int:
 
     coverage_path = Path(args.coverage)
     coverage = json.loads(coverage_path.read_text(encoding="utf-8")) if coverage_path.exists() else {}
-    spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    try:
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        # Emit a null-ratio result so the Stage 3 soft gate reads cleanly
+        # instead of crashing on a malformed spec.json.
+        print(json.dumps({"ratio": None, "error": f"could not read spec: {e}"}))
+        return 0
 
     result = analyze(coverage, spec, args.module)
     result["directives"] = build_directives(result["uncovered"])

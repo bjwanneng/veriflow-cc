@@ -77,6 +77,29 @@ def test_analyze_failing_project():
         assert r.overall_pass() is False
 
 
+def test_analyze_synth_passed_false_on_error_report():
+    """MED: a synth report containing an ERROR must score synth_passed=False.
+    Previously the heuristic was `'error' not in content or 'synth' in content`,
+    and since every report contains 'synth', errors were masked to True."""
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "synthfail", sim_pass=True)
+        (proj / "workspace" / "synth" / "synth_report.txt").write_text(
+            "ERROR: Synthesis FAILED: syntax error in foo.v\n", encoding="utf-8"
+        )
+        runner = BenchmarkRunner()
+        r = runner.analyze_project(proj)
+        assert r.synth_passed is False
+
+
+def test_analyze_synth_passed_true_on_clean_report():
+    """A clean report with 'Number of cells:' and no error → synth_passed True."""
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = _make_project(Path(tmp), "synthok", sim_pass=True)
+        runner = BenchmarkRunner()
+        r = runner.analyze_project(proj)
+        assert r.synth_passed is True
+
+
 def test_analyze_missing_state():
     with tempfile.TemporaryDirectory() as tmp:
         proj = Path(tmp) / "empty"
