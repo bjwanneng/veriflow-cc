@@ -232,9 +232,15 @@ def extract_failing_signals_from_log(log_path: str) -> list[str]:
 # ─── Waveform Table Builder ───────────────────────────────────────────────────
 
 def find_clk_signal(all_signals: set[str]) -> str | None:
+    # Exact conventional names first (deterministic), then a substring pass
+    # so derived clock names (clk_cpu, pix_clk, ...) don't hard-exit the tool.
     for name in sorted(all_signals):
         basename = name.split(".")[-1]
         if basename in ("clk", "clock", "clk_i"):
+            return name
+    for name in sorted(all_signals):
+        basename = name.split(".")[-1]
+        if "clk" in basename or "clock" in basename:
             return name
     return None
 
@@ -283,12 +289,18 @@ def build_cycle_table(
 
     for t in all_times:
         changes = vcd.changes[t]
-        current_state.update(changes)
-
-        # Detect posedge clk
+        # Snapshot BEFORE applying this timestamp's changes: iverilog VCDs
+        # record the posedge and its NBA updates at the same timestamp, so
+        # applying first would capture post-NBA of edge N. The pipeline's
+        # compare convention (bug_patterns.md Pattern 15) reads at posedge N
+        # the state settled at edge N-1 (post-NBA of N-1 = pre-NBA of N) —
+        # the same value cocotb's RisingEdge compare and an active-region
+        # $display see. Snapshotting after the update shifted every signal
+        # one cycle later than the golden trace.
         if clk_name in changes and changes[clk_name] == "1":
             cycle_num += 1
             cycle_snapshots.append((cycle_num, dict(current_state)))
+        current_state.update(changes)
 
     if not cycle_snapshots:
         return "(No clock edges found in VCD)\n", []

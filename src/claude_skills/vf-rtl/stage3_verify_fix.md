@@ -353,12 +353,15 @@ else:
     print(f"- **Expected**: `{div.get('expected', '?')}`")
     print(f"- **Actual**: `{div.get('actual', '?')}`")
     print(f"- **Bug class**: {d.get('bug_class', '?')}  ({d.get('confidence', '?')})")
-    fix = d.get("fix_suggestion") or {}
+    fix = d.get("fix_suggestion")
     if fix:
         print()
         print("## Suggested fix direction (from timing_diagnostic.py)")
-        for k, v in fix.items():
-            print(f"- **{k}**: {v}")
+        if isinstance(fix, dict):
+            for k, v in fix.items():
+                print(f"- **{k}**: {v}")
+        else:  # fix_suggestion is a multi-line text block
+            print(fix)
 
 if expected.exists():
     print()

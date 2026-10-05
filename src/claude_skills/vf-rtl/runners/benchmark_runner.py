@@ -49,7 +49,18 @@ class ProjectResult:
             self.notes = []
 
     def overall_pass(self) -> bool:
-        return self.sim_passed is True and self.lint_passed is not False
+        # A benchmark pass requires sim PASS plus lint/synth/equiv not
+        # explicitly failed. Unknown (None — tool absent or check not run)
+        # does not block, but a recorded FAIL is disqualifying: previously
+        # equivalence and synthesis results were ignored entirely, so a
+        # design that failed SAT equivalence still counted as a pass — and
+        # this verdict is the self-improvement referee's baseline metric.
+        return (
+            self.sim_passed is True
+            and self.lint_passed is not False
+            and self.synth_passed is not False
+            and self.equiv_passed is not False
+        )
 
 
 class BenchmarkRunner:
@@ -126,14 +137,21 @@ class BenchmarkRunner:
         result.lint_log_path = str(lint_log) if lint_log.exists() else ""
         if lint_log.exists():
             content = lint_log.read_text(encoding="utf-8", errors="ignore")
-            # Only flag as fail if there are actual error/warning lines
-            # "no errors" / "0 errors" should NOT count as failure
-            lower = content.lower()
-            has_real_error = (
-                ("error" in lower and "no errors" not in lower and "0 errors" not in lower)
-                or "syntax error" in lower
+            # Line-based check: a summary line like "0 errors" must not mask a
+            # real "error:" diagnostic elsewhere in the log (the old
+            # whole-text rule did exactly that). "syntax error" contains
+            # "error" so it is covered by the same test.
+            def _is_error_line(ln: str) -> bool:
+                s = ln.strip().lower()
+                if not s:
+                    return False
+                if "no errors" in s or "0 errors" in s or "errors: 0" in s:
+                    return False  # summary line, not a diagnostic
+                return "error" in s
+
+            result.lint_passed = not any(
+                _is_error_line(ln) for ln in content.splitlines()
             )
-            result.lint_passed = not has_real_error
         else:
             result.lint_passed = None
 
@@ -174,7 +192,7 @@ class BenchmarkRunner:
             v_files = list(rtl_dir.glob("*.v"))
             result.rtl_modules = len(v_files)
             result.rtl_lines = sum(
-                len(f.read_text(encoding="utf-8").splitlines())
+                len(f.read_text(encoding="utf-8", errors="ignore").splitlines())
                 for f in v_files
             )
 

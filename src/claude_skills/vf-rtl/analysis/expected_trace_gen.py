@@ -90,18 +90,24 @@ def _load_vcd_snapshots(vcd_path: Path):
     if not clk:
         return []
 
-    # Walk timeline, snapshot at each posedge clk
+    # Walk timeline, snapshot at each posedge clk — BEFORE applying that
+    # timestamp's changes. iverilog VCDs record the posedge and its NBA
+    # updates at the same timestamp; applying first would capture post-NBA
+    # of edge N, one cycle later than the pipeline's compare convention
+    # (bug_patterns.md Pattern 15: at posedge N read post-NBA of N-1, the
+    # same value cocotb's RisingEdge compare sees). Must stay in lockstep
+    # with vcd2table.build_cycle_table.
     state: dict[str, str] = {}
     snapshots: list[dict[str, str]] = []
     for t in sorted(parser.changes.keys()):
         changes = parser.changes[t]
-        state.update(changes)
         if clk in changes and changes[clk] == "1":
             snap = {}
             for full_name, val in state.items():
                 short = full_name.split(".")[-1]
                 snap[short] = format_vcd_value(val)
             snapshots.append(snap)
+        state.update(changes)
     return snapshots
 
 

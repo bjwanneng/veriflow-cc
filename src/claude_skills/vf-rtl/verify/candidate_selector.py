@@ -85,14 +85,22 @@ def score_candidate(
         fails = 1
 
     synth = quick_synth(rtl_file, module, str(work / "synth"))
-    cells = synth.get("cells", 0)
+    # cells is a minimize axis, so a failed/absent synthesis must NOT report 0
+    # (which would rank as "smallest design" and beat honestly-measured
+    # candidates). Report None instead; select_best maps None to worst.
+    if synth.get("error"):
+        cells = None
+        synth_error = synth["error"]
+    else:
+        cells = synth.get("cells", 0)
+        synth_error = None
     # Source line count (non-blank) — a deterministic tiebreaker for when yosys
-    # is absent and every candidate reports cells=0.
+    # is absent and every candidate is unmeasurable on the cells axis.
     try:
         rtl_lines = sum(1 for ln in Path(rtl_file).read_text(encoding="utf-8",
                          errors="ignore").splitlines() if ln.strip())
     except OSError:
-        rtl_lines = 0
+        rtl_lines = None
     return {
         "rtl": rtl_file,
         "passed": passed,
@@ -100,6 +108,7 @@ def score_candidate(
         "cells": cells,
         "rtl_lines": rtl_lines,
         "score": cells,
+        **({"synth_error": synth_error} if synth_error else {}),
     }
 
 
@@ -108,11 +117,18 @@ def select_best(scores: list[dict | None]) -> dict | None:
 
     Ranking key: (not passed, fails, cells, rtl_lines). Passing candidates all
     have fails==0 so cells decides among them; failing candidates rank by fewest
-    fails first (closest to correct), then cells. ``rtl_lines`` is a last-resort
-    tiebreaker: when yosys is absent every candidate has cells=0, so without it
-    ``min`` would degrade to "pick cand0" by iteration order and test-time
-    scaling would mean nothing. Smaller source wins (simpler design).
+    fails first (closest to correct), then cells. ``cells``/``rtl_lines`` of
+    None (synthesis failed / file unreadable — not "zero"!) rank worst on that
+    axis so a crashed measurement can never beat an honest one. When yosys is
+    absent every candidate is None on cells, so ``rtl_lines`` decides: smaller
+    source wins (simpler design).
     """
+    worst = 1 << 30
+
+    def _axis(s: dict, key: str) -> int:
+        v = s.get(key)
+        return worst if v is None else v
+
     valid = [s for s in (scores or []) if s]
     if not valid:
         return None
@@ -120,9 +136,9 @@ def select_best(scores: list[dict | None]) -> dict | None:
         valid,
         key=lambda s: (
             not s.get("passed", False),
-            s.get("fails", 1 << 30),
-            s.get("cells", 1 << 30),
-            s.get("rtl_lines", 1 << 30),
+            s.get("fails", worst),
+            _axis(s, "cells"),
+            _axis(s, "rtl_lines"),
         ),
     )
 

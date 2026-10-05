@@ -52,10 +52,13 @@ def _is_input(p: dict) -> bool:
 
 def _find_rtl(rtl_dir: str, module: str) -> str | None:
     d = Path(rtl_dir)
+    # Match the actual module DECLARATION, not a substring — `--module top`
+    # must not bind to a file that merely mentions "top" (e.g. top_wrapper).
+    decl_re = re.compile(rf"\bmodule\s+{re.escape(module)}\b")
     for cand in (d / f"{module}.v", *sorted(d.glob("*.v"))):
         if cand.exists():
             try:
-                if module in cand.read_text(encoding="utf-8", errors="replace"):
+                if decl_re.search(cand.read_text(encoding="utf-8", errors="replace")):
                     return str(cand)
             except OSError:
                 continue
@@ -68,9 +71,12 @@ def generate_properties(spec: dict, module: str) -> str:
     """Emit a Verilog-2005-formal wrapper proving spec-derived invariants.
 
     Instantiates the DUT and emits assert()/assume() in clocked always blocks.
-    v1 emits handshake valid-stability for output `valid` ports with an ack.
+    DUT data inputs are driven by (* anyseq *) free variables so the prover
+    considers ALL input sequences — an undriven reg would be a constant and
+    every property would hold vacuously. v1 properties: handshake
+    valid-stability for output `valid` ports with an ack.
     Always returns a syntactically valid module (a useful artifact even with no
-    derivable property).
+    derivable property — but then --prove reports NO_PROPERTIES, not PASS).
     """
     mod = _find_module(spec, module)
     if mod is None:
@@ -80,20 +86,25 @@ def generate_properties(spec: dict, module: str) -> str:
     lines = [
         f"// Auto-generated formal properties for {module}",
         "// Verilog-2005 + yosys -formal. assert()/assume() only (no SVA).",
+        "// DUT data inputs are (* anyseq *) free variables — the prover",
+        "// considers all input sequences (an undriven reg would be constant",
+        "// and every property would pass vacuously).",
         "// Prove with: sby (see formal_prove.py --prove).",
         "`timescale 1ns/1ps",
         f"module {module}_formal(input wire clk, input wire rst);",
     ]
 
-    # Declare wrapper signals for every non-clock/reset port.
+    # Declare wrapper signals for every non-clock/reset port. Inputs become
+    # anyseq free variables; outputs are plain wires driven by the DUT.
     for p in ports:
         nm = p.get("name")
         if not nm or nm in ("clk", "clock", "rst", "reset"):
             continue
-        w, vt = _port_width(p), ""
-        vt = _vtype(w)
-        kw = "reg" if _is_input(p) else "wire"
-        lines.append(f"    {kw} {vt}{nm};")
+        vt = _vtype(_port_width(p))
+        if _is_input(p):
+            lines.append(f"    (* anyseq *) reg {vt}{nm};")
+        else:
+            lines.append(f"    wire {vt}{nm};")
 
     # Instantiate the DUT, wiring clk/rst to the wrapper's free clock/reset.
     conns = []
@@ -107,19 +118,43 @@ def generate_properties(spec: dict, module: str) -> str:
             conns.append(f".{nm}({nm})")
     lines.append(f"    {module} dut ({', '.join(conns)});")
 
+    # Environment assumption: reset is asserted in the initial state and
+    # released afterwards (matches the pipeline TB convention of reset held
+    # at cycle 0 then released — RESET_CYCLE_SKIP).
+    lines += [
+        "    // Environment: reset asserted at init, released afterwards.",
+        "    always @(posedge clk) begin",
+        "        if ($initstate) assume(rst);",
+        "        else assume(!rst);",
+        "    end",
+    ]
+
     # Handshake valid-stability: an output valid that the DUT drives must stay
     # asserted until the ack (ready) is observed — the #1 handshake bug.
+    # Guarded by reset: during/after reset the valid reg is cleared, so past
+    # tracking must not carry across the reset boundary (spurious FAIL).
+    # The ack port MUST itself be a declared port of this module: an ack that
+    # exists only in the spec text would elaborate as an implicit undriven
+    # wire (constant) and the property would hold vacuously.
+    port_names = {p.get("name") for p in ports if p.get("name")}
     n_props = 0
     for p in ports:
         if (not _is_input(p)) and p.get("protocol") == "valid" and p.get("ack_port"):
             v = p.get("name")
             ack = p.get("ack_port")
+            if ack not in port_names:
+                lines.append(f"    // skipped handshake property for {v}: ack_port "
+                             f"{ack!r} is not a declared port of {module}")
+                continue
             lines.append(f"    // handshake: {v} (valid) held until {ack} (ready).")
             lines.append(f"    reg past_{v};")
             lines.append(f"    initial past_{v} = 1'b0;")
             lines.append("    always @(posedge clk) begin")
-            lines.append(f"        past_{v} <= {v};")
-            lines.append(f"        if (past_{v}) assert({v} || {ack});")
+            lines.append(f"        if (rst) past_{v} <= 1'b0;")
+            lines.append("        else begin")
+            lines.append(f"            past_{v} <= {v};")
+            lines.append(f"            if (past_{v}) assert({v} || {ack});")
+            lines.append("        end")
             lines.append("    end")
             n_props += 1
 
@@ -229,6 +264,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.prove:
         print(json.dumps({"proven": None, "status": "GENERATED", "props_path": str(out)}))
+        return 0
+
+    # Vacuity guard: with zero assert()s, sby would trivially report PASS and
+    # the pipeline would read an empty proof as "formally verified". Refuse
+    # to claim anything instead. Count code lines only — the wrapper's own
+    # comments mention "assert()" and would otherwise defeat the guard.
+    code_only = "\n".join(
+        ln for ln in props.splitlines() if not ln.strip().startswith("//")
+    )
+    n_asserts = len(re.findall(r"\bassert\s*\(", code_only))
+    if n_asserts == 0:
+        print(json.dumps({
+            "proven": None,
+            "status": "NO_PROPERTIES",
+            "props_path": str(out),
+            "note": "no spec-derived assert() properties for this module — "
+                    "nothing to prove; NOT a verification pass",
+        }, indent=2))
         return 0
 
     dut = _find_rtl(args.rtl_dir, args.module)

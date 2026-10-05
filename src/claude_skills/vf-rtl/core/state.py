@@ -660,12 +660,19 @@ def evaluate_hook(spec, project_dir: str) -> tuple[bool, str]:
 
         if "glob" in node:
             pattern = node["glob"]
+            if not isinstance(pattern, str) or not pattern:
+                return (False, f"glob: pattern must be a non-empty string, got {pattern!r}")
+            # Same escape guard as exists/contains: reject absolute patterns
+            # and `..` components so an LLM-authored hook can't glob outside
+            # the project dir (e.g. {"glob": "../../**"}).
+            if os.path.isabs(pattern) or ".." in pattern.replace("\\", "/").split("/"):
+                return (False, f"glob: absolute or escaping pattern {pattern!r}")
             minimum = node.get("min", 1)
             try:
                 minimum = int(minimum)
             except (TypeError, ValueError):
                 return (False, f"glob {pattern}: 'min' must be an integer, got {minimum!r}")
-            matches = _glob.glob(str(base / pattern)) if isinstance(pattern, str) else []
+            matches = _glob.glob(str(base / pattern))
             ok = len(matches) >= minimum
             return (ok, f"glob {pattern}: {len(matches)} match(es), need {minimum}")
 
@@ -723,6 +730,38 @@ def _print_usage():
     sys.exit(1)
 
 
+def _coerce_sig(raw: str | None):
+    """Coerce a CLI error-signature string into a structured list when possible.
+
+    Stage 3 records signatures as Python-repr/JSON sequences, e.g.
+    ('B_late', 'data_out', 2). detect_fix_loop's structured matching only
+    fires on tuple/list signatures; leaving these as raw strings silently
+    degraded loop detection to exact-string matching (dead for structured
+    signatures arriving via the command line).
+    """
+    if not raw:
+        return raw
+    s = raw.strip()
+    is_seq = (s.startswith("[") and s.endswith("]")) or \
+             (s.startswith("(") and s.endswith(")"))
+    if not is_seq:
+        return raw
+    try:
+        v = json.loads(s)
+        if isinstance(v, list):
+            return v
+    except (json.JSONDecodeError, ValueError):
+        pass
+    try:
+        import ast
+        v = ast.literal_eval(s)
+        if isinstance(v, (tuple, list)):
+            return list(v)
+    except (ValueError, SyntaxError):
+        pass
+    return raw
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         _print_usage()
@@ -754,7 +793,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # --check-loop: detect repeated error signatures without modifying state
-    _check_loop_sig = _get_arg(sys.argv, "check-loop")
+    _check_loop_sig = _coerce_sig(_get_arg(sys.argv, "check-loop"))
     if _check_loop_sig:
         _state = PipelineState.load(_project_dir)
         looping = _state.detect_fix_loop(_stage, _check_loop_sig)
@@ -774,7 +813,7 @@ if __name__ == "__main__":
     _hook_cmd = _get_arg(sys.argv, "hook")
     _journal_outputs = _get_arg(sys.argv, "journal-outputs")
     _journal_notes = _get_arg(sys.argv, "journal-notes")
-    _error_sig = _get_arg(sys.argv, "error-sig")
+    _error_sig = _coerce_sig(_get_arg(sys.argv, "error-sig"))
 
     _state = PipelineState.load(_project_dir)
 

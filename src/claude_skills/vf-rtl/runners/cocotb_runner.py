@@ -450,8 +450,13 @@ def main():
             _sim_timed_out = True
             raise TimeoutError(f"simulation exceeded {args.sim_timeout}s wall-clock cap")
 
-        _prev_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-        signal.alarm(args.sim_timeout)
+        # signal.SIGALRM is POSIX-only; on Windows there is no alarm cap (the
+        # COCOTB_TIMEOUT env bound still applies), rather than an AttributeError
+        # at line-entry that init.py's win32 support otherwise invites.
+        _has_alarm = hasattr(signal, "SIGALRM")
+        if _has_alarm:
+            _prev_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.alarm(args.sim_timeout)
         try:
             runner.test(
                 test_module=test_module,
@@ -462,8 +467,9 @@ def main():
                 waves=args.vcd,
             )
         finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, _prev_handler)
+            if _has_alarm:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, _prev_handler)
         if args.verbose:
             print(f"[TIMING] step=cocotb_test duration={time.perf_counter() - _t0:.2f}s",
                   file=sys.stderr)

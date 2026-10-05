@@ -67,6 +67,7 @@ class TimingDiagnosis:
     timing_contract_context: list[dict] = field(default_factory=list)
     fix_suggestion: str = ""
     severity: str = "high"
+    golden_available: bool = False  # True when the golden trace was loaded and used
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +445,7 @@ def diagnose(
         divergence=div,
         all_signals=all_signals,
         timing_contract_context=timing_context,
+        golden_available=bool(golden_trace),
     )
     diagnosis.fix_suggestion = _generate_fix(diagnosis, spec)
 
@@ -483,6 +485,26 @@ def main() -> int:
         print("No FIRST DIVERGENCE found in log. Cannot diagnose.")
         return 1
 
+    # Primary classification of the divergence signal. These top-level keys
+    # are the pipeline's cross-script contract: stage3_verify_fix.md (retry
+    # signature + prev_failure_summary), knowledge_base.py --record-fix,
+    # self_improve.py record/mine, and benchmark_runner.py all read
+    # bug_class / timing_offset_cycles / confidence. classify_all_signals()
+    # returns exactly one entry (the divergence signal), but be defensive.
+    primary = next(
+        (s for s in result.all_signals if s.signal == result.divergence.signal),
+        result.all_signals[0] if result.all_signals else None,
+    )
+    bug_class = primary.classification if primary else "A"
+    timing_offset_cycles = primary.offset_cycles if primary else 0
+    if bug_class.startswith("B_"):
+        # Value actually matched the golden trace at ±offset — strong evidence.
+        confidence = 0.9 if result.golden_available else 0.3
+    elif bug_class in ("A", "D"):
+        confidence = 0.7 if result.golden_available else 0.4
+    else:  # unclassifiable / degraded
+        confidence = 0.3
+
     # Format output
     output = {
         "divergence": {
@@ -492,6 +514,9 @@ def main() -> int:
             "actual": f"0x{result.divergence.actual:x}",
             "degraded": result.divergence.degraded,
         },
+        "bug_class": bug_class,
+        "timing_offset_cycles": timing_offset_cycles,
+        "confidence": confidence,
         "signal_classifications": [
             {
                 "signal": s.signal,

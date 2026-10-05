@@ -239,7 +239,7 @@ After synthesis, `yosys_equiv.py` proves functional equivalence between the orig
 
 ### Corner-case Test Generation
 
-`corner_case_generator.py` auto-generates 8 boundary-condition test vectors from spec.json ports: all-zeros, all-ones, min, max, alternating, LSB-hot, MSB-hot, half-range. Integrated into `vf-tb-gen` Step 5b as a mandatory supplement to golden model vectors.
+`corner_case_generator.py` auto-generates 5 distinct boundary-value test vectors from spec.json ports: all-zeros, all-ones (max), LSB-only (min non-zero), alternating 1010, MSB-only. Integrated into `vf-tb-gen` Step 5b as a mandatory supplement to golden model vectors.
 
 ### Design Graph Validation
 

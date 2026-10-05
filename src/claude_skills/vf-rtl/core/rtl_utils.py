@@ -8,10 +8,35 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import sys
 from pathlib import Path
 from typing import Any
 import contextlib
+
+
+@contextlib.contextmanager
+def _golden_timeout(seconds: int, what: str):
+    """POSIX alarm guard around untrusted golden-model execution.
+
+    The golden model is LLM-generated code executed in-process; a hang here
+    would hang every importer (timing_diagnostic, vcd2table, expected_trace_gen).
+    No-op where SIGALRM is unavailable (Windows) or seconds <= 0.
+    """
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _handler(signum, frame):
+        raise TimeoutError(f"golden model {what} exceeded {seconds}s")
+
+    prev = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev)
 
 
 # Single source of truth for the ±N-cycle search window used by the failure
@@ -62,7 +87,8 @@ def collect_rtl_sources(rtl_dir: Path) -> list[str]:
     return [str(s) for s in sources]
 
 
-def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int, dict[str, Any]]:
+def load_golden_trace(golden_path: str, test_vector_index: int = 0,
+                      timeout: int = 60) -> dict[int, dict[str, Any]]:
     """Load and run a golden model, returning per-cycle trace data.
 
     Supports three golden model interfaces:
@@ -73,6 +99,8 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
     Args:
         golden_path: Path to golden_model.py.
         test_vector_index: Which test vector to use (default 0).
+        timeout: Wall-clock cap (POSIX) on model import + execution; the
+            model is LLM-generated and may contain an infinite loop.
     Returns:
         Dict mapping cycle_number -> {signal_name: value}.
     Raises:
@@ -87,17 +115,21 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
         raise RuntimeError(f"Cannot create module spec for {golden_path}")
 
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    with _golden_timeout(timeout, "import"):
+        spec.loader.exec_module(mod)
 
     # Interface 1: run(test_vector_index=N) or run(N) or run()
     if hasattr(mod, "run"):
         try:
-            data = mod.run(test_vector_index=test_vector_index)
+            with _golden_timeout(timeout, "run()"):
+                data = mod.run(test_vector_index=test_vector_index)
         except TypeError:
             try:
-                data = mod.run(test_vector_index)
+                with _golden_timeout(timeout, "run()"):
+                    data = mod.run(test_vector_index)
             except TypeError:
-                data = mod.run()
+                with _golden_timeout(timeout, "run()"):
+                    data = mod.run()
 
         if isinstance(data, list):
             cycles = {}
@@ -112,7 +144,8 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
         tv = mod.TEST_VECTORS[test_vector_index] if test_vector_index < len(mod.TEST_VECTORS) else mod.TEST_VECTORS[0]
         inputs = tv.get("inputs", tv)
         try:
-            trace = mod.compute(inputs, trace=True)
+            with _golden_timeout(timeout, "compute()"):
+                trace = mod.compute(inputs, trace=True)
             if isinstance(trace, list):
                 cycles = {}
                 for i, entry in enumerate(trace):
@@ -122,6 +155,8 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
                     return cycles
             elif isinstance(trace, dict):
                 return {0: trace}
+        except TimeoutError:
+            raise RuntimeError(f"golden model compute() hung > {timeout}s")
         except Exception as e:
             print(f"[rtl_utils] golden compute() raised, trying next interface: {e}",
                   file=sys.stderr)
@@ -131,7 +166,8 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
         tv = mod.TEST_VECTORS[test_vector_index] if test_vector_index < len(mod.TEST_VECTORS) else mod.TEST_VECTORS[0]
         inputs = tv.get("inputs", tv)
         try:
-            trace = mod.simulate(inputs, trace=True)
+            with _golden_timeout(timeout, "simulate()"):
+                trace = mod.simulate(inputs, trace=True)
             if isinstance(trace, list):
                 cycles = {}
                 for i, entry in enumerate(trace):
@@ -139,6 +175,8 @@ def load_golden_trace(golden_path: str, test_vector_index: int = 0) -> dict[int,
                         cycles[i] = entry
                 if cycles:
                     return cycles
+        except TimeoutError:
+            raise RuntimeError(f"golden model simulate() hung > {timeout}s")
         except Exception as e:
             print(f"[rtl_utils] golden simulate() raised, trying next interface: {e}",
                   file=sys.stderr)

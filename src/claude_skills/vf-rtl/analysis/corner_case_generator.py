@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Corner-case test vector generator for VeriFlow-CC.
 
-Auto-generates boundary-condition test vectors from spec.json:
-- all-zeros input
-- all-ones input
-- minimum-length / smallest valid input
-- maximum-length / largest valid input
-- reset-mid-operation
-- backpressure / stall scenarios
+Auto-generates boundary-VALUE test vectors from spec.json input ports:
+- all-zeros
+- all-ones (max unsigned)
+- LSB-only (min non-zero)
+- alternating 1-0 (0xAA..AA)
+- MSB-only (sign bit / 2^(N-1))
+
+These are per-port value patterns applied simultaneously to all inputs; the
+consuming agent (vf-tb-gen) is responsible for protocol-legal stimulus and
+for sequence scenarios (reset-mid-operation, backpressure/stall), which
+cannot be derived from port widths alone.
 
 Usage:
     python corner_case_generator.py --spec spec.json --output corner_cases.json
@@ -20,19 +24,27 @@ import json
 import sys
 from pathlib import Path
 
+# Fallback for ports whose width cannot be parsed (e.g. parameterized
+# "[W-1:0]" ranges — the parameter value is not resolvable from the spec
+# text). Always warned on stderr; never silent.
+_DEFAULT_WIDTH = 32
 
-def _bitwidth_from_type(port_type: str) -> int:
+
+def _bitwidth_from_type(port_type: str, port_name: str = "") -> int:
     """Extract bit width from Verilog type like 'wire [31:0]'."""
     if "[" not in port_type or "]" not in port_type:
         return 1
+    range_str = port_type.split("[", 1)[1].split("]", 1)[0]
     try:
-        range_str = port_type.split("[")[1].split("]")[0]
         if ":" in range_str:
-            high, low = range_str.split(":")
-            return int(high.strip()) - int(low.strip()) + 1
-        return int(range_str) + 1
-    except (ValueError, IndexError):
-        return 32  # default
+            high, low = (s.strip() for s in range_str.split(":", 1))
+            return int(high, 0) - int(low, 0) + 1
+        return int(range_str, 0) + 1
+    except ValueError:
+        print(f"[corner_case] WARNING: cannot parse width from type "
+              f"{port_type!r} of port {port_name!r} — assuming "
+              f"{_DEFAULT_WIDTH} bits", file=sys.stderr)
+        return _DEFAULT_WIDTH
 
 
 def generate_corner_cases(spec: dict) -> list[dict]:
@@ -61,41 +73,31 @@ def generate_corner_cases(spec: dict) -> list[dict]:
     # Build per-port bit widths
     port_widths = {}
     for p in input_ports:
-        port_widths[p["name"]] = _bitwidth_from_type(p.get("type", "wire [31:0]"))
+        port_widths[p["name"]] = _bitwidth_from_type(p.get("type", "wire [31:0]"), p["name"])
 
-    # 1. All-zeros input
-    zeros = {p["name"]: 0 for p in input_ports}
+    # Each pattern below is DISTINCT. (The pre-dedup list had three duplicate
+    # pairs — all_ones≡max_value, min_nonzero≡single_bit_hot_lsb,
+    # single_bit_hot_msb≡half_range_msb_only — inflating the case count
+    # without adding stimulus.)
+
     cases.append({
         "name": "all_zeros",
         "description": "All input ports driven with zero",
-        "inputs": zeros,
+        "inputs": {p["name"]: 0 for p in input_ports},
     })
 
-    # 2. All-ones input
-    ones = {name: (1 << width) - 1 for name, width in port_widths.items()}
     cases.append({
-        "name": "all_ones",
-        "description": "All input ports driven with all-ones (max unsigned value)",
-        "inputs": ones,
+        "name": "all_ones_max",
+        "description": "All input ports at max unsigned value (2^N - 1)",
+        "inputs": {name: (1 << width) - 1 for name, width in port_widths.items()},
     })
 
-    # 3. Minimum non-zero input
-    min_nonzero = {name: 1 for name in port_widths}
     cases.append({
-        "name": "min_nonzero",
-        "description": "All input ports driven with minimum non-zero value (1)",
-        "inputs": min_nonzero,
+        "name": "one_lsb_min_nonzero",
+        "description": "LSB-only / minimum non-zero value (1) on all input ports",
+        "inputs": {name: 1 for name in port_widths},
     })
 
-    # 4. Maximum value input (2^N - 1)
-    max_val = {name: (1 << width) - 1 for name, width in port_widths.items()}
-    cases.append({
-        "name": "max_value",
-        "description": "All input ports driven with maximum unsigned value",
-        "inputs": max_val,
-    })
-
-    # 5. Alternating pattern (0xAA...AA)
     alt_ones = {}
     for name, width in port_widths.items():
         val = 0
@@ -109,31 +111,10 @@ def generate_corner_cases(spec: dict) -> list[dict]:
         "inputs": alt_ones,
     })
 
-    # 6. Single-bit-hot (only LSB set)
-    single_bit = {name: 1 for name in port_widths}
     cases.append({
-        "name": "single_bit_hot_lsb",
-        "description": "Only LSB set, all other bits zero",
-        "inputs": single_bit,
-    })
-
-    # 7. Single-bit-hot (only MSB set)
-    msb_hot = {name: 1 << (width - 1) for name, width in port_widths.items()}
-    cases.append({
-        "name": "single_bit_hot_msb",
-        "description": "Only MSB set, all other bits zero",
-        "inputs": msb_hot,
-    })
-
-    # 8. Half-range (midpoint)
-    half = {}
-    for name, width in port_widths.items():
-        val = 1 << (width - 1)
-        half[name] = val
-    cases.append({
-        "name": "half_range_msb_only",
-        "description": "MSB-only value (2^(N-1))",
-        "inputs": half,
+        "name": "one_msb_half_range",
+        "description": "MSB-only value (2^(N-1)) — sign bit / half-range",
+        "inputs": {name: 1 << (width - 1) for name, width in port_widths.items()},
     })
 
     return cases

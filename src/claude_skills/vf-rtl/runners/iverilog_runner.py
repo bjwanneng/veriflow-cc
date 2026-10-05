@@ -654,7 +654,20 @@ def main():
         vcd_path = None
 
     if num_failed > 0 or not all_passed:
-        classified = classify_failure(failures)
+        # Feed the golden trace so classify_failure can detect B-class
+        # (timing-offset) bugs — without it every failure silently falls
+        # through to A (computation) and the ±window golden search is dead.
+        golden_cycles = None
+        if args.golden_model:
+            try:
+                from rtl_utils import load_golden_trace_as_list
+                trace = load_golden_trace_as_list(args.golden_model)
+                if trace:
+                    golden_cycles = {i: row for i, row in enumerate(trace)}
+            except Exception as e:
+                print(f"[iverilog_runner] golden trace load failed "
+                      f"(B-classification disabled): {e}", file=sys.stderr)
+        classified = classify_failure(failures, golden_cycles)
         result = {
             "tests": num_tests,
             "passed": num_passed,
